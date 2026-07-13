@@ -244,15 +244,45 @@ export const geminiService = {
     }
     try {
       const testAI = new GoogleGenAI({ apiKey: key.trim() });
-      const response = await testAI.models.generateContent({
-        model: "gemini-1.5-flash",
-        contents: "hi",
-        config: { maxOutputTokens: 5 }
-      });
-      if (response) {
-        return { success: true, message: "Kết nối thành công! API Key hoạt động chính xác." };
+      
+      // Đầu tiên, thử gọi list models để xem key có hợp lệ không. Đây là cách chính xác nhất và không phụ thuộc vào một model cụ thể nào.
+      try {
+        const modelList = await testAI.models.list();
+        if (modelList) {
+          return { 
+            success: true, 
+            message: "Kết nối thành công! API Key hoạt động chính xác (đã xác thực qua Model Service)." 
+          };
+        }
+      } catch (listErr: any) {
+        console.warn("models.list failed, trying generateContent fallback:", listErr);
       }
-      return { success: false, message: "Không nhận được phản hồi hợp lệ từ Gemini." };
+
+      // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
+      const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+      let lastError: any = null;
+
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await testAI.models.generateContent({
+            model: modelName,
+            contents: "hi",
+            config: { maxOutputTokens: 5 }
+          });
+          if (response) {
+            return { 
+              success: true, 
+              message: `Kết nối thành công! API Key hoạt động chính xác (đã xác thực qua model ${modelName}).` 
+            };
+          }
+        } catch (genErr: any) {
+          console.warn(`generateContent with ${modelName} failed:`, genErr);
+          lastError = genErr;
+        }
+      }
+
+      // Nếu tất cả đều thất bại, báo lỗi cụ thể của lần thử cuối cùng
+      throw lastError || new Error("Không thể kết nối tới bất kỳ model nào.");
     } catch (e: any) {
       console.error("Test API key error:", e);
       return { 
