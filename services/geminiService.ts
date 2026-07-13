@@ -38,6 +38,34 @@ function getApiKey(): string {
   return stored.trim() || process.env.GEMINI_API_KEY || '';
 }
 
+function handleApiError(err: any): Error {
+  console.error("Gemini API Error caught:", err);
+  const msg = err?.message || String(err);
+  
+  const isKeyError = 
+    msg.includes("API key") || 
+    msg.includes("API_KEY_INVALID") || 
+    msg.includes("INVALID_ARGUMENT") && msg.toLowerCase().includes("key") ||
+    msg.includes("Key not found") ||
+    msg.toLowerCase().includes("unauthorized") ||
+    msg.includes("403") ||
+    msg.toLowerCase().includes("api key is invalid") ||
+    msg.includes("400") && msg.toLowerCase().includes("key");
+
+  if (isKeyError) {
+    const keyUsed = getApiKey();
+    const maskKey = keyUsed 
+      ? `${keyUsed.slice(0, 6)}...${keyUsed.slice(-4)}` 
+      : "Không tìm thấy key nào";
+      
+    return new Error(
+      `Lỗi xác thực API Key của Gemini (Đang dùng: ${maskKey}). Vui lòng kiểm tra lại độ chính xác của API Key trong 'Cài đặt Toàn cầu' (nhấp vào icon bánh răng ở thanh bên) hoặc cài đặt biến môi trường của AI Studio. Chi tiết: ${msg}`
+    );
+  }
+  
+  return err instanceof Error ? err : new Error(msg);
+}
+
 class DynamicAI {
   get models() {
     const rawModels = new GoogleGenAI({ apiKey: getApiKey() }).models;
@@ -61,7 +89,7 @@ class DynamicAI {
           return res;
         } catch (err) {
           tokenTracker.recordRequestFailure(reqId);
-          throw err;
+          throw handleApiError(err);
         }
       },
       generateContentStream: async function* (params: any) {
@@ -88,11 +116,15 @@ class DynamicAI {
           }
         } catch (err) {
           tokenTracker.recordRequestFailure(reqId);
-          throw err;
+          throw handleApiError(err);
         }
       },
       embedContent: async (params: any) => {
-        return await rawModels.embedContent(params);
+        try {
+          return await rawModels.embedContent(params);
+        } catch (err) {
+          throw handleApiError(err);
+        }
       }
     };
   }
@@ -132,14 +164,14 @@ class DynamicAI {
                 }
               } catch (err) {
                 tokenTracker.recordRequestFailure(reqId);
-                throw err;
+                throw handleApiError(err);
               }
             }
             
             return wrapperGenerator() as any;
           } catch (err) {
             tokenTracker.recordRequestFailure(reqId);
-            throw err;
+            throw handleApiError(err);
           }
         };
         

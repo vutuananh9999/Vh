@@ -474,7 +474,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             });
         }
         if (storyRef.current) await storageService.saveStory(storyRef.current);
-    } catch (e) { } finally { setIsPlanning(false); }
+    } catch (e: any) { 
+        console.error(e);
+        alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
+    } finally { setIsPlanning(false); }
   };
 
   const clearPlanningChat = useCallback(async () => {
@@ -514,7 +517,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             });
         }
         if (storyRef.current) await storageService.saveStory(storyRef.current);
-    } catch (e) { } finally { setIsPlotPlanning(false); }
+    } catch (e: any) { 
+        console.error(e);
+        alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
+    } finally { setIsPlotPlanning(false); }
   };
 
   const clearPlotChat = useCallback(async () => {
@@ -695,9 +701,9 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 return updatedStory;
             });
         }
-    } catch (e) {
+    } catch (e: any) {
         console.error("Lỗi khi tóm tắt chương:", e);
-        alert("Có lỗi xảy ra trong quá trình gọi AI để tóm tắt chương.");
+        alert(e?.message || "Có lỗi xảy ra trong quá trình gọi AI để tóm tắt chương.");
     } finally { 
         setIsSummarizing(false); 
     }
@@ -866,9 +872,9 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         } else {
             setPendingEdit({ chapterId: id, original: targetChapter.content, modified: accumulated });
         }
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
-        alert("Kết nối quá yếu (LTE). Quá trình bị gián đoạn, vui lòng thử lại.");
+        alert(e?.message || "Kết nối quá yếu (LTE). Quá trình bị gián đoạn, vui lòng thử lại.");
     } finally { 
         setIsGenerating(false);
         setGenerationStatus("");
@@ -1025,7 +1031,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const correctedResult = await geminiService.enforceCompliance(accumulated, currentStory, verificationReport);
         recordUsage(correctedResult.usageMetadata);
         setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: correctedResult.text || accumulated });
-    } catch (e) { } finally { setIsGenerating(false); }
+    } catch (e: any) { 
+        console.error(e);
+        alert(e?.message || "Lỗi trong quá trình tinh chỉnh văn bản.");
+    } finally { setIsGenerating(false); }
   };
 
   const refineSelection = async (selection: string, startIdx: number, endIdx: number, customInstruction: string) => {
@@ -1046,7 +1055,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const correctedResult = await geminiService.enforceCompliance(accumulated, currentStory, verificationReport);
         recordUsage(correctedResult.usageMetadata);
         setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + (correctedResult.text || accumulated) + suffix });
-    } catch (e) { } finally { setIsGenerating(false); }
+    } catch (e: any) { 
+        console.error(e);
+        alert(e?.message || "Lỗi trong quá trình tinh chỉnh phân đoạn.");
+    } finally { setIsGenerating(false); }
   };
 
   const applyPendingEdit = () => {
