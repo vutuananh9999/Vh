@@ -1,0 +1,647 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useStory } from '../context/StoryContext.tsx';
+import { CharacterList } from './CharacterList.tsx';
+import { Chapter, ExtractionCategory } from '../types.ts';
+import { SummaryViewModal } from './SummaryViewModal.tsx';
+import { DeleteChapterModal } from './DeleteChapterModal.tsx';
+import { fastWordCount } from '../utils/wordCount.ts';
+
+interface Props {
+    onOpenSettings: () => void;
+    isOpen: boolean;    
+    onClose: () => void; 
+    onOpenPlotArc?: () => void;
+    onOpenHelp: () => void;
+}
+
+export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOpenPlotArc, onOpenHelp }) => {
+  const { 
+    story, activeChapterId, selectChapter, addChapter, deleteChapter, 
+    userInstruction, setUserInstruction,
+    targetWordCount, setTargetWordCount,
+    generateContinue, isGenerating, isPlanning, isAuditing, auditStory,
+    sendPlanningMessage, clearPlanningChat, updateStorySettings, updateChapterOutline,
+    updateChapterTitle, updateChapterTimeSetting, reorderChapter, closeStory, 
+    learnFromText, isSearchingWeb, webInspiration, toggleEvolutionLog, deleteEvolutionLog,
+    toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, ingestRawDocument,
+    suggestNewChapter, isSuggestingChapter, suggestActiveChapterOutline, isGeneratingOutline,
+    triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, exportStory // Added
+  } = useStory();
+  
+  const [tab, setTab] = useState<'chapters' | 'planning' | 'knowledge'>('chapters');
+  const [planningSubTab, setPlanningSubTab] = useState<'blueprint' | 'arc'>('blueprint');
+  const [knowledgeSubTab, setKnowledgeSubTab] = useState<'core' | 'characters' | 'directives' | 'ingest'>('core');
+  const [viewingSummary, setViewingSummary] = useState<Chapter | null>(null);
+  const [planInput, setPlanInput] = useState('');
+  const [rawTextInput, setRawTextInput] = useState('');
+  const [webTopic, setWebTopic] = useState(''); 
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [chapterToDelete, setChapterToDelete] = useState<Chapter | null>(null);
+  
+  // Mobile Chat State
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [isDesktopChatOpen, setIsDesktopChatOpen] = useState(true);
+  
+  const [chatHeight, setChatHeight] = useState(380);
+  const [isResizingChat, setIsResizingChat] = useState(false);
+  const [selectedCategories, setSelectedCategories] = useState<ExtractionCategory[]>(['characters', 'world']);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const mobileChatEndRef = useRef<HTMLDivElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const chapterTxtInputRef = useRef<HTMLInputElement>(null);
+  const sidebarFooterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (chatEndRef.current && tab === 'planning') chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [story?.planningChatHistory, isPlanning, tab, isDesktopChatOpen]);
+
+  useEffect(() => {
+    if (isMobileChatOpen && mobileChatEndRef.current) {
+        mobileChatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [story?.planningChatHistory, isMobileChatOpen, isPlanning]);
+
+  const startResizingChat = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    setIsResizingChat(true);
+    document.body.style.cursor = 'row-resize';
+  }, []);
+
+  const stopResizingChat = useCallback(() => {
+    setIsResizingChat(false);
+    document.body.style.cursor = 'default';
+  }, []);
+
+  const resizeChat = useCallback((e: MouseEvent | TouchEvent) => {
+    if (isResizingChat) {
+      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+      const windowHeight = window.innerHeight;
+      const footerHeight = sidebarFooterRef.current?.offsetHeight || 220;
+      const newHeight = windowHeight - clientY - footerHeight;
+      setChatHeight(Math.max(150, Math.min(windowHeight * 0.75, newHeight)));
+    }
+  }, [isResizingChat]);
+
+  useEffect(() => {
+    if (isResizingChat) {
+        window.addEventListener('mousemove', resizeChat);
+        window.addEventListener('mouseup', stopResizingChat);
+        window.addEventListener('touchmove', resizeChat, { passive: false });
+        window.addEventListener('touchend', stopResizingChat);
+    }
+    return () => {
+      window.removeEventListener('mousemove', resizeChat);
+      window.removeEventListener('mouseup', stopResizingChat);
+      window.removeEventListener('touchmove', resizeChat);
+      window.removeEventListener('touchend', stopResizingChat);
+    };
+  }, [isResizingChat, resizeChat, stopResizingChat]);
+
+  if (!story) return null;
+
+  const handlePlanningSend = async () => {
+    if (!planInput.trim()) return;
+    const msg = planInput;
+    setPlanInput('');
+    await sendPlanningMessage(msg);
+  };
+
+  const handleClearChat = async () => {
+      await clearPlanningChat();
+  };
+
+  const applyToOutline = (text: string) => {
+      if (activeChapterId) {
+          updateChapterOutline(activeChapterId, text);
+          alert("Đã cập nhật dàn ý chương!");
+          if (isMobileChatOpen) setIsMobileChatOpen(false);
+      }
+  };
+
+  const handleDiscussOutline = async () => {
+    const activeChapter = story.chapters.find(c => c.id === activeChapterId);
+    if (!activeChapter || !activeChapter.outline.trim()) {
+        alert("Dàn ý đang trống, hãy nhập nội dung hoặc dùng AI gợi ý trước.");
+        return;
+    }
+    const message = `Hãy phân tích, góp ý và mở rộng dàn ý chương "${activeChapter.title}" này cho tôi:\n\n${activeChapter.outline}`;
+    if (window.innerWidth < 768) setIsMobileChatOpen(true);
+    else setIsDesktopChatOpen(true);
+    await sendPlanningMessage(message);
+  };
+
+  const handleQuickPrompt = async (prompt: string) => {
+    if (isPlanning) return;
+    if (window.innerWidth < 768) setIsMobileChatOpen(true);
+    else setIsDesktopChatOpen(true);
+    await sendPlanningMessage(prompt);
+  };
+
+  const handleRawTextLearn = async () => {
+    if (!rawTextInput.trim() || isLearning) return;
+    await learnFromText(rawTextInput, selectedCategories);
+    setRawTextInput('');
+  };
+
+  const handleWebSearch = async () => {
+    if (!webTopic.trim() || isSearchingWeb) return;
+    await fetchWebInspiration(webTopic);
+  };
+
+  const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        await ingestRawDocument(file, selectedCategories);
+        e.target.value = '';
+    }
+  };
+
+  const handleChapterTxtUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        await importChaptersFromTxt(file);
+        e.target.value = '';
+    }
+  };
+
+  const toggleCategory = (cat: ExtractionCategory) => {
+    setSelectedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+  };
+
+  const handleStartRename = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setRenamingId(id);
+  };
+
+  const handleConfirmRename = () => setRenamingId(null);
+  
+  const handleDeleteClick = (e: React.MouseEvent, chapter: Chapter) => {
+      e.stopPropagation();
+      setChapterToDelete(chapter);
+  };
+
+  const handleConfirmDelete = async () => {
+      if (chapterToDelete) {
+          await deleteChapter(chapterToDelete.id);
+          setChapterToDelete(null);
+      }
+  };
+
+  const getWordCount = fastWordCount;
+
+  const activeChapter = story?.chapters.find(c => c.id === activeChapterId);
+  const sortedChapters = story ? [...story.chapters].sort((a, b) => a.order - b.order) : [];
+
+  const containerClass = `fixed inset-y-0 left-0 z-50 w-80 bg-gray-900 border-r border-gray-800 glass-panel shadow-2xl transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 flex flex-col h-[100dvh] ${isOpen ? 'translate-x-0' : '-translate-x-full'}`;
+
+  const footerClass = "shrink-0 border-t border-gray-800 bg-gray-900/95 backdrop-blur z-50 p-4 space-y-4"; 
+
+  return (
+    <div className={containerClass}>
+      
+      {/* HEADER */}
+      <div className="p-4 border-b border-gray-800 flex items-center justify-between shrink-0">
+         <div className="flex flex-col overflow-hidden text-left flex-1 cursor-pointer group" onClick={onOpenSettings}>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-primary-400 to-purple-400 bg-clip-text text-transparent truncate group-hover:from-primary-300 group-hover:to-purple-300 transition-all">Aetheria</h1>
+            <p className="text-[9px] text-gray-500 mt-0.5 uppercase tracking-tighter truncate flex items-center gap-1">{story.title}</p>
+         </div>
+         <div className="flex items-center gap-1">
+             <button onClick={onOpenHelp} className="p-2 text-gray-500 hover:text-emerald-400 transition-colors" title="Học Viện Aetheria">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+             </button>
+             <button onClick={onOpenSettings} className="p-2 text-gray-500 hover:text-primary-400 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+             </button>
+             <button onClick={onClose} className="md:hidden p-2 text-gray-500 hover:text-white transition-colors"><svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
+             <button onClick={closeStory} className="hidden md:block p-2 text-gray-500 hover:text-white transition-colors"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg></button>
+         </div>
+      </div>
+
+      {/* TABS */}
+      <div className="flex border-b border-gray-800 shrink-0">
+        <button onClick={() => setTab('chapters')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'chapters' ? 'text-primary-400 border-b-2 border-primary-500 bg-primary-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Chương</button>
+        <button onClick={() => setTab('planning')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'planning' ? 'text-emerald-400 border-b-2 border-emerald-500 bg-emerald-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Kế hoạch</button>
+        <button onClick={() => setTab('knowledge')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'knowledge' ? 'text-purple-400 border-b-2 border-purple-500 bg-purple-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Kho</button>
+      </div>
+
+      {/* CONTENT AREA */}
+      <div className={`flex-1 flex flex-col ${tab === 'planning' && planningSubTab === 'blueprint' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'} bg-gray-900/50`}>
+        {tab === 'chapters' && (
+          <div className={`p-2 space-y-1 pb-4`}>
+            <div className="px-2 py-3 mb-2 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                    <button onClick={auditStory} disabled={isAuditing} className="w-full py-2 bg-primary-600/10 hover:bg-primary-600/20 text-primary-400 border border-primary-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1 group">
+                      {isAuditing ? <span className="w-3 h-3 border-2 border-primary-400 border-t-transparent rounded-full animate-spin"></span> : <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>}
+                      Kiểm toán
+                    </button>
+                    <button onClick={suggestNewChapter} disabled={isSuggestingChapter} className="w-full py-2 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1">
+                      {isSuggestingChapter ? <span className="w-3 h-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span> : <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>}
+                      Gợi ý chương
+                    </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                    <button onClick={triggerSave} disabled={isSavingManual} className={`w-full py-2 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1 border ${isSavingManual ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'}`}>
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                      </svg>
+                      {isSavingManual ? 'Đã lưu' : 'Lưu tay'}
+                    </button>
+                    <button onClick={() => exportStory(story.id)} className="w-full py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Sao lưu
+                    </button>
+                    <button onClick={triggerLearn} disabled={isLearning} className="w-full py-2 bg-orange-600/10 hover:bg-orange-600/20 text-orange-400 border border-orange-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1">
+                      {isLearning ? <span className="w-3 h-3 border-2 border-orange-400 border-t-transparent rounded-full animate-spin"></span> : <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>}
+                      Học văn
+                    </button>
+                </div>
+            </div>
+            {sortedChapters.map((chapter) => {
+              const currentWords = getWordCount(chapter.content);
+              const progress = Math.min(100, (currentWords / (chapter.wordGoal || 2000)) * 100);
+              const isOnlyChapter = sortedChapters.length <= 1;
+              const isActive = activeChapterId === chapter.id;
+              
+              return (
+                <div key={chapter.id} className={`group relative rounded-md transition-all ${isActive ? 'bg-gray-800 border-l-2 border-primary-500 shadow-lg' : 'hover:bg-gray-800/40'}`}>
+                  <div className="flex items-center">
+                    <div className="flex flex-col gap-1 pr-2 pl-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => reorderChapter(chapter.id, 'up')} className="p-1 text-gray-600 hover:text-primary-400"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M5 15l7-7 7 7" strokeWidth={3} /></svg></button>
+                        <button onClick={() => reorderChapter(chapter.id, 'down')} className="p-1 text-gray-600 hover:text-primary-400"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" strokeWidth={3} /></svg></button>
+                    </div>
+                    <div className="flex-1 py-3 pl-1 pr-2 overflow-hidden cursor-pointer" onClick={() => selectChapter(chapter.id)}>
+                        {renamingId === chapter.id ? (
+                            <input autoFocus className="w-full bg-gray-950 border border-primary-500/50 rounded px-1.5 py-0.5 text-sm text-white outline-none" value={chapter.title} onChange={(e) => updateChapterTitle(chapter.id, e.target.value)} onBlur={handleConfirmRename} onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()} onClick={(e) => e.stopPropagation()} />
+                        ) : (
+                            <div className="flex flex-col gap-1 min-w-0">
+                                <div className="text-[10px] font-bold truncate text-gray-400 group-hover:text-gray-200 flex items-center justify-between">
+                                    <span className="truncate">{chapter.title}</span>
+                                    <span className="text-[8px] font-black text-gray-600 shrink-0 ml-2">{currentWords} / {chapter.wordGoal || 2000}</span>
+                                </div>
+                                <div className="w-full h-1 bg-gray-950 rounded-full overflow-hidden border border-gray-800">
+                                    <div className={`h-full transition-all duration-500 ${progress >= 100 ? 'bg-emerald-500' : 'bg-primary-600'}`} style={{ width: `${progress}%` }}></div>
+                                </div>
+                                {isActive && (
+                                    <div className="mt-1 flex items-center gap-1.5">
+                                        <svg className="w-3 h-3 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                        <input 
+                                            type="text" 
+                                            value={chapter.timeSetting || ""} 
+                                            onChange={(e) => updateChapterTimeSetting(chapter.id, e.target.value)} 
+                                            placeholder="Thiết lập thời gian (Vd: Sáng sớm)" 
+                                            className="w-full bg-transparent text-[9px] text-orange-300 placeholder-gray-600 outline-none border-b border-gray-700 focus:border-orange-500 transition-colors"
+                                            onClick={(e) => e.stopPropagation()}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity pr-2 gap-1">
+                        <button onClick={(e) => handleStartRename(e, chapter.id)} className="p-1.5 text-gray-600 hover:text-primary-400 rounded-md hover:bg-gray-700" title="Đổi tên"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" strokeWidth={2}/></svg></button>
+                        {!isOnlyChapter && (
+                            <button onClick={(e) => handleDeleteClick(e, chapter)} className="p-1.5 text-gray-600 hover:text-red-500 rounded-md hover:bg-red-900/20" title="Xóa"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth={2}/></svg></button>
+                        )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex gap-2 mt-2">
+                <button onClick={() => addChapter()} className="flex-1 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-primary-500 hover:text-primary-400 transition-all">+ Thêm chương mới</button>
+                <input type="file" ref={chapterTxtInputRef} className="hidden" accept=".txt" onChange={handleChapterTxtUpload} />
+                <button onClick={() => chapterTxtInputRef.current?.click()} className="px-3 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                </button>
+            </div>
+          </div>
+        )}
+
+        {tab === 'planning' && (
+          <div className={`flex flex-col h-full ${planningSubTab === 'blueprint' ? 'overflow-hidden' : `overflow-y-auto pb-4`}`}>
+            <div className="flex border-b border-gray-800 shrink-0 bg-gray-950/30">
+                <button onClick={() => setPlanningSubTab('blueprint')} className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${planningSubTab === 'blueprint' ? 'text-emerald-400 bg-emerald-950/10 border-b-2 border-emerald-500' : 'text-gray-500 hover:text-gray-300'}`}>Blueprint</button>
+                <button onClick={() => setPlanningSubTab('arc')} className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${planningSubTab === 'arc' ? 'text-primary-400 bg-primary-950/10 border-b-2 border-primary-500' : 'text-gray-500 hover:text-gray-300'}`}>Mạch truyện</button>
+                {planningSubTab === 'blueprint' && (
+                    <button onClick={() => setIsDesktopChatOpen(!isDesktopChatOpen)} className="hidden md:flex items-center px-3 border-l border-gray-800 text-gray-500 hover:text-white hover:bg-gray-800 transition-colors" title={isDesktopChatOpen ? "Ẩn Chat" : "Hiện Chat"}><svg className={`w-4 h-4 transition-transform ${isDesktopChatOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg></button>
+                )}
+            </div>
+            
+            {planningSubTab === 'blueprint' ? (
+                <div className="flex-col h-full flex overflow-hidden">
+                    <div className={`flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6 transition-all duration-300 ${!isDesktopChatOpen ? 'flex-grow' : ''}`}>
+                        <div className="group">
+                            <label className="block text-[9px] font-black text-gray-500 group-hover:text-emerald-500 transition-colors uppercase mb-2 tracking-widest flex items-center gap-2">
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
+                                Story Blueprint
+                            </label>
+                            <textarea className="w-full h-28 bg-gray-900/50 border border-gray-800 rounded-xl p-3 text-xs text-gray-300 focus:border-emerald-500 outline-none resize-none transition-all shadow-inner" value={story.planning} onChange={(e) => updateStorySettings({ planning: e.target.value })} placeholder="Kế hoạch tổng thể của toàn bộ tác phẩm..." />
+                        </div>
+                        
+                        {activeChapter && (
+                            <div className="space-y-3 animate-fadeIn">
+                                    <label className="block text-[9px] font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2">
+                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13" /></svg>
+                                        Dàn ý: {activeChapter.title}
+                                    </label>
+                                    <div className="relative group">
+                                        <textarea className={`w-full bg-gray-950 border border-emerald-900/20 rounded-2xl p-4 text-[11px] text-gray-200 focus:border-emerald-500 outline-none resize-none transition-all shadow-xl font-serif leading-relaxed ${isDesktopChatOpen ? 'h-48' : 'h-96'}`} value={activeChapter.outline || ''} onChange={(e) => updateChapterOutline(activeChapter.id, e.target.value)} placeholder="Chi tiết các tình tiết diễn ra trong chương này..." />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        <button onClick={() => suggestActiveChapterOutline()} disabled={isGeneratingOutline} className="py-2.5 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-lg active:scale-95">
+                                            {isGeneratingOutline ? <span className="w-3 h-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>}
+                                            AI Suggest
+                                        </button>
+                                        <button onClick={handleDiscussOutline} disabled={isPlanning} className="py-2.5 bg-primary-600/10 hover:bg-primary-600/20 text-primary-400 border border-primary-500/30 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-lg active:scale-95">
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                                            Discuss
+                                        </button>
+                                    </div>
+                            </div>
+                        )}
+                        
+                        <button onClick={() => setIsMobileChatOpen(true)} className="md:hidden w-full py-4 bg-gray-800 border border-gray-700 rounded-2xl text-gray-300 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl transition-all active:scale-95">
+                            <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                            Enter Strategist Command
+                        </button>
+                    </div>
+
+                    {isDesktopChatOpen && (
+                        <div className="hidden md:flex shrink-0 flex-col bg-gray-950/60 border-t border-gray-800 relative z-20 shadow-[0_-20px_50px_rgba(0,0,0,0.5)]" style={{ height: `${chatHeight}px` }}>
+                            <div onMouseDown={startResizingChat} className="absolute -top-1 left-0 right-0 h-2 cursor-row-resize z-50 group">
+                                <div className="w-12 h-1 bg-gray-800 rounded-full mx-auto mt-0.5 group-hover:bg-primary-500 transition-colors"></div>
+                            </div>
+                            
+                            <div className="flex-1 p-4 flex flex-col min-h-0 bg-gradient-to-b from-gray-950/20 to-gray-900/40">
+                                <div className="flex justify-between items-center mb-3 shrink-0">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                                        <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em]">Strategist War Room</span>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <button onClick={handleClearChat} className="text-[9px] font-black text-purple-400 hover:text-purple-300 uppercase tracking-tighter transition-colors flex items-center gap-1.5 bg-purple-900/10 px-2 py-1 rounded border border-purple-500/20">
+                                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                            Mới
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <div className="flex-1 overflow-y-auto space-y-4 mb-4 custom-scrollbar pr-1">
+                                    {story.planningChatHistory?.length === 0 && (
+                                        <div className="h-full flex flex-col items-center justify-center text-center opacity-30 space-y-3 p-6">
+                                            <svg className="w-10 h-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                                            <p className="text-[10px] font-black uppercase tracking-widest">Thảo luận chiến thuật mới</p>
+                                        </div>
+                                    )}
+                                    
+                                    {story.planningChatHistory?.map((msg, i) => (
+                                        <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start animate-fadeIn'}`}>
+                                            <div className={`max-w-[90%] p-3 rounded-2xl text-[11px] leading-relaxed border shadow-sm ${msg.role === 'user' ? 'bg-emerald-950/20 text-emerald-100 border-emerald-500/20 rounded-br-none' : 'bg-gray-850/90 text-gray-300 border-gray-700 rounded-bl-none font-serif italic'}`}>
+                                                {msg.parts[0].text}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {isPlanning && (
+                                        <div className="flex justify-start">
+                                            <div className="bg-gray-800 p-3 rounded-2xl rounded-bl-none border border-gray-700 flex gap-2">
+                                                <div className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-bounce"></div>
+                                                <div className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                                                <div className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    <div ref={chatEndRef} />
+                                </div>
+                                
+                                <div className="space-y-3 shrink-0">
+                                    <div className="relative group">
+                                        <input type="text" value={planInput} onChange={(e) => setPlanInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handlePlanningSend()} className="w-full bg-gray-950 border border-gray-800 rounded-xl pl-4 pr-12 py-3 text-xs text-white outline-none focus:border-emerald-500 transition-all shadow-inner placeholder:text-gray-700" placeholder="Thảo luận chiến thuật cốt truyện..." />
+                                        <button onClick={handlePlanningSend} disabled={!planInput.trim() || isPlanning} className={`absolute right-2 top-1.5 bottom-1.5 px-3 rounded-lg transition-all ${planInput.trim() && !isPlanning ? 'bg-emerald-600 text-white shadow-lg' : 'bg-gray-800 text-gray-600'}`}>
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M13 5l7 7-7 7M5 5l7 7-7 7" strokeWidth={2.5} /></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="p-4 space-y-6 animate-fadeIn pb-20">
+                    <div className="bg-emerald-950/10 border border-emerald-900/20 p-4 rounded-2xl">
+                        <h4 className="text-[9px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
+                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                             Plot Arc Dashboard
+                        </h4>
+                        <button 
+                            type="button"
+                            onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onOpenPlotArc?.();
+                            }} 
+                            className="w-full py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:bg-emerald-500 transition-all active:scale-95"
+                        >
+                            Analyze Story Arc
+                        </button>
+                    </div>
+                    <div className="space-y-0 relative">
+                        <div className="absolute left-[7px] top-2 bottom-2 w-0.5 bg-gray-800 z-0"></div>
+                        {sortedChapters.map((ch, i) => (
+                            <div key={ch.id} className={`relative pl-8 pb-8 last:pb-0 transition-all group ${activeChapterId === ch.id ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}>
+                                <div className={`absolute left-0 top-1 w-4 h-4 rounded-full border-2 z-10 transition-all flex items-center justify-center ${activeChapterId === ch.id ? 'bg-emerald-500 border-white shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-gray-900 border-gray-700 group-hover:border-emerald-500/50'}`}>
+                                    {activeChapterId === ch.id && <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>}
+                                </div>
+                                <div className={`p-4 rounded-2xl border transition-all cursor-pointer ${activeChapterId === ch.id ? 'bg-gray-800 border-emerald-500/30 shadow-xl' : 'bg-gray-900/40 border-gray-800 hover:border-gray-700'}`} onClick={() => selectChapter(ch.id)}>
+                                    <div className="flex justify-between items-start mb-2">
+                                        <h5 className={`text-[9px] font-black uppercase tracking-widest ${activeChapterId === ch.id ? 'text-emerald-400' : 'text-gray-500'}`}>{ch.title}</h5>
+                                        <span className="text-[8px] font-bold text-gray-700">{getWordCount(ch.content)} từ</span>
+                                    </div>
+                                    <p className="text-[10px] text-gray-400 leading-relaxed font-serif italic line-clamp-3">{ch.summary || "Chưa phân tích."}</p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'knowledge' && (
+          <div className={`flex flex-col h-full overflow-hidden pb-4`}>
+            <div className="flex border-b border-gray-800 shrink-0 overflow-x-auto custom-scrollbar bg-gray-950/50">
+                <button onClick={() => setKnowledgeSubTab('core')} className={`flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-tighter transition-all ${knowledgeSubTab === 'core' ? 'text-transparent bg-clip-text bg-gradient-to-r from-pink-400 via-purple-400 to-emerald-400 bg-gray-900 border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300'}`}>Lõi Aether</button>
+                <button onClick={() => setKnowledgeSubTab('characters')} className={`flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-tighter transition-all ${knowledgeSubTab === 'characters' ? 'text-primary-400 bg-primary-950/20 border-b-2 border-primary-500' : 'text-gray-500 hover:text-gray-300'}`}>Thực Thể</button>
+                <button onClick={() => setKnowledgeSubTab('directives')} className={`flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-tighter transition-all ${knowledgeSubTab === 'directives' ? 'text-red-400 bg-red-950/20 border-b-2 border-red-500' : 'text-gray-500 hover:text-gray-300'}`}>Chỉ Thị</button>
+                <button onClick={() => setKnowledgeSubTab('ingest')} className={`flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-tighter transition-all ${knowledgeSubTab === 'ingest' ? 'text-purple-400 bg-purple-950/20 border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300'}`}>Nạp</button>
+            </div>
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+                {knowledgeSubTab === 'core' && (
+                    <div className="p-2 space-y-2 animate-fadeIn">
+                        <div className="bg-gray-900/80 border border-pink-900/30 rounded-2xl overflow-hidden shadow-lg">
+                            <div className="p-3 bg-pink-950/20 border-b border-pink-900/20 flex items-center gap-2">
+                                <div className="p-1 bg-pink-500/10 rounded"><svg className="w-3.5 h-3.5 text-pink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86 1.43l-1.004.823a2 2 0 01-2.31 0l-1.004-.823a6 6 0 00-3.86-1.43l-2.387.477a2 2 0 00-1.022.547l-1.004 1.255a2 2 0 00-.32 1.637l1.004 5.023a2 2 0 001.962 1.608h15.688a2 2 0 001.962-1.608l1.004-5.023a2 2 0 00-.32-1.637l-1.004-1.255zM12 2v10m0 0l3-3m-3 3l-3-3" /></svg></div>
+                                <h3 className="text-[9px] font-black text-pink-400 uppercase tracking-widest">Hệ Gen Văn Chương</h3>
+                            </div>
+                            {story.writingDNA ? (
+                                <div className="p-4 space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><span className="text-[8px] font-black text-pink-500/70 uppercase block mb-1">Giọng kể</span><p className="text-xs text-gray-200 font-serif italic">"{story.writingDNA.narrativeVoice}"</p></div>
+                                        <div><span className="text-[8px] font-black text-pink-500/70 uppercase block mb-1">Sắc thái</span><p className="text-xs text-gray-300">{story.writingDNA.emotionalTone}</p></div>
+                                    </div>
+                                    <button onClick={() => {if(confirm("Tẩy tủy Hồn Văn?")) updateStorySettings({writingDNA: undefined})}} className="w-full py-2 border border-dashed border-gray-800 text-[9px] text-gray-600 font-black uppercase hover:text-red-500 transition-colors">Thiết lập lại</button>
+                                </div>
+                            ) : (
+                                <div className="p-6 text-center">
+                                    <p className="text-[10px] text-gray-500 italic mb-2">Chưa có dữ liệu Hồn Văn.</p>
+                                    <button onClick={() => setKnowledgeSubTab('ingest')} className="text-[9px] text-pink-400 underline decoration-dashed underline-offset-4 font-bold uppercase">Nạp để chiết xuất</button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+                {knowledgeSubTab === 'characters' && <CharacterList characters={story.characters} />}
+                
+                {knowledgeSubTab === 'directives' && (
+                    <div className="p-4 space-y-4 animate-fadeIn">
+                        <div className="p-4 bg-red-900/10 border border-red-500/20 rounded-xl">
+                            <h4 className="text-[9px] font-black text-red-400 uppercase mb-2 flex items-center gap-2">
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                Chỉ thị Bền vững (Persistent Directives)
+                            </h4>
+                            <p className="text-[10px] text-gray-400 italic leading-relaxed">
+                                Những mệnh lệnh này sẽ được AI ghi nhớ và áp dụng cho MỌI lần sinh văn bản. Dùng để duy trì văn phong hoặc quy tắc cốt lõi.
+                            </p>
+                        </div>
+                        <textarea 
+                            className="w-full h-80 bg-gray-900 border border-gray-800 rounded-2xl p-4 text-xs text-white font-mono leading-relaxed outline-none resize-none focus:border-red-500 transition-all shadow-inner custom-scrollbar" 
+                            placeholder="- Luôn miêu tả mùi hương trong mọi cảnh.\n- Không bao giờ cho nhân vật chính khóc.\n- Giữ giọng văn lạnh lùng, khách quan."
+                            value={story.persistentDirectives || ""} 
+                            onChange={(e) => updateStorySettings({ persistentDirectives: e.target.value })} 
+                        />
+                    </div>
+                )}
+
+                {knowledgeSubTab === 'ingest' && (
+                    <div className="p-4 space-y-6 animate-fadeIn">
+                        <div className="space-y-3">
+                            <label className="text-[9px] font-black text-purple-400 uppercase tracking-widest block">Nạp Văn Bản Mẫu (Raw Text)</label>
+                            <div className="flex flex-wrap gap-2 mb-2">
+                                {(['characters', 'world', 'mechanics'] as ExtractionCategory[]).map(cat => (
+                                    <button 
+                                        key={cat}
+                                        onClick={() => toggleCategory(cat)}
+                                        className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-all border ${selectedCategories.includes(cat) ? 'bg-purple-600 text-white border-purple-500' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'}`}
+                                    >
+                                        {cat === 'characters' ? 'Nhân vật' : cat === 'world' ? 'Bối cảnh' : 'Cơ chế'}
+                                    </button>
+                                ))}
+                            </div>
+                            <textarea 
+                                className="w-full h-40 bg-gray-900 border border-gray-800 rounded-xl p-3 text-xs text-white outline-none focus:border-purple-500 transition-all placeholder:text-gray-700" 
+                                placeholder="Dán đoạn văn mẫu, thông tin bối cảnh hoặc ghi chú vào đây để AI học..."
+                                value={rawTextInput}
+                                onChange={(e) => setRawTextInput(e.target.value)}
+                            />
+                            <div className="flex gap-2">
+                                <button onClick={handleRawTextLearn} disabled={isLearning || !rawTextInput.trim()} className="flex-1 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow-lg transition-all flex items-center justify-center gap-2">
+                                    {isLearning ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86 1.43l-1.004.823a2 2 0 01-2.31 0l-1.004-.823a6 6 0 00-3.86-1.43l-2.387.477a2 2 0 00-1.022.547l-1.004 1.255a2 2 0 00-.32 1.637l1.004 5.023a2 2 0 001.962 1.608h15.688a2 2 0 001.962-1.608l1.004-5.023a2 2 0 00-.32-1.637l-1.004-1.255zM12 2v10m0 0l3-3m-3 3l-3-3" /></svg>}
+                                    Phân tích & Trích xuất
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3 pt-4 border-t border-gray-800">
+                            <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest block">Nạp Tài Liệu (File)</label>
+                            <div className="relative group">
+                                <div className="flex items-center justify-center w-full">
+                                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-800 border-dashed rounded-2xl cursor-pointer bg-gray-900/50 hover:bg-gray-800 hover:border-blue-500 transition-all group-hover:border-blue-500/50">
+                                        <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                            <svg className="w-8 h-8 mb-3 text-gray-500 group-hover:text-blue-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                                            <p className="mb-2 text-[10px] text-gray-500"><span className="font-bold text-blue-400">Click để tải lên</span> hoặc kéo thả</p>
+                                            <p className="text-[8px] text-gray-600">TXT, MD, JSON (Max 5MB)</p>
+                                        </div>
+                                        <input type="file" className="hidden" ref={docInputRef} onChange={handleDocUpload} accept=".txt,.md,.json" />
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3 pt-4 border-t border-gray-800">
+                            <label className="text-[10px] font-black text-orange-400 uppercase tracking-widest block">Web Research</label>
+                            <div className="flex gap-2">
+                                <input type="text" value={webTopic} onChange={(e) => setWebTopic(e.target.value)} className="flex-1 bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-xs text-white outline-none focus:border-orange-500" placeholder="Chủ đề cần tìm..." />
+                                <button onClick={handleWebSearch} disabled={isSearchingWeb || !webTopic.trim()} className="px-4 py-2 bg-orange-600/20 text-orange-400 border border-orange-500/30 rounded-xl hover:bg-orange-600 hover:text-white transition-all">
+                                    {isSearchingWeb ? <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></span> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>}
+                                </button>
+                            </div>
+                        </div>
+                        
+                        {webInspiration && (
+                            <div className="p-3 bg-gray-800 rounded-xl border border-gray-700 animate-fadeIn cursor-pointer hover:border-orange-500/50 transition-all" onClick={() => fetchWebInspiration()}>
+                                <div className="flex items-center justify-between mb-1">
+                                    <span className="text-[9px] font-black text-orange-400 uppercase">Kết quả tìm kiếm</span>
+                                    <span className="text-[8px] text-gray-500">{webInspiration.sources.length} nguồn</span>
+                                </div>
+                                <p className="text-[10px] text-gray-400 line-clamp-2">{webInspiration.insights}</p>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* FOOTER */}
+      <div ref={sidebarFooterRef} className={footerClass}>
+            <div className="space-y-2">
+                <div className="flex justify-between items-center px-1">
+                    <label className="text-[10px] font-black text-primary-400 uppercase tracking-widest flex items-center gap-2">Mục tiêu độ dài</label>
+                    <span className="text-[10px] font-mono font-bold text-white bg-gray-800 px-2 py-0.5 rounded border border-white/5">{targetWordCount} từ</span>
+                </div>
+                <input type="range" min="500" max="5000" step="100" value={targetWordCount} onChange={(e) => setTargetWordCount(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-primary-500 transition-all hover:accent-primary-400" />
+            </div>
+
+            <textarea value={userInstruction} onChange={(e) => setUserInstruction(e.target.value)} placeholder="Chỉ đạo nóng..." className="w-full bg-black/40 border border-gray-700 rounded-xl p-3 text-xs text-white h-20 focus:border-primary-500 outline-none resize-none" />
+            
+            <button onClick={() => generateContinue('append')} disabled={isGenerating} className={`w-full py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest text-white shadow-xl transition-all active:scale-95 flex items-center justify-center gap-2 ${isGenerating ? 'bg-gray-800 opacity-50' : 'bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500'}`}>
+                {isGenerating ? (<><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>AI Đang dệt mộng...</>) : (<><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>Kiến tạo thực tại</>)}
+            </button>
+      </div>
+      
+      {/* MOBILE WAR ROOM OVERLAY */}
+      {isMobileChatOpen && (
+        <div className="fixed inset-0 z-[200] bg-gray-950 flex flex-col h-[100dvh] animate-fadeIn md:hidden">
+            <div className="p-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 shrink-0">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 bg-purple-500/20 rounded-lg"><svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg></div>
+                    <h3 className="font-bold text-white tracking-wide">Chiến Nhẫn (War Room)</h3>
+                </div>
+                <button onClick={() => setIsMobileChatOpen(false)} className="p-2 text-gray-400 hover:text-white bg-gray-800 rounded-full"><svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-950">
+                {story.planningChatHistory?.map((msg, i) => (
+                    <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                        <div className={`max-w-[85%] p-4 rounded-2xl text-sm border ${msg.role === 'user' ? 'bg-purple-900/20 border-purple-500/30 text-purple-100 rounded-br-none' : 'bg-gray-800 border-gray-700 text-gray-200 rounded-bl-none'}`}>{msg.parts[0].text}</div>
+                    </div>
+                ))}
+                <div ref={mobileChatEndRef} className="h-4" />
+            </div>
+            <div className="p-3 bg-gray-900 border-t border-gray-800 shrink-0 pb-safe">
+                <div className="relative flex items-end gap-2">
+                    <input type="text" autoFocus value={planInput} onChange={(e) => setPlanInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handlePlanningSend()} className="w-full bg-black/40 border border-gray-700 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500" placeholder="Thảo luận..." />
+                    <button onClick={handlePlanningSend} disabled={!planInput.trim()} className={`p-3 rounded-xl transition-all ${planInput.trim() ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-500'}`}><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg></button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      <SummaryViewModal isOpen={!!viewingSummary} onClose={() => setViewingSummary(null)} title={viewingSummary?.title || ""} summary={viewingSummary?.summary || ""} chapterId={viewingSummary?.id} />
+      <DeleteChapterModal isOpen={!!chapterToDelete} onClose={() => setChapterToDelete(null)} onConfirm={handleConfirmDelete} chapterTitle={chapterToDelete?.title || ""} />
+    </div>
+  );
+};
