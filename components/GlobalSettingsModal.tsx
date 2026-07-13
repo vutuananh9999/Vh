@@ -130,6 +130,9 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-3.1-pro-preview');
         localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-3.5-flash');
         
+        // Reset flags for models
+        geminiService.resetProModelFailed();
+        
         onClose();
     };
 
@@ -311,8 +314,6 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         >
                             <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
                             <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                            <option value="gemini-2.0-pro-exp-0205">gemini-2.0-pro-exp-0205</option>
-                            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                         </select>
                     </div>
 
@@ -326,8 +327,6 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         >
                             <option value="gemini-3.5-flash">gemini-3.5-flash</option>
                             <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                            <option value="gemini-1.5-flash">gemini-1.5-flash</option>
                         </select>
                     </div>
                 </div>

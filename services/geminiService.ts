@@ -5,55 +5,147 @@ import { promptBuilderService } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
 
 let lastKeyIndex = 0;
-function getApiKey(): string {
+let lastLoggedKey = "";
+
+function cleanKey(val: string): string {
+  if (!val) return "";
+  let clean = val.trim();
+  while ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+    clean = clean.slice(1, -1).trim();
+  }
+  clean = clean.replace(/[\[\]\{\}]/g, '').trim();
+  return clean;
+}
+
+function extractKeys(stored: string): string[] {
+  if (!stored || !stored.trim()) return [];
+  
+  // 1. Try to extract standard Google API Keys starting with AIzaSy
+  const regex = /AIzaSy[A-Za-z0-9_-]+/g;
+  const matches = stored.match(regex);
+  if (matches && matches.length > 0) {
+    return matches.map(cleanKey).filter(Boolean);
+  }
+  
+  const keys: string[] = [];
+  
+  // 2. Fallback: parse as JSON
+  try {
+    const parsed = JSON.parse(stored);
+    if (Array.isArray(parsed)) {
+      parsed.forEach(item => {
+        if (item && typeof item === 'string') {
+          const clean = cleanKey(item);
+          if (clean) keys.push(clean);
+        }
+      });
+    } else if (typeof parsed === 'string') {
+      const clean = cleanKey(parsed);
+      if (clean) keys.push(clean);
+    }
+  } catch (e) {
+    // 3. Fallback: split by comma, semicolon, whitespace, newlines
+    const parts = stored.split(/[\s,;\n\r\t]+/).map(cleanKey).filter(Boolean) as string[];
+    keys.push(...parts);
+  }
+  
+  return keys.filter(k => k.length > 5);
+}
+
+function getApiKey(rotate: boolean = false): string {
   if (typeof window === 'undefined') {
     return process.env.GEMINI_API_KEY || '';
   }
   const stored = localStorage.getItem('aetheria_api_key') || '';
   if (!stored) {
-    return process.env.GEMINI_API_KEY || '';
+    const sysKey = process.env.GEMINI_API_KEY || '';
+    logKeyChange(sysKey, true);
+    return sysKey;
   }
   
-  try {
-    const parsed = JSON.parse(stored);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      const keys = parsed.map(k => k.trim()).filter(Boolean);
-      if (keys.length > 0) {
-        const key = keys[lastKeyIndex % keys.length];
-        lastKeyIndex = (lastKeyIndex + 1) % keys.length;
-        return key;
-      }
-    }
-  } catch (e) {
-    if (stored.includes(',') || stored.includes('\n')) {
-      const keys = stored.split(/[,\n]+/).map(k => k.trim()).filter(Boolean);
-      if (keys.length > 0) {
-        const key = keys[lastKeyIndex % keys.length];
-        lastKeyIndex = (lastKeyIndex + 1) % keys.length;
-        return key;
-      }
-    }
+  const keys = extractKeys(stored);
+  if (keys.length === 0) {
+    const sysKey = process.env.GEMINI_API_KEY || '';
+    logKeyChange(sysKey, true);
+    return sysKey;
   }
   
-  return stored.trim() || process.env.GEMINI_API_KEY || '';
+  // Get active key based on index
+  const keyToUse = keys[lastKeyIndex % keys.length];
+  
+  if (rotate) {
+    lastKeyIndex = (lastKeyIndex + 1) % keys.length;
+  }
+  
+  logKeyChange(keyToUse, false);
+  return keyToUse;
 }
 
-function handleApiError(err: any): Error {
+function logKeyChange(key: string, isSystem: boolean) {
+  if (typeof window !== 'undefined' && key !== lastLoggedKey) {
+    lastLoggedKey = key;
+    if (key) {
+      const masked = `${key.slice(0, 6)}...${key.slice(-4)}`;
+      console.log(`%c[Gemini API] Sử dụng API Key ${isSystem ? "hệ thống mặc định" : "người dùng thiết lập"} (${masked})`, "color: #10b981; font-weight: bold;");
+    } else {
+      console.warn("[Gemini API] Không có API Key hoạt động!");
+    }
+  }
+}
+
+function createGenAI(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
+    apiKey: apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build'
+      }
+    }
+  });
+}
+
+let proModelFailed = false;
+const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.5-flash';
+const getPro = () => {
+  if (proModelFailed) {
+    return getFlash();
+  }
+  return localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview';
+};
+
+function stripGoogleSearch(config: any): any {
+  if (!config) return config;
+  const newConfig = { ...config };
+  if (Array.isArray(newConfig.tools)) {
+    newConfig.tools = newConfig.tools.filter((t: any) => !t.googleSearch);
+    if (newConfig.tools.length === 0) {
+      delete newConfig.tools;
+    }
+  }
+  return newConfig;
+}
+
+function handleApiError(err: any, modelId?: string): Error {
   console.error("Gemini API Error caught:", err);
   const msg = err?.message || String(err);
   
+  const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+  if (is403 && modelId && modelId === getPro() && !proModelFailed) {
+    console.warn(`Model Pro (${modelId}) không được cấp quyền (403 PERMISSION_DENIED). Tự động chuyển đổi sang Model Flash cho các yêu cầu tiếp theo.`);
+    proModelFailed = true;
+  }
+
   const isKeyError = 
     msg.includes("API key") || 
     msg.includes("API_KEY_INVALID") || 
     msg.includes("INVALID_ARGUMENT") && msg.toLowerCase().includes("key") ||
     msg.includes("Key not found") ||
     msg.toLowerCase().includes("unauthorized") ||
-    msg.includes("403") ||
     msg.toLowerCase().includes("api key is invalid") ||
     msg.includes("400") && msg.toLowerCase().includes("key");
 
   if (isKeyError) {
-    const keyUsed = getApiKey();
+    const keyUsed = getApiKey(false); // Peek current key, do not rotate when displaying error
     const maskKey = keyUsed 
       ? `${keyUsed.slice(0, 6)}...${keyUsed.slice(-4)}` 
       : "Không tìm thấy key nào";
@@ -68,10 +160,10 @@ function handleApiError(err: any): Error {
 
 class DynamicAI {
   get models() {
-    const rawModels = new GoogleGenAI({ apiKey: getApiKey() }).models;
     return {
-      ...rawModels,
       generateContent: async (params: any) => {
+        const key = getApiKey(true);
+        const rawModels = createGenAI(key).models;
         const modelId = params.model;
         const reqId = tokenTracker.recordRequestStart(modelId);
         try {
@@ -87,12 +179,43 @@ class DynamicAI {
             tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
           }
           return res;
-        } catch (err) {
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+          const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+          
+          if (is403 && hasSearch) {
+            console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
+            const cleanConfig = stripGoogleSearch(params.config);
+            try {
+              const res = await rawModels.generateContent({
+                ...params,
+                config: cleanConfig
+              });
+              if (res && res.usageMetadata) {
+                tokenTracker.recordRequestSuccess(
+                  reqId,
+                  res.usageMetadata.promptTokenCount || 0,
+                  res.usageMetadata.candidatesTokenCount || 0,
+                  res.usageMetadata.totalTokenCount || 0
+                );
+              } else {
+                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+              }
+              return res;
+            } catch (retryErr) {
+              tokenTracker.recordRequestFailure(reqId);
+              throw handleApiError(retryErr, modelId);
+            }
+          }
+          
           tokenTracker.recordRequestFailure(reqId);
-          throw handleApiError(err);
+          throw handleApiError(err, modelId);
         }
       },
       generateContentStream: async function* (params: any) {
+        const key = getApiKey(true);
+        const rawModels = createGenAI(key).models;
         const modelId = params.model;
         const reqId = tokenTracker.recordRequestStart(modelId);
         try {
@@ -114,12 +237,50 @@ class DynamicAI {
           } else {
             tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
           }
-        } catch (err) {
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+          const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+          
+          if (is403 && hasSearch) {
+            console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
+            const cleanConfig = stripGoogleSearch(params.config);
+            try {
+              const stream = await rawModels.generateContentStream({
+                ...params,
+                config: cleanConfig
+              });
+              let finalMetadata: any = null;
+              for await (const chunk of stream) {
+                if (chunk && chunk.usageMetadata) {
+                  finalMetadata = chunk.usageMetadata;
+                }
+                yield chunk as GenerateContentResponse;
+              }
+              if (finalMetadata) {
+                tokenTracker.recordRequestSuccess(
+                  reqId,
+                  finalMetadata.promptTokenCount || 0,
+                  finalMetadata.candidatesTokenCount || 0,
+                  finalMetadata.totalTokenCount || 0
+                );
+              } else {
+                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+              }
+              return;
+            } catch (retryErr) {
+              tokenTracker.recordRequestFailure(reqId);
+              throw handleApiError(retryErr, modelId);
+            }
+          }
+          
           tokenTracker.recordRequestFailure(reqId);
-          throw handleApiError(err);
+          throw handleApiError(err, modelId);
         }
       },
       embedContent: async (params: any) => {
+        const key = getApiKey(true);
+        const rawModels = createGenAI(key).models;
         try {
           return await rawModels.embedContent(params);
         } catch (err) {
@@ -130,10 +291,10 @@ class DynamicAI {
   }
 
   get chats() {
-    const rawChats = new GoogleGenAI({ apiKey: getApiKey() }).chats;
     return {
-      ...rawChats,
       create: (params: any) => {
+        const key = getApiKey(true);
+        const rawChats = createGenAI(key).chats;
         const modelId = params.model;
         const session = rawChats.create(params);
         const rawSendMessageStream = session.sendMessageStream.bind(session);
@@ -164,14 +325,14 @@ class DynamicAI {
                 }
               } catch (err) {
                 tokenTracker.recordRequestFailure(reqId);
-                throw handleApiError(err);
+                throw handleApiError(err, modelId);
               }
             }
             
             return wrapperGenerator() as any;
           } catch (err) {
             tokenTracker.recordRequestFailure(reqId);
-            throw handleApiError(err);
+            throw handleApiError(err, modelId);
           }
         };
         
@@ -182,8 +343,6 @@ class DynamicAI {
 }
 const ai = new DynamicAI() as unknown as GoogleGenAI;
 
-const getPro = () => localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview';
-const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.5-flash';
 const MODEL_EMBEDDING = 'gemini-embedding-2-preview';
 const MODEL_VEO = 'veo-3.1-lite-generate-preview';
 
@@ -237,13 +396,24 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
 }
 
 export const geminiService = {
+  // Trả về API Key đang hoạt động
+  getApiKey() {
+    return getApiKey();
+  },
+
+  // Reset trạng thái lỗi của Model Pro khi lưu/cập nhật API Key mới
+  resetProModelFailed() {
+    proModelFailed = false;
+    console.log("Đã khôi phục trạng thái Model Pro.");
+  },
+
   // Kiểm tra tính hợp lệ của API Key
   async testApiKey(key: string): Promise<{ success: boolean; message: string }> {
     if (!key || !key.trim()) {
       return { success: false, message: "Vui lòng nhập API Key để kiểm tra." };
     }
     try {
-      const testAI = new GoogleGenAI({ apiKey: key.trim() });
+      const testAI = createGenAI(key.trim());
       
       // Đầu tiên, thử gọi list models để xem key có hợp lệ không. Đây là cách chính xác nhất và không phụ thuộc vào một model cụ thể nào.
       try {
@@ -259,7 +429,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+      const modelsToTry = ["gemini-3.5-flash", "gemini-2.5-flash"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {
@@ -833,8 +1003,9 @@ TRẢ VỀ JSON:
     }
   },
 
-  async generateVideo(summary: string, genre: string, apiKey: string): Promise<string | null> {
-    const videoAi = new GoogleGenAI({ apiKey });
+  async generateVideo(summary: string, genre: string, apiKey?: string): Promise<string | null> {
+    const key = apiKey || getApiKey();
+    const videoAi = createGenAI(key);
     let operation = await videoAi.models.generateVideos({
       model: MODEL_VEO,
       prompt: `Cinematic trailer for a ${genre} story: ${summary}. High quality, atmospheric.`,
@@ -845,6 +1016,6 @@ TRẢ VỀ JSON:
       operation = await videoAi.operations.getVideosOperation({ operation: operation });
     }
     const link = operation.response?.generatedVideos?.[0]?.video?.uri;
-    return link ? `${link}&key=${apiKey}` : null;
+    return link ? `${link}&key=${key}` : null;
   }
 };

@@ -1285,7 +1285,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsGeneratingVideo(true);
     setVideoGenerationStatus("Đang khởi tạo Veo Engine...");
     try {
-        const url = await geminiService.generateVideo(chapter.summary, storyRef.current.genre, process.env.API_KEY || "");
+        const url = await geminiService.generateVideo(chapter.summary, storyRef.current.genre);
         if (url) {
             setGeneratedVideoUrl(url);
             setStory(prev => {
