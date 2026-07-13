@@ -237,6 +237,31 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
 }
 
 export const geminiService = {
+  // Kiểm tra tính hợp lệ của API Key
+  async testApiKey(key: string): Promise<{ success: boolean; message: string }> {
+    if (!key || !key.trim()) {
+      return { success: false, message: "Vui lòng nhập API Key để kiểm tra." };
+    }
+    try {
+      const testAI = new GoogleGenAI({ apiKey: key.trim() });
+      const response = await testAI.models.generateContent({
+        model: "gemini-1.5-flash",
+        contents: "hi",
+        config: { maxOutputTokens: 5 }
+      });
+      if (response) {
+        return { success: true, message: "Kết nối thành công! API Key hoạt động chính xác." };
+      }
+      return { success: false, message: "Không nhận được phản hồi hợp lệ từ Gemini." };
+    } catch (e: any) {
+      console.error("Test API key error:", e);
+      return { 
+        success: false, 
+        message: `Kết nối thất bại: ${e?.message || e || "Lỗi không xác định"}`
+      };
+    }
+  },
+
   // Giao thức Thẩm định Tri thức Thực tế
   async verifyKnowledge(entities: string, story: Story): Promise<string> {
     if (!entities.trim()) return "";

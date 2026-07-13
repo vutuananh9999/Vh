@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { geminiService } from "../services/geminiService.ts";
 
 interface Props {
     isOpen: boolean;
@@ -12,6 +13,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [showBulkInput, setShowBulkInput] = useState(false);
     const [modelPro, setModelPro] = useState("gemini-3.1-pro-preview");
     const [modelFlash, setModelFlash] = useState("gemini-3.5-flash");
+    const [testingIndex, setTestingIndex] = useState<number | null>(null);
+    const [testResults, setTestResults] = useState<{ [key: number]: { success: boolean; message: string } }>({});
 
     useEffect(() => {
         if (isOpen) {
@@ -38,8 +41,53 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.5-flash");
             setShowBulkInput(false);
             setBulkText("");
+            setTestResults({});
+            setTestingIndex(null);
         }
     }, [isOpen]);
+
+    const handleTestKey = async (index: number) => {
+        const key = apiKeys[index]?.trim();
+        let keyToTest = key;
+        
+        // If it's the first key and empty, we fall back to testing system key
+        if (!keyToTest && index === 0) {
+            keyToTest = (process.env as any).GEMINI_API_KEY || "";
+        }
+        
+        if (!keyToTest) {
+            alert("Vui lòng nhập API Key để kiểm tra.");
+            return;
+        }
+
+        setTestingIndex(index);
+        setTestResults(prev => {
+            const copy = { ...prev };
+            delete copy[index];
+            return copy;
+        });
+
+        try {
+            const res = await geminiService.testApiKey(keyToTest);
+            setTestResults(prev => ({
+                ...prev,
+                [index]: { success: res.success, message: res.message }
+            }));
+            if (res.success) {
+                alert("Kết nối thành công! API Key của bạn hoạt động bình thường.");
+            } else {
+                alert(res.message);
+            }
+        } catch (err: any) {
+            setTestResults(prev => ({
+                ...prev,
+                [index]: { success: false, message: err?.message || String(err) }
+            }));
+            alert(`Lỗi kiểm tra kết nối: ${err?.message || String(err)}`);
+        } finally {
+            setTestingIndex(null);
+        }
+    };
 
     const handleAddKey = () => {
         setApiKeys([...apiKeys, ""]);
@@ -149,10 +197,25 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                         <div className="relative flex-1">
                                             <input 
                                                 type={showKeyIndex === idx ? "text" : "password"} 
-                                                className="w-full bg-gray-950 border border-gray-700 rounded-xl py-2.5 pl-3 pr-10 text-white text-xs font-mono outline-none focus:border-primary-500 transition-colors"
+                                                className={`w-full bg-gray-950 border rounded-xl py-2.5 pl-3 pr-10 text-white text-xs font-mono outline-none transition-colors ${
+                                                    testResults[idx]?.success === true 
+                                                        ? 'border-emerald-500/60 focus:border-emerald-500' 
+                                                        : testResults[idx]?.success === false 
+                                                            ? 'border-red-500/60 focus:border-red-500' 
+                                                            : 'border-gray-700 focus:border-primary-500'
+                                                }`}
                                                 placeholder={idx === 0 ? "Để trống để dùng key hệ thống..." : `API Key #${idx + 1}`}
                                                 value={key}
-                                                onChange={(e) => handleKeyChange(idx, e.target.value)}
+                                                onChange={(e) => {
+                                                    handleKeyChange(idx, e.target.value);
+                                                    if (testResults[idx]) {
+                                                        setTestResults(prev => {
+                                                            const copy = { ...prev };
+                                                            delete copy[idx];
+                                                            return copy;
+                                                        });
+                                                    }
+                                                }}
                                             />
                                             <button 
                                                 type="button"
@@ -166,11 +229,46 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                                 ) : (
                                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268-2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                                                     </svg>
                                                 )}
                                             </button>
                                         </div>
+                                        
+                                        <button 
+                                            type="button"
+                                            onClick={() => handleTestKey(idx)}
+                                            disabled={testingIndex !== null}
+                                            className={`p-2.5 rounded-xl border transition-all shrink-0 flex items-center justify-center ${
+                                                testingIndex === idx 
+                                                    ? 'bg-gray-800/50 border-gray-700 text-purple-400' 
+                                                    : testResults[idx]?.success === true
+                                                        ? 'bg-emerald-950/20 border-emerald-800/50 text-emerald-400 hover:bg-emerald-900/20'
+                                                        : testResults[idx]?.success === false
+                                                            ? 'bg-red-950/20 border-red-900/50 text-red-400 hover:bg-red-900/20'
+                                                            : 'bg-gray-950 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+                                            }`}
+                                            title="Kiểm tra kết nối của Key này"
+                                        >
+                                            {testingIndex === idx ? (
+                                                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                            ) : testResults[idx]?.success === true ? (
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                </svg>
+                                            ) : testResults[idx]?.success === false ? (
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                </svg>
+                                            ) : (
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                                </svg>
+                                            )}
+                                        </button>
                                         
                                         <button 
                                             type="button"
