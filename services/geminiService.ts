@@ -81,6 +81,25 @@ function getApiKey(rotate: boolean = false): string {
   return keyToUse;
 }
 
+function getAvailableKeysCount(): number {
+  if (typeof window === 'undefined') return 0;
+  const stored = localStorage.getItem('aetheria_api_key') || '';
+  return extractKeys(stored).length;
+}
+
+function isQuotaError(err: any): boolean {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("quota exceeded") ||
+    msg.includes("rate limit") ||
+    msg.includes("limit exceeded") ||
+    err.status === 429
+  );
+}
+
 function logKeyChange(key: string, isSystem: boolean) {
   if (typeof window !== 'undefined' && key !== lastLoggedKey) {
     lastLoggedKey = key;
@@ -162,121 +181,148 @@ class DynamicAI {
   get models() {
     return {
       generateContent: async (params: any) => {
-        const key = getApiKey(true);
-        const rawModels = createGenAI(key).models;
-        const modelId = params.model;
-        const reqId = tokenTracker.recordRequestStart(modelId);
-        try {
-          const res = await rawModels.generateContent(params);
-          if (res && res.usageMetadata) {
-            tokenTracker.recordRequestSuccess(
-              reqId,
-              res.usageMetadata.promptTokenCount || 0,
-              res.usageMetadata.candidatesTokenCount || 0,
-              res.usageMetadata.totalTokenCount || 0
-            );
-          } else {
-            tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-          }
-          return res;
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-          const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+        const keysCount = Math.max(1, getAvailableKeysCount());
+        let lastErr: any = null;
+        
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const key = getApiKey(attempt > 0);
+          const rawModels = createGenAI(key).models;
+          const modelId = params.model;
+          const reqId = tokenTracker.recordRequestStart(modelId);
           
-          if (is403 && hasSearch) {
-            console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
-            const cleanConfig = stripGoogleSearch(params.config);
-            try {
-              const res = await rawModels.generateContent({
-                ...params,
-                config: cleanConfig
-              });
-              if (res && res.usageMetadata) {
-                tokenTracker.recordRequestSuccess(
-                  reqId,
-                  res.usageMetadata.promptTokenCount || 0,
-                  res.usageMetadata.candidatesTokenCount || 0,
-                  res.usageMetadata.totalTokenCount || 0
-                );
-              } else {
-                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-              }
-              return res;
-            } catch (retryErr) {
-              tokenTracker.recordRequestFailure(reqId);
-              throw handleApiError(retryErr, modelId);
+          try {
+            const res = await rawModels.generateContent(params);
+            if (res && res.usageMetadata) {
+              tokenTracker.recordRequestSuccess(
+                reqId,
+                res.usageMetadata.promptTokenCount || 0,
+                res.usageMetadata.candidatesTokenCount || 0,
+                res.usageMetadata.totalTokenCount || 0
+              );
+            } else {
+              tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
             }
+            return res;
+          } catch (err: any) {
+            tokenTracker.recordRequestFailure(reqId);
+            lastErr = err;
+            
+            if (isQuotaError(err) && attempt < keysCount - 1) {
+              console.warn(`[Gemini API] Key hiện tại bị chạm giới hạn (429 Quota Exceeded). Tự động xoay vòng sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+              continue;
+            }
+            
+            const msg = err?.message || String(err);
+            const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+            const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+            
+            if (is403 && hasSearch) {
+              console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
+              const cleanConfig = stripGoogleSearch(params.config);
+              try {
+                const res = await rawModels.generateContent({
+                  ...params,
+                  config: cleanConfig
+                });
+                if (res && res.usageMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    res.usageMetadata.promptTokenCount || 0,
+                    res.usageMetadata.candidatesTokenCount || 0,
+                    res.usageMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                return res;
+              } catch (retryErr) {
+                throw handleApiError(retryErr, modelId);
+              }
+            }
+            
+            throw handleApiError(err, modelId);
           }
-          
-          tokenTracker.recordRequestFailure(reqId);
-          throw handleApiError(err, modelId);
         }
+        throw handleApiError(lastErr, params.model);
       },
       generateContentStream: async function* (params: any) {
-        const key = getApiKey(true);
-        const rawModels = createGenAI(key).models;
-        const modelId = params.model;
-        const reqId = tokenTracker.recordRequestStart(modelId);
-        try {
-          const stream = await rawModels.generateContentStream(params);
-          let finalMetadata: any = null;
-          for await (const chunk of stream) {
-            if (chunk && chunk.usageMetadata) {
-              finalMetadata = chunk.usageMetadata;
-            }
-            yield chunk as GenerateContentResponse;
-          }
-          if (finalMetadata) {
-            tokenTracker.recordRequestSuccess(
-              reqId,
-              finalMetadata.promptTokenCount || 0,
-              finalMetadata.candidatesTokenCount || 0,
-              finalMetadata.totalTokenCount || 0
-            );
-          } else {
-            tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-          }
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-          const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+        const keysCount = Math.max(1, getAvailableKeysCount());
+        let lastErr: any = null;
+        
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const key = getApiKey(attempt > 0);
+          const rawModels = createGenAI(key).models;
+          const modelId = params.model;
+          const reqId = tokenTracker.recordRequestStart(modelId);
           
-          if (is403 && hasSearch) {
-            console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
-            const cleanConfig = stripGoogleSearch(params.config);
-            try {
-              const stream = await rawModels.generateContentStream({
-                ...params,
-                config: cleanConfig
-              });
-              let finalMetadata: any = null;
-              for await (const chunk of stream) {
-                if (chunk && chunk.usageMetadata) {
-                  finalMetadata = chunk.usageMetadata;
+          try {
+            const stream = await rawModels.generateContentStream(params);
+            let finalMetadata: any = null;
+            for await (const chunk of stream) {
+              if (chunk && chunk.usageMetadata) {
+                finalMetadata = chunk.usageMetadata;
+              }
+              yield chunk as GenerateContentResponse;
+            }
+            if (finalMetadata) {
+              tokenTracker.recordRequestSuccess(
+                reqId,
+                finalMetadata.promptTokenCount || 0,
+                finalMetadata.candidatesTokenCount || 0,
+                finalMetadata.totalTokenCount || 0
+              );
+            } else {
+              tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+            }
+            return;
+          } catch (err: any) {
+            tokenTracker.recordRequestFailure(reqId);
+            lastErr = err;
+            
+            if (isQuotaError(err) && attempt < keysCount - 1) {
+              console.warn(`[Gemini API] Key hiện tại bị chạm giới hạn (429 Quota Exceeded) trong Stream. Tự động xoay vòng sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+              continue;
+            }
+            
+            const msg = err?.message || String(err);
+            const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+            const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+            
+            if (is403 && hasSearch) {
+              console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
+              const cleanConfig = stripGoogleSearch(params.config);
+              try {
+                const stream = await rawModels.generateContentStream({
+                  ...params,
+                  config: cleanConfig
+                });
+                let finalMetadata: any = null;
+                for await (const chunk of stream) {
+                  if (chunk && chunk.usageMetadata) {
+                    finalMetadata = chunk.usageMetadata;
+                  }
+                  yield chunk as GenerateContentResponse;
                 }
-                yield chunk as GenerateContentResponse;
+                if (finalMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    finalMetadata.promptTokenCount || 0,
+                    finalMetadata.candidatesTokenCount || 0,
+                    finalMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                return;
+              } catch (retryErr) {
+                throw handleApiError(retryErr, modelId);
               }
-              if (finalMetadata) {
-                tokenTracker.recordRequestSuccess(
-                  reqId,
-                  finalMetadata.promptTokenCount || 0,
-                  finalMetadata.candidatesTokenCount || 0,
-                  finalMetadata.totalTokenCount || 0
-                );
-              } else {
-                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-              }
-              return;
-            } catch (retryErr) {
-              tokenTracker.recordRequestFailure(reqId);
-              throw handleApiError(retryErr, modelId);
             }
+            
+            throw handleApiError(err, modelId);
           }
-          
-          tokenTracker.recordRequestFailure(reqId);
-          throw handleApiError(err, modelId);
         }
+        throw handleApiError(lastErr, params.model);
       },
       embedContent: async (params: any) => {
         const key = getApiKey(true);
