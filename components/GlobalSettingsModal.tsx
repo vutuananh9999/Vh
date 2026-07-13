@@ -306,27 +306,41 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
                     {/* Pro Model Selection */}
                     <div>
-                        <label className="block text-gray-400 font-bold mb-2">Model Pro (Dành cho việc viết và suy luận phức tạp)</label>
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="block text-gray-400 font-bold">Model Pro (Dành cho việc viết và suy luận phức tạp)</label>
+                            <span className="text-[10px] bg-primary-500/10 text-primary-400 border border-primary-500/20 px-1.5 py-0.5 rounded-md font-medium">Bản thảo & Suy luận</span>
+                        </div>
                         <select 
                             className="w-full bg-gray-950 border border-gray-700 rounded-xl p-3 text-white outline-none focus:border-primary-500 transition-colors appearance-none"
                             value={modelPro}
                             onChange={(e) => setModelPro(e.target.value)}
                         >
-                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
-                            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Mặc định Pro)</option>
+                            <option value="gemini-2.5-pro">gemini-2.5-pro (Pro)</option>
+                            <option value="gemini-3.5-flash">gemini-3.5-flash (Flash - Cực nhanh & Tiết kiệm)</option>
+                            <option value="gemini-2.5-flash">gemini-2.5-flash (Flash - Hạn mức lớn hơn)</option>
+                            <option value="gemini-1.5-flash">gemini-1.5-flash (Flash - Rất ổn định)</option>
                         </select>
+                        <p className="text-[10px] text-gray-500 mt-1 font-sans leading-relaxed">
+                            💡 <strong>Mẹo vượt lỗi 429 Quota Exceeded:</strong> Bạn hoàn toàn có thể chọn các dòng <strong>model Flash</strong> (như gemini-3.5-flash hoặc gemini-2.5-flash) cho phần Pro này. Các dòng Flash có hạn mức token/phút cao hơn và dùng tài nguyên riêng biệt, giúp quá trình sinh cốt truyện không bị ngắt quãng.
+                        </p>
                     </div>
 
                     {/* Flash Model Selection */}
                     <div>
-                        <label className="block text-gray-400 font-bold mb-2">Model Flash (Dành cho tác vụ nhanh, ít token)</label>
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="block text-gray-400 font-bold">Model Flash (Dành cho tác vụ nhanh, ít token)</label>
+                            <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md font-medium">Chat & Tinh chỉnh nhanh</span>
+                        </div>
                         <select 
                             className="w-full bg-gray-950 border border-gray-700 rounded-xl p-3 text-white outline-none focus:border-primary-500 transition-colors appearance-none"
                             value={modelFlash}
                             onChange={(e) => setModelFlash(e.target.value)}
                         >
-                            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                            <option value="gemini-3.5-flash">gemini-3.5-flash (Mặc định Flash)</option>
+                            <option value="gemini-2.5-flash">gemini-2.5-flash (Flash thế hệ mới)</option>
+                            <option value="gemini-1.5-flash">gemini-1.5-flash (Flash bản cũ ổn định)</option>
+                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Sử dụng Pro cho Chat)</option>
                         </select>
                     </div>
                 </div>
