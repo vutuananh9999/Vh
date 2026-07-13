@@ -344,6 +344,7 @@ class DynamicAI {
         let rawChats = createGenAI(currentKey).chats;
         const modelId = params.model;
         let session = rawChats.create(params);
+        let originalSendMessageStream = session.sendMessageStream.bind(session);
         
         session.sendMessageStream = async (sendParams: any) => {
           const keysCount = Math.max(1, getAvailableKeysCount());
@@ -354,12 +355,12 @@ class DynamicAI {
               currentKey = getApiKey(true);
               rawChats = createGenAI(currentKey).chats;
               session = rawChats.create(params);
+              originalSendMessageStream = session.sendMessageStream.bind(session);
             }
             
             const reqId = tokenTracker.recordRequestStart(modelId);
             try {
-              const rawSendMessageStream = session.sendMessageStream.bind(session);
-              const rawStream = await rawSendMessageStream(sendParams);
+              const rawStream = await originalSendMessageStream(sendParams);
               
               async function* wrapperGenerator() {
                 let finalMetadata: any = null;
