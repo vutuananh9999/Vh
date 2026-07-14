@@ -20,16 +20,9 @@ function cleanKey(val: string): string {
 function extractKeys(stored: string): string[] {
   if (!stored || !stored.trim()) return [];
   
-  // 1. Try to extract standard Google API Keys starting with AIzaSy
-  const regex = /AIzaSy[A-Za-z0-9_-]+/g;
-  const matches = stored.match(regex);
-  if (matches && matches.length > 0) {
-    return matches.map(cleanKey).filter(Boolean);
-  }
-  
   const keys: string[] = [];
   
-  // 2. Fallback: parse as JSON
+  // 1. Try to parse as JSON first (since GlobalSettingsModal always saves it as JSON stringify array)
   try {
     const parsed = JSON.parse(stored);
     if (Array.isArray(parsed)) {
@@ -44,7 +37,20 @@ function extractKeys(stored: string): string[] {
       if (clean) keys.push(clean);
     }
   } catch (e) {
-    // 3. Fallback: split by comma, semicolon, whitespace, newlines
+    // Fallback: it's not JSON
+  }
+  
+  // 2. If JSON parsing yielded no keys, try to extract standard Google API Keys starting with AIzaSy
+  if (keys.length === 0) {
+    const regex = /AIzaSy[A-Za-z0-9_-]+/g;
+    const matches = stored.match(regex);
+    if (matches && matches.length > 0) {
+      return matches.map(cleanKey).filter(Boolean);
+    }
+  }
+  
+  // 3. Last fallback: split by comma, semicolon, whitespace, newlines
+  if (keys.length === 0) {
     const parts = stored.split(/[\s,;\n\r\t]+/).map(cleanKey).filter(Boolean) as string[];
     keys.push(...parts);
   }
