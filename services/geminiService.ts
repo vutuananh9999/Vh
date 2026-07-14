@@ -63,25 +63,36 @@ function getApiKey(rotate: boolean = false): string {
     return process.env.GEMINI_API_KEY || '';
   }
   const stored = localStorage.getItem('aetheria_api_key') || '';
+  console.log("[Gemini API Debug] stored key in localStorage:", stored ? `Có giá trị (độ dài ${stored.length})` : "Trống/Không tồn tại");
+  
   if (!stored) {
     const sysKey = process.env.GEMINI_API_KEY || '';
+    const maskedSys = sysKey ? `${sysKey.slice(0, 6)}...${sysKey.slice(-4)}` : "Rỗng";
+    console.log(`[Gemini API Debug] Không tìm thấy aetheria_api_key trong localStorage. Fallback dùng key hệ thống: ${maskedSys}`);
     logKeyChange(sysKey, true);
     return sysKey;
   }
   
   const keys = extractKeys(stored);
+  console.log("[Gemini API Debug] extracted keys:", keys.map(k => k ? `${k.slice(0, 6)}...${k.slice(-4)}` : "null"));
+  
   if (keys.length === 0) {
     const sysKey = process.env.GEMINI_API_KEY || '';
+    const maskedSys = sysKey ? `${sysKey.slice(0, 6)}...${sysKey.slice(-4)}` : "Rỗng";
+    console.log(`[Gemini API Debug] Mảng key sau khi trích xuất bị rỗng. Fallback dùng key hệ thống: ${maskedSys}`);
     logKeyChange(sysKey, true);
     return sysKey;
   }
   
   if (rotate) {
     lastKeyIndex = (lastKeyIndex + 1) % keys.length;
+    console.log(`[Gemini API Debug] Rotate key. Index mới: ${lastKeyIndex}/${keys.length}`);
   }
   
   // Get active key based on index
   const keyToUse = keys[lastKeyIndex % keys.length];
+  const maskedUse = keyToUse ? `${keyToUse.slice(0, 6)}...${keyToUse.slice(-4)}` : "Rỗng";
+  console.log(`[Gemini API Debug] Key đang được chọn sử dụng: ${maskedUse}`);
   
   logKeyChange(keyToUse, false);
   return keyToUse;
