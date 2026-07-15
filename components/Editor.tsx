@@ -184,6 +184,13 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     }
   }, [localContent, isEditMode, activeChapterId]);
 
+  // Scroll to top when switching chapters
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+  }, [activeChapterId]);
+
   const wordCount = useMemo(() => {
     return fastWordCount(localContent);
   }, [localContent]);

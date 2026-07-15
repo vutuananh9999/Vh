@@ -205,7 +205,7 @@ class DynamicAI {
           const key = getApiKey(attempt > 0);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
-          const reqId = tokenTracker.recordRequestStart(modelId);
+          const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
           
           try {
             const res = await rawModels.generateContent(params);
@@ -270,7 +270,7 @@ class DynamicAI {
           const key = getApiKey(attempt > 0);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
-          const reqId = tokenTracker.recordRequestStart(modelId);
+          const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
           
           try {
             const stream = await rawModels.generateContentStream(params);
@@ -375,7 +375,7 @@ class DynamicAI {
               originalSendMessageStream = session.sendMessageStream.bind(session);
             }
             
-            const reqId = tokenTracker.recordRequestStart(modelId);
+            const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
             try {
               const rawStream = await originalSendMessageStream(sendParams);
               

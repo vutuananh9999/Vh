@@ -9,6 +9,7 @@ export interface RequestLogItem {
   candidatesTokens: number;
   totalTokens: number;
   status: 'pending' | 'success' | 'failure';
+  apiKey?: string;
 }
 
 export interface ModelLimitStatus {
@@ -89,7 +90,7 @@ class TokenTrackerService {
     return 'flash'; // Default to flash for anything else
   }
 
-  public recordRequestStart(modelId: string, estimatedTokens = 1000): string {
+  public recordRequestStart(modelId: string, estimatedTokens = 1000, apiKey?: string): string {
     const modelType = this.getModelType(modelId);
     const requestId = Math.random().toString(36).substring(2, 11);
     
@@ -101,7 +102,8 @@ class TokenTrackerService {
       promptTokens: estimatedTokens,
       candidatesTokens: 0,
       totalTokens: estimatedTokens,
-      status: 'pending'
+      status: 'pending',
+      apiKey
     };
 
     this.log.push(newItem);
@@ -212,6 +214,44 @@ class TokenTrackerService {
       cooldownSeconds,
       estimatedRemainingRequests,
       workTimeRemaining
+    };
+  }
+
+  public getKeyStats(key: string) {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60 * 1000;
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+
+    const cleanK = key.trim();
+    if (!cleanK) {
+      return {
+        rpmUsed: 0,
+        tpmUsed: 0,
+        rpdUsed: 0,
+        totalTokensUsed: 0,
+        successCount: 0,
+        failureCount: 0
+      };
+    }
+
+    const keyLogs = this.log.filter(item => item.apiKey && item.apiKey.trim() === cleanK);
+    const minuteLogs = keyLogs.filter(item => item.timestamp >= oneMinuteAgo);
+    const dayLogs = keyLogs.filter(item => item.timestamp >= oneDayAgo);
+
+    const rpmUsed = minuteLogs.length;
+    const tpmUsed = minuteLogs.reduce((sum, item) => sum + item.totalTokens, 0);
+    const rpdUsed = dayLogs.length;
+    const totalTokensUsed = keyLogs.reduce((sum, item) => sum + item.totalTokens, 0);
+    const successCount = keyLogs.filter(item => item.status === 'success').length;
+    const failureCount = keyLogs.filter(item => item.status === 'failure').length;
+
+    return {
+      rpmUsed,
+      tpmUsed,
+      rpdUsed,
+      totalTokensUsed,
+      successCount,
+      failureCount
     };
   }
 

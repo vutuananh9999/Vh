@@ -14,11 +14,21 @@ const AppContent: React.FC = () => {
         let wakeLock: any = null;
 
         const requestWakeLock = async () => {
+            if (!('wakeLock' in navigator)) {
+                return;
+            }
+            if (wakeLock !== null) {
+                return; // Wake lock is already active
+            }
             try {
-                if ('wakeLock' in navigator) {
-                    wakeLock = await (navigator as any).wakeLock.request('screen');
-                    console.log('[Wake Lock] Screen Wake Lock is active');
-                }
+                wakeLock = await (navigator as any).wakeLock.request('screen');
+                console.log('[Wake Lock] Screen Wake Lock is active');
+                
+                // Track if the browser automatically releases the lock
+                wakeLock.addEventListener('release', () => {
+                    console.log('[Wake Lock] Screen Wake Lock was released by browser');
+                    wakeLock = null;
+                });
             } catch (err) {
                 console.warn('[Wake Lock] Failed to acquire screen wake lock:', err);
             }
@@ -30,18 +40,31 @@ const AppContent: React.FC = () => {
             }
         };
 
-        // Request wake lock initially
+        const handleInteraction = async () => {
+            await requestWakeLock();
+        };
+
+        // Try to request immediately (may fail if no user gesture has occurred yet, which is expected)
         requestWakeLock();
+
+        // Listen for user interactions to successfully acquire wake lock on browsers like Safari
+        const interactionEvents = ['click', 'touchstart', 'pointerdown', 'keydown', 'scroll'];
+        interactionEvents.forEach(event => {
+            document.addEventListener(event, handleInteraction, { passive: true });
+        });
 
         // Re-acquire lock when the app becomes visible again
         document.addEventListener('visibilitychange', handleVisibilityChange);
 
         return () => {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
+            interactionEvents.forEach(event => {
+                document.removeEventListener(event, handleInteraction);
+            });
             if (wakeLock) {
                 wakeLock.release()
                     .then(() => {
-                        console.log('[Wake Lock] Screen Wake Lock released');
+                        console.log('[Wake Lock] Screen Wake Lock manually released');
                     })
                     .catch((err: any) => {
                         console.error('[Wake Lock] Error releasing wake lock:', err);

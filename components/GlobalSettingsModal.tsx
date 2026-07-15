@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { geminiService } from "../services/geminiService.ts";
+import { tokenTracker } from "../services/tokenTracker.ts";
 
 interface Props {
     isOpen: boolean;
@@ -9,12 +10,21 @@ interface Props {
 export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [apiKeys, setApiKeys] = useState<string[]>([""]);
     const [showKeyIndex, setShowKeyIndex] = useState<number | null>(null);
+    const [expandedStatsIndex, setExpandedStatsIndex] = useState<number | null>(null);
     const [bulkText, setBulkText] = useState("");
     const [showBulkInput, setShowBulkInput] = useState(false);
     const [modelPro, setModelPro] = useState("gemini-3.1-pro-preview");
     const [modelFlash, setModelFlash] = useState("gemini-3.5-flash");
     const [testingIndex, setTestingIndex] = useState<number | null>(null);
     const [testResults, setTestResults] = useState<{ [key: number]: { success: boolean; message: string } }>({});
+
+    useEffect(() => {
+        const unsubscribe = tokenTracker.subscribe(() => {
+            // Trigger state refresh for stats
+            setApiKeys(prev => [...prev]);
+        });
+        return unsubscribe;
+    }, []);
 
     useEffect(() => {
         if (isOpen) {
@@ -194,98 +204,187 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                 </div>
                             </div>
                         ) : (
-                            <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
-                                {apiKeys.map((key, idx) => (
-                                    <div key={idx} className="flex gap-2 items-center animate-fadeIn">
-                                        <div className="relative flex-1">
-                                            <input 
-                                                type={showKeyIndex === idx ? "text" : "password"} 
-                                                className={`w-full bg-gray-950 border rounded-xl py-2.5 pl-3 pr-10 text-white text-xs font-mono outline-none transition-colors ${
-                                                    testResults[idx]?.success === true 
-                                                        ? 'border-emerald-500/60 focus:border-emerald-500' 
-                                                        : testResults[idx]?.success === false 
-                                                            ? 'border-red-500/60 focus:border-red-500' 
-                                                            : 'border-gray-700 focus:border-primary-500'
-                                                }`}
-                                                placeholder={idx === 0 ? "Để trống để dùng key hệ thống..." : `API Key #${idx + 1}`}
-                                                value={key}
-                                                onChange={(e) => {
-                                                    handleKeyChange(idx, e.target.value);
-                                                    if (testResults[idx]) {
-                                                        setTestResults(prev => {
-                                                            const copy = { ...prev };
-                                                            delete copy[idx];
-                                                            return copy;
-                                                        });
-                                                    }
-                                                }}
-                                            />
-                                            <button 
-                                                type="button"
-                                                onClick={() => setShowKeyIndex(showKeyIndex === idx ? null : idx)}
-                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-                                            >
-                                                {showKeyIndex === idx ? (
-                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268-2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                                    </svg>
-                                                ) : (
-                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268-2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                                    </svg>
-                                                )}
-                                            </button>
-                                        </div>
-                                        
-                                        <button 
-                                            type="button"
-                                            onClick={() => handleTestKey(idx)}
-                                            disabled={testingIndex !== null}
-                                            className={`p-2.5 rounded-xl border transition-all shrink-0 flex items-center justify-center ${
-                                                testingIndex === idx 
-                                                    ? 'bg-gray-800/50 border-gray-700 text-purple-400' 
-                                                    : testResults[idx]?.success === true
-                                                        ? 'bg-emerald-950/20 border-emerald-800/50 text-emerald-400 hover:bg-emerald-900/20'
-                                                        : testResults[idx]?.success === false
-                                                            ? 'bg-red-950/20 border-red-900/50 text-red-400 hover:bg-red-900/20'
+                            <div className="space-y-3 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                                {apiKeys.map((key, idx) => {
+                                    const activeKey = key?.trim() || (idx === 0 ? ((process.env as any).GEMINI_API_KEY || "") : "");
+                                    const stats = tokenTracker.getKeyStats(activeKey);
+                                    
+                                    return (
+                                        <div key={idx} className="p-2.5 bg-gray-950/20 border border-gray-800/40 rounded-2xl space-y-2 animate-fadeIn">
+                                            <div className="flex gap-2 items-center">
+                                                <div className="relative flex-1">
+                                                    <input 
+                                                        type={showKeyIndex === idx ? "text" : "password"} 
+                                                        className={`w-full bg-gray-950 border rounded-xl py-2.5 pl-3 pr-10 text-white text-xs font-mono outline-none transition-colors ${
+                                                            testResults[idx]?.success === true 
+                                                                ? 'border-emerald-500/60 focus:border-emerald-500' 
+                                                                : testResults[idx]?.success === false 
+                                                                    ? 'border-red-500/60 focus:border-red-500' 
+                                                                    : 'border-gray-700 focus:border-primary-500'
+                                                        }`}
+                                                        placeholder={idx === 0 ? "Để trống để dùng key hệ thống..." : `API Key #${idx + 1}`}
+                                                        value={key}
+                                                        onChange={(e) => {
+                                                            handleKeyChange(idx, e.target.value);
+                                                            if (testResults[idx]) {
+                                                                setTestResults(prev => {
+                                                                    const copy = { ...prev };
+                                                                    delete copy[idx];
+                                                                    return copy;
+                                                                });
+                                                            }
+                                                        }}
+                                                    />
+                                                    <button 
+                                                        type="button"
+                                                        onClick={() => setShowKeyIndex(showKeyIndex === idx ? null : idx)}
+                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                                                    >
+                                                        {showKeyIndex === idx ? (
+                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268-2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                                            </svg>
+                                                        ) : (
+                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268-2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                            </svg>
+                                                        )}
+                                                    </button>
+                                                </div>
+                                                
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => setExpandedStatsIndex(expandedStatsIndex === idx ? null : idx)}
+                                                    className={`p-2.5 rounded-xl border transition-all shrink-0 flex items-center justify-center ${
+                                                        expandedStatsIndex === idx 
+                                                            ? 'bg-primary-950/40 border-primary-500/50 text-primary-400' 
                                                             : 'bg-gray-950 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
-                                            }`}
-                                            title="Kiểm tra kết nối của Key này"
-                                        >
-                                            {testingIndex === idx ? (
-                                                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                </svg>
-                                            ) : testResults[idx]?.success === true ? (
-                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                                </svg>
-                                            ) : testResults[idx]?.success === false ? (
-                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                                </svg>
-                                            ) : (
-                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                                </svg>
+                                                    }`}
+                                                    title="Xem thống kê dung lượng & token"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                                    </svg>
+                                                </button>
+                                                
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => handleTestKey(idx)}
+                                                    disabled={testingIndex !== null}
+                                                    className={`p-2.5 rounded-xl border transition-all shrink-0 flex items-center justify-center ${
+                                                        testingIndex === idx 
+                                                            ? 'bg-gray-800/50 border-gray-700 text-purple-400' 
+                                                            : testResults[idx]?.success === true
+                                                                ? 'bg-emerald-950/20 border-emerald-800/50 text-emerald-400 hover:bg-emerald-900/20'
+                                                                : testResults[idx]?.success === false
+                                                                    ? 'bg-red-950/20 border-red-900/50 text-red-400 hover:bg-red-900/20'
+                                                                    : 'bg-gray-950 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+                                                    }`}
+                                                    title="Kiểm tra kết nối của Key này"
+                                                >
+                                                    {testingIndex === idx ? (
+                                                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                        </svg>
+                                                    ) : testResults[idx]?.success === true ? (
+                                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                        </svg>
+                                                    ) : testResults[idx]?.success === false ? (
+                                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                        </svg>
+                                                    ) : (
+                                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                                        </svg>
+                                                    )}
+                                                </button>
+                                                
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => handleRemoveKey(idx)}
+                                                    disabled={apiKeys.length === 1 && !key}
+                                                    className="p-2.5 bg-gray-950 hover:bg-red-950/40 border border-gray-700 hover:border-red-900/50 rounded-xl text-gray-500 hover:text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                                                    title="Xóa key này"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+
+                                            {expandedStatsIndex === idx && (
+                                                <div className="p-3 bg-gray-950/80 border border-gray-800/80 rounded-xl space-y-2.5 animate-slideDown mt-1.5 text-xs text-gray-300">
+                                                    <div className="flex justify-between items-center text-xs border-b border-gray-800 pb-1.5">
+                                                        <span className="font-bold text-gray-300">Thống kê & Hạn mức Key</span>
+                                                        <span className="text-[10px] bg-primary-500/10 text-primary-400 border border-primary-500/20 px-1.5 py-0.5 rounded-md font-mono">
+                                                            {key ? (key.startsWith("AIzaSy") ? "Google AI Studio" : "Custom Key") : "Key hệ thống"}
+                                                        </span>
+                                                    </div>
+                                                    
+                                                    <div className="grid grid-cols-2 gap-3 text-xs">
+                                                        <div>
+                                                            <div className="text-gray-500">Đã tiêu thụ (24h)</div>
+                                                            <div className="font-bold text-white font-mono mt-0.5">{stats.totalTokensUsed.toLocaleString()} tokens</div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-gray-500 font-sans">Yêu cầu (Thành công/Lỗi)</div>
+                                                            <div className="font-bold text-white font-mono mt-0.5">
+                                                                <span className="text-emerald-400">{stats.successCount}</span>
+                                                                <span className="text-gray-600"> / </span>
+                                                                <span className="text-red-400">{stats.failureCount}</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Pro vs Flash estimated limits */}
+                                                    <div className="space-y-2 pt-1.5 border-t border-gray-800">
+                                                        <div className="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Hạn mức Free Tier còn lại (Ước tính):</div>
+                                                        
+                                                        {/* Flash stats */}
+                                                        <div className="space-y-1">
+                                                            <div className="flex justify-between text-[10px]">
+                                                                <span className="text-gray-400 font-medium">Model Flash (gemini-3.5-flash)</span>
+                                                                <span className="text-gray-400 font-mono">{(1500 - stats.rpdUsed)} / 1,500 RPD</span>
+                                                            </div>
+                                                            <div className="w-full bg-gray-900 rounded-full h-1 overflow-hidden">
+                                                                <div 
+                                                                    className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                                                                    style={{ width: `${Math.min(100, Math.max(0, (1 - stats.rpdUsed / 1500) * 100))}%` }}
+                                                                />
+                                                            </div>
+                                                            <div className="flex justify-between text-[9px] text-gray-500">
+                                                                <span>Token khả dụng phút:</span>
+                                                                <span className="font-mono">{Math.max(0, 1000000 - stats.tpmUsed).toLocaleString()} / 1,000,000 TPM</span>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Pro stats */}
+                                                        <div className="space-y-1 pt-1">
+                                                            <div className="flex justify-between text-[10px]">
+                                                                <span className="text-gray-400 font-medium">Model Pro (gemini-3.1-pro)</span>
+                                                                <span className="text-gray-400 font-mono">{(50 - stats.rpdUsed)} / 50 RPD</span>
+                                                            </div>
+                                                            <div className="w-full bg-gray-900 rounded-full h-1 overflow-hidden">
+                                                                <div 
+                                                                    className="bg-purple-500 h-full rounded-full transition-all duration-500" 
+                                                                    style={{ width: `${Math.min(100, Math.max(0, (1 - stats.rpdUsed / 50) * 100))}%` }}
+                                                                />
+                                                            </div>
+                                                            <div className="flex justify-between text-[9px] text-gray-500">
+                                                                <span>Token khả dụng phút:</span>
+                                                                <span className="font-mono">{Math.max(0, 32000 - stats.tpmUsed).toLocaleString()} / 32,000 TPM</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             )}
-                                        </button>
-                                        
-                                        <button 
-                                            type="button"
-                                            onClick={() => handleRemoveKey(idx)}
-                                            disabled={apiKeys.length === 1 && !key}
-                                            className="p-2.5 bg-gray-950 hover:bg-red-950/40 border border-gray-700 hover:border-red-900/50 rounded-xl text-gray-500 hover:text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
-                                            title="Xóa key này"
-                                        >
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                ))}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         )}
 
