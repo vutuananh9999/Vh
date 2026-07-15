@@ -177,6 +177,22 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                             </button>
                         </div>
 
+                        {/* Note about 429 quota limits */}
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200/90 leading-relaxed space-y-1.5">
+                            <div className="flex items-center gap-1.5 font-bold text-amber-400">
+                                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                                Lưu ý quan trọng về Giới hạn Hạn mức (Lỗi 429 / Quota)
+                            </div>
+                            <p>
+                                Tài khoản Gemini Free Tier bị Google giới hạn nghiêm ngặt ở mức <b>15 yêu cầu/phút</b> và <b>250,000 tokens đầu vào/phút</b> cho Flash (văn bản gửi lên càng dài thì càng nhanh chạm giới hạn).
+                            </p>
+                            <p>
+                                💡 <b>Giải pháp tối ưu:</b> Hãy bấm <b>"Nhập hàng loạt"</b> hoặc nút <b>"+"</b> ở dưới để thêm <b>nhiều API Key khác nhau</b>. Ứng dụng đã được tích hợp cơ chế <b>Xoay vòng tự động (Load Balancing)</b>. Khi bất kỳ Key nào bị chạm giới hạn (429), ứng dụng sẽ tự động chuyển sang Key tiếp theo mà không làm gián đoạn trải nghiệm sáng tác của bạn!
+                            </p>
+                        </div>
+
                         {showBulkInput ? (
                             <div className="space-y-2 p-3 bg-gray-950 border border-gray-800 rounded-xl">
                                 <label className="text-xs text-gray-500 font-bold block">Nhập nhiều key, cách nhau bằng dấu phẩy hoặc dòng mới:</label>

@@ -171,6 +171,13 @@ function handleApiError(err: any, modelId?: string): Error {
     proModelFailed = true;
   }
 
+  const isQuota = isQuotaError(err) || msg.includes("429") || msg.toLowerCase().includes("resource_exhausted") || msg.toLowerCase().includes("quota exceeded") || msg.toLowerCase().includes("rate_limit");
+  if (isQuota) {
+    return new Error(
+      `Lỗi 429 (Hạn mức/Tần suất Gemini bị vượt quá): API Key hoặc máy chủ hiện tại đã vượt hạn mức miễn phí (Free Tier: 15 yêu cầu/phút hoặc 250,000 tokens đầu vào/phút cho Flash). \nHướng khắc phục:\n1. Vui lòng chờ 1 phút rồi thử lại để hệ thống hồi chiêu (cooldown).\n2. Nhập thêm API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để kích hoạt cơ chế xoay vòng tự động nhằm nhân gấp nhiều lần hạn mức.\n3. Rút ngắn văn bản truyện đang soạn thảo hoặc bắt đầu một Chương mới/phiên chat mới để giảm dung lượng tokens truyền lên.`
+    );
+  }
+
   const isKeyError = 
     msg.includes("API key") || 
     msg.includes("API_KEY_INVALID") || 
@@ -499,13 +506,45 @@ export const geminiService = {
     try {
       const testAI = createGenAI(key.trim());
       
-      // Đầu tiên, thử gọi list models để xem key có hợp lệ không. Đây là cách chính xác nhất và không phụ thuộc vào một model cụ thể nào.
+      // Thử thực tế generateContent trước bằng gemini-3.5-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
+      // (Vì models.list() chỉ kiểm tra xác thực signature của key chứ không kiểm tra được hạn mức sinh văn bản thực tế).
+      try {
+        const response = await testAI.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: "Hi",
+          config: { maxOutputTokens: 2 }
+        });
+        if (response) {
+          return { 
+            success: true, 
+            message: "Kết nối thành công! API Key hoạt động hoàn hảo và sẵn sàng tạo nội dung." 
+          };
+        }
+      } catch (genErr: any) {
+        console.warn("generateContent failed during API key test:", genErr);
+        const msg = (genErr?.message || String(genErr)).toLowerCase();
+        const is429 = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota") || msg.includes("limit");
+        
+        if (is429) {
+          return {
+            success: false,
+            message: "API Key đúng cấu trúc nhưng HIỆN TẠI ĐÃ HẾT HẠN MỨC HOẶC BỊ GIỚI HẠN TẦN SUẤT (Lỗi 429 Resource Exhausted/Quota Exceeded). Vui lòng thử lại sau 1-2 phút hoặc nhập thêm API Key dự phòng khác."
+          };
+        }
+        
+        // Nếu là lỗi xác thực (sai key hoàn toàn), ta ném lỗi ra ngoài để xử lý ở catch chính
+        if (msg.includes("key") || msg.includes("invalid") || msg.includes("unauthorized") || msg.includes("400") || msg.includes("403")) {
+          throw genErr;
+        }
+      }
+
+      // Phương án dự phòng: Nếu generateContent lỗi vì lý do đặc thù khác, thử list models để xem key có hợp lệ cấu trúc không.
       try {
         const modelList = await testAI.models.list();
         if (modelList) {
           return { 
             success: true, 
-            message: "Kết nối thành công! API Key hoạt động chính xác (đã xác thực qua Model Service)." 
+            message: "Kết nối thành công! Xác thực cấu trúc API Key hợp lệ qua Model Service (nhưng hãy chú ý hạn mức tạo văn bản có thể bị hạn chế)." 
           };
         }
       } catch (listErr: any) {
@@ -539,9 +578,19 @@ export const geminiService = {
       throw lastError || new Error("Không thể kết nối tới bất kỳ model nào.");
     } catch (e: any) {
       console.error("Test API key error:", e);
+      const msg = (e?.message || String(e)).toLowerCase();
+      const is429 = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota") || msg.includes("limit");
+      
+      if (is429) {
+        return {
+          success: false,
+          message: "API Key đúng cấu trúc nhưng HIỆN TẠI ĐÃ HẾT HẠN MỨC/GIỚI HẠN TẦN SUẤT (Lỗi 429 Resource Exhausted). Vui lòng đợi 1-2 phút hoặc sử dụng key khác."
+        };
+      }
+      
       return { 
         success: false, 
-        message: `Kết nối thất bại: ${e?.message || e || "Lỗi không xác định"}`
+        message: `Kết nối thất bại: API Key không chính xác hoặc không hợp lệ. Chi tiết: ${e?.message || e || "Lỗi cấu trúc Key"}`
       };
     }
   },
