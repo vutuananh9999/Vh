@@ -106,15 +106,36 @@ function getAvailableKeysCount(): number {
 
 function isQuotaError(err: any): boolean {
   if (!err) return false;
-  const msg = (err.message || String(err)).toLowerCase();
-  return (
-    msg.includes("429") ||
-    msg.includes("resource_exhausted") ||
-    msg.includes("quota exceeded") ||
-    msg.includes("rate limit") ||
-    msg.includes("limit exceeded") ||
-    err.status === 429
-  );
+  
+  let errMsg = "";
+  if (err.message) {
+    errMsg += " " + err.message;
+  }
+  
+  // Serialize the full error object if possible to inspect nested fields (like err.error.message or err.error.code)
+  try {
+    errMsg += " " + JSON.stringify(err);
+  } catch (e) {
+    errMsg += " " + String(err);
+  }
+  
+  errMsg = errMsg.toLowerCase();
+  
+  const hasQuotaKeyword = 
+    errMsg.includes("429") ||
+    errMsg.includes("resource_exhausted") ||
+    errMsg.includes("quota exceeded") ||
+    errMsg.includes("rate limit") ||
+    errMsg.includes("limit exceeded") ||
+    errMsg.includes("exhausted");
+    
+  if (hasQuotaKeyword) return true;
+  
+  // Direct check on common property locations
+  if (err.status === 429 || err.code === 429) return true;
+  if (err.error && (err.error.status === 429 || err.error.code === 429 || err.error.status === 'RESOURCE_EXHAUSTED')) return true;
+  
+  return false;
 }
 
 function logKeyChange(key: string, isSystem: boolean) {
@@ -209,7 +230,8 @@ class DynamicAI {
         let lastErr: any = null;
         
         for (let attempt = 0; attempt < keysCount; attempt++) {
-          const key = getApiKey(attempt > 0);
+          // Luôn xoay sang key tiếp theo theo vòng tròn để cân bằng tải (round-robin)
+          const key = getApiKey(true);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
           const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
@@ -274,7 +296,8 @@ class DynamicAI {
         let lastErr: any = null;
         
         for (let attempt = 0; attempt < keysCount; attempt++) {
-          const key = getApiKey(attempt > 0);
+          // Luôn xoay sang key tiếp theo theo vòng tròn để cân bằng tải (round-robin)
+          const key = getApiKey(true);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
           const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
@@ -372,59 +395,65 @@ class DynamicAI {
         
         session.sendMessageStream = async (sendParams: any) => {
           const keysCount = Math.max(1, getAvailableKeysCount());
-          let lastErr: any = null;
           
-          for (let attempt = 0; attempt < keysCount; attempt++) {
-            if (attempt > 0) {
-              currentKey = getApiKey(true);
-              rawChats = createGenAI(currentKey).chats;
-              session = rawChats.create(params);
-              originalSendMessageStream = session.sendMessageStream.bind(session);
-            }
+          async function* runStreamWithRetry() {
+            let lastErr: any = null;
             
-            const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
-            try {
-              const rawStream = await originalSendMessageStream(sendParams);
+            for (let attempt = 0; attempt < keysCount; attempt++) {
+              if (attempt > 0) {
+                currentKey = getApiKey(true);
+                rawChats = createGenAI(currentKey).chats;
+                
+                // Thu hồi và kế thừa toàn bộ lịch sử trò chuyện của session trước đó để không bị mất ngữ cảnh (In-context)
+                const currentHistory = session.history || params.history || [];
+                
+                session = rawChats.create({
+                  ...params,
+                  history: currentHistory
+                });
+                originalSendMessageStream = session.sendMessageStream.bind(session);
+              }
               
-              async function* wrapperGenerator() {
+              const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
+              try {
+                const rawStream = await originalSendMessageStream(sendParams);
                 let finalMetadata: any = null;
-                try {
-                  for await (const chunk of rawStream) {
-                    if (chunk && chunk.usageMetadata) {
-                      finalMetadata = chunk.usageMetadata;
-                    }
-                    yield chunk as GenerateContentResponse;
+                
+                for await (const chunk of rawStream) {
+                  if (chunk && chunk.usageMetadata) {
+                    finalMetadata = chunk.usageMetadata;
                   }
-                  if (finalMetadata) {
-                    tokenTracker.recordRequestSuccess(
-                      reqId,
-                      finalMetadata.promptTokenCount || 0,
-                      finalMetadata.candidatesTokenCount || 0,
-                      finalMetadata.totalTokenCount || 0
-                    );
-                  } else {
-                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                  }
-                } catch (err) {
-                  tokenTracker.recordRequestFailure(reqId);
-                  throw handleApiError(err, modelId);
+                  yield chunk as GenerateContentResponse;
                 }
+                
+                if (finalMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    finalMetadata.promptTokenCount || 0,
+                    finalMetadata.candidatesTokenCount || 0,
+                    finalMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                
+                return; // Thành công, kết thúc vòng lặp thử lại
+              } catch (err: any) {
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = err;
+                
+                if (isQuotaError(err) && attempt < keysCount - 1) {
+                  console.warn(`[Gemini API Chat] Key hiện tại bị chạm giới hạn (429 Quota Exceeded). Tự động xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
+                  continue;
+                }
+                
+                throw handleApiError(err, modelId);
               }
-              
-              return wrapperGenerator() as any;
-            } catch (err: any) {
-              tokenTracker.recordRequestFailure(reqId);
-              lastErr = err;
-              
-              if (isQuotaError(err) && attempt < keysCount - 1) {
-                console.warn(`[Gemini API Chat] Key hiện tại bị chạm giới hạn (429 Quota Exceeded). Tự động xoay vòng sang API Key tiếp theo và thử lại...`);
-                continue;
-              }
-              
-              throw handleApiError(err, modelId);
             }
+            throw handleApiError(lastErr, modelId);
           }
-          throw handleApiError(lastErr, modelId);
+          
+          return runStreamWithRetry() as any;
         };
         
         return session;
