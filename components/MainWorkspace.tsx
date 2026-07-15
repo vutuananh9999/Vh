@@ -24,7 +24,7 @@ export const MainWorkspace: React.FC = () => {
     if (!story) return null;
 
     return (
-        <div className="flex h-screen overflow-hidden bg-gray-950 text-slate-200 selection:bg-primary-500/30 selection:text-white relative">
+        <div className="flex h-full overflow-hidden bg-gray-950 text-slate-200 selection:bg-primary-500/30 selection:text-white relative">
             {/* Mobile Overlay */}
             {isSidebarOpen && (
                 <div 

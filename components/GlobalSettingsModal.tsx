@@ -154,7 +154,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     </button>
                 </div>
 
-                <div className="space-y-6 text-sm">
+                <div className="space-y-6 text-sm max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
                     {/* API Keys Pool */}
                     <div className="space-y-3">
                         <div className="flex justify-between items-center">

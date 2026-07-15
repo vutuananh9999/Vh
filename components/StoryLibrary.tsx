@@ -82,7 +82,7 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
     };
 
     return (
-        <div className="min-h-screen bg-gray-950 p-5 sm:p-6 md:p-8 font-sans">
+        <div className="min-h-full bg-gray-950 p-5 sm:p-6 md:p-8 font-sans">
              <div className="max-w-6xl mx-auto">
                 <div className="flex justify-between items-center mb-6 flex-wrap gap-4">
                     <div>

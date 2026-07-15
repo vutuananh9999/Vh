@@ -264,7 +264,7 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
   const progressPercentage = (step / totalSteps) * 100;
 
   return (
-    <div className="min-h-screen bg-[#050b14] flex flex-col items-center justify-center p-4 relative overflow-hidden font-sans w-full">
+    <div className="min-h-full bg-[#050b14] flex flex-col items-center justify-center p-4 relative overflow-hidden font-sans w-full">
         {/* Animated Background Elements */}
         <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
             <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-900/10 rounded-full blur-[100px]"></div>
