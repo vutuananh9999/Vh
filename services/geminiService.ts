@@ -7,6 +7,51 @@ import { tokenTracker } from "./tokenTracker.ts";
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
 
+// Map to track keys that are temporarily rate-limited (cooling down)
+const keyCooldowns = new Map<string, number>();
+
+function isKeyCoolingDown(key: string): boolean {
+  if (!key) return false;
+  const expiresAt = keyCooldowns.get(key);
+  if (!expiresAt) return false;
+  if (Date.now() > expiresAt) {
+    keyCooldowns.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function getKeyCooldownStatus(key: string): { isCoolingDown: boolean; remainingMs: number } {
+  if (!key) return { isCoolingDown: false, remainingMs: 0 };
+  const cleanK = cleanKey(key);
+  const expiresAt = keyCooldowns.get(cleanK);
+  if (!expiresAt) return { isCoolingDown: false, remainingMs: 0 };
+  const diff = expiresAt - Date.now();
+  if (diff <= 0) {
+    keyCooldowns.delete(cleanK);
+    return { isCoolingDown: false, remainingMs: 0 };
+  }
+  return { isCoolingDown: true, remainingMs: diff };
+}
+
+function clearKeyCooldown(key: string) {
+  if (key) {
+    keyCooldowns.delete(cleanKey(key));
+  }
+}
+
+function clearAllCooldowns() {
+  keyCooldowns.clear();
+}
+
+function markKeyRateLimited(key: string, cooldownMs: number = 60000) {
+  if (!key) return;
+  const cleanK = cleanKey(key);
+  keyCooldowns.set(cleanK, Date.now() + cooldownMs);
+  const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
+  console.warn(`[Network Layer API Key Rotation] API Key (${masked}) đã chạm giới hạn 429. Đánh dấu tạm ngưng trong ${cooldownMs / 1000}s và chuyển sang Key khả dụng tiếp theo.`);
+}
+
 function cleanKey(val: string): string {
   if (!val) return "";
   let clean = val.trim();
@@ -58,28 +103,24 @@ function extractKeys(stored: string): string[] {
   return keys.filter(k => k.length > 5);
 }
 
-function getApiKey(rotate: boolean = false): string {
+function getAllKeys(): string[] {
   if (typeof window === 'undefined') {
-    return process.env.GEMINI_API_KEY || '';
+    const sys = process.env.GEMINI_API_KEY || '';
+    return sys ? [sys] : [];
   }
   const stored = localStorage.getItem('aetheria_api_key') || '';
-  console.log("[Gemini API Debug] stored key in localStorage:", stored ? `Có giá trị (độ dài ${stored.length})` : "Trống/Không tồn tại");
-  
-  if (!stored) {
-    const sysKey = process.env.GEMINI_API_KEY || '';
-    const maskedSys = sysKey ? `${sysKey.slice(0, 6)}...${sysKey.slice(-4)}` : "Rỗng";
-    console.log(`[Gemini API Debug] Không tìm thấy aetheria_api_key trong localStorage. Fallback dùng key hệ thống: ${maskedSys}`);
-    logKeyChange(sysKey, true);
-    return sysKey;
+  const userKeys = extractKeys(stored);
+  if (userKeys.length > 0) {
+    return userKeys;
   }
-  
-  const keys = extractKeys(stored);
-  console.log("[Gemini API Debug] extracted keys:", keys.map(k => k ? `${k.slice(0, 6)}...${k.slice(-4)}` : "null"));
-  
+  const sysKey = process.env.GEMINI_API_KEY || '';
+  return sysKey ? [sysKey] : [];
+}
+
+function getApiKey(rotate: boolean = false): string {
+  const keys = getAllKeys();
   if (keys.length === 0) {
     const sysKey = process.env.GEMINI_API_KEY || '';
-    const maskedSys = sysKey ? `${sysKey.slice(0, 6)}...${sysKey.slice(-4)}` : "Rỗng";
-    console.log(`[Gemini API Debug] Mảng key sau khi trích xuất bị rỗng. Fallback dùng key hệ thống: ${maskedSys}`);
     logKeyChange(sysKey, true);
     return sysKey;
   }
@@ -89,24 +130,46 @@ function getApiKey(rotate: boolean = false): string {
     console.log(`[Gemini API Debug] Rotate key. Index mới: ${lastKeyIndex}/${keys.length}`);
   }
   
-  // Get active key based on index
-  const keyToUse = keys[lastKeyIndex % keys.length];
+  // Choose key: prefer non-cooling key
+  let selectedIndex = lastKeyIndex % keys.length;
+  let keyToUse = keys[selectedIndex];
+
+  if (isKeyCoolingDown(keyToUse)) {
+    // Try to find first key that is not in cooldown
+    for (let i = 0; i < keys.length; i++) {
+      const candidateIdx = (lastKeyIndex + i) % keys.length;
+      const candidateKey = keys[candidateIdx];
+      if (!isKeyCoolingDown(candidateKey)) {
+        lastKeyIndex = candidateIdx;
+        selectedIndex = candidateIdx;
+        keyToUse = candidateKey;
+        break;
+      }
+    }
+  }
+
   const maskedUse = keyToUse ? `${keyToUse.slice(0, 6)}...${keyToUse.slice(-4)}` : "Rỗng";
-  console.log(`[Gemini API Debug] Key đang được chọn sử dụng: ${maskedUse}`);
+  console.log(`[Gemini API Debug] Key đang được chọn sử dụng: ${maskedUse} (Index: ${selectedIndex}/${keys.length})`);
   
   logKeyChange(keyToUse, false);
   return keyToUse;
 }
 
 function getAvailableKeysCount(): number {
-  if (typeof window === 'undefined') return 0;
-  const stored = localStorage.getItem('aetheria_api_key') || '';
-  return extractKeys(stored).length;
+  return getAllKeys().length;
 }
 
 function isQuotaError(err: any): boolean {
   if (!err) return false;
   
+  // Direct check on common property locations
+  if (err.status === 429 || err.code === 429 || err.statusCode === 429) return true;
+  if (err.error) {
+    if (err.error.status === 429 || err.error.code === 429 || err.error.statusCode === 429) return true;
+    if (err.error.status === 'RESOURCE_EXHAUSTED' || (typeof err.error.message === 'string' && err.error.message.toLowerCase().includes('resource_exhausted'))) return true;
+  }
+  if (err.status === 'RESOURCE_EXHAUSTED') return true;
+
   let errMsg = "";
   if (err.message) {
     errMsg += " " + err.message;
@@ -127,15 +190,10 @@ function isQuotaError(err: any): boolean {
     errMsg.includes("quota exceeded") ||
     errMsg.includes("rate limit") ||
     errMsg.includes("limit exceeded") ||
-    errMsg.includes("exhausted");
+    errMsg.includes("exhausted") ||
+    errMsg.includes("too many requests");
     
-  if (hasQuotaKeyword) return true;
-  
-  // Direct check on common property locations
-  if (err.status === 429 || err.code === 429) return true;
-  if (err.error && (err.error.status === 429 || err.error.code === 429 || err.error.status === 'RESOURCE_EXHAUSTED')) return true;
-  
-  return false;
+  return hasQuotaKeyword;
 }
 
 function logKeyChange(key: string, isSystem: boolean) {
@@ -143,9 +201,9 @@ function logKeyChange(key: string, isSystem: boolean) {
     lastLoggedKey = key;
     if (key) {
       const masked = `${key.slice(0, 6)}...${key.slice(-4)}`;
-      console.log(`%c[Gemini API] Sử dụng API Key ${isSystem ? "hệ thống mặc định" : "người dùng thiết lập"} (${masked})`, "color: #10b981; font-weight: bold;");
+      console.log(`%c[Gemini API Network Layer] Sử dụng API Key ${isSystem ? "hệ thống mặc định" : "người dùng"} (${masked})`, "color: #10b981; font-weight: bold;");
     } else {
-      console.warn("[Gemini API] Không có API Key hoạt động!");
+      console.warn("[Gemini API Network Layer] Không tìm thấy API Key hoạt động!");
     }
   }
 }
@@ -162,7 +220,7 @@ function createGenAI(apiKey: string): GoogleGenAI {
 }
 
 let proModelFailed = false;
-const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.5-flash';
+const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash';
 const getPro = () => {
   if (proModelFailed) {
     return getFlash();
@@ -195,7 +253,7 @@ function handleApiError(err: any, modelId?: string): Error {
   const isQuota = isQuotaError(err) || msg.includes("429") || msg.toLowerCase().includes("resource_exhausted") || msg.toLowerCase().includes("quota exceeded") || msg.toLowerCase().includes("rate_limit");
   if (isQuota) {
     return new Error(
-      `Lỗi 429 (Hạn mức/Tần suất Gemini bị vượt quá): API Key hoặc máy chủ hiện tại đã vượt hạn mức miễn phí (Free Tier: 15 yêu cầu/phút hoặc 250,000 tokens đầu vào/phút cho Flash). \nHướng khắc phục:\n1. Vui lòng chờ 1 phút rồi thử lại để hệ thống hồi chiêu (cooldown).\n2. Nhập thêm API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để kích hoạt cơ chế xoay vòng tự động nhằm nhân gấp nhiều lần hạn mức.\n3. Rút ngắn văn bản truyện đang soạn thảo hoặc bắt đầu một Chương mới/phiên chat mới để giảm dung lượng tokens truyền lên.`
+      `Lỗi 429 (Hạn mức/Tần suất Gemini bị vượt quá): Bán kính tất cả API Key hiện tại đã chạm giới hạn tần suất (Free Tier: 15 yêu cầu/phút hoặc 250,000 tokens đầu vào/phút cho Flash). \nHướng khắc phục:\n1. Vui lòng chờ 1 phút rồi thử lại để hệ thống hồi chiêu (cooldown).\n2. Nhập thêm API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để kích hoạt cơ chế xoay vòng tự động nhân gấp nhiều lần hạn mức.\n3. Rút ngắn văn bản truyện đang soạn thảo hoặc bắt đầu một Chương mới/phiên chat mới để giảm dung lượng tokens truyền lên.`
     );
   }
 
@@ -230,8 +288,8 @@ class DynamicAI {
         let lastErr: any = null;
         
         for (let attempt = 0; attempt < keysCount; attempt++) {
-          // Luôn xoay sang key tiếp theo theo vòng tròn để cân bằng tải (round-robin)
-          const key = getApiKey(true);
+          // Xoay vòng key (lần 0 chọn key hiện tại, từ lần 1 xoay key tiếp theo)
+          const key = getApiKey(attempt > 0);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
           const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
@@ -253,9 +311,12 @@ class DynamicAI {
             tokenTracker.recordRequestFailure(reqId);
             lastErr = err;
             
-            if (isQuotaError(err) && attempt < keysCount - 1) {
-              console.warn(`[Gemini API] Key hiện tại bị chạm giới hạn (429 Quota Exceeded). Tự động xoay vòng sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-              continue;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded. Tự động chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                continue;
+              }
             }
             
             const msg = err?.message || String(err);
@@ -282,6 +343,12 @@ class DynamicAI {
                 }
                 return res;
               } catch (retryErr) {
+                if (isQuotaError(retryErr)) {
+                  markKeyRateLimited(key);
+                  if (attempt < keysCount - 1) {
+                    continue;
+                  }
+                }
                 throw handleApiError(retryErr, modelId);
               }
             }
@@ -291,13 +358,13 @@ class DynamicAI {
         }
         throw handleApiError(lastErr, params.model);
       },
+
       generateContentStream: async function* (params: any) {
         const keysCount = Math.max(1, getAvailableKeysCount());
         let lastErr: any = null;
         
         for (let attempt = 0; attempt < keysCount; attempt++) {
-          // Luôn xoay sang key tiếp theo theo vòng tròn để cân bằng tải (round-robin)
-          const key = getApiKey(true);
+          const key = getApiKey(attempt > 0);
           const rawModels = createGenAI(key).models;
           const modelId = params.model;
           const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
@@ -305,12 +372,29 @@ class DynamicAI {
           try {
             const stream = await rawModels.generateContentStream(params);
             let finalMetadata: any = null;
-            for await (const chunk of stream) {
-              if (chunk && chunk.usageMetadata) {
-                finalMetadata = chunk.usageMetadata;
+            let yieldedAny = false;
+
+            try {
+              for await (const chunk of stream) {
+                yieldedAny = true;
+                if (chunk && chunk.usageMetadata) {
+                  finalMetadata = chunk.usageMetadata;
+                }
+                yield chunk as GenerateContentResponse;
               }
-              yield chunk as GenerateContentResponse;
+            } catch (streamErr: any) {
+              if (!yieldedAny && isQuotaError(streamErr)) {
+                markKeyRateLimited(key);
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = streamErr;
+                if (attempt < keysCount - 1) {
+                  console.warn(`[Network Layer Stream Rotation] Stream bị 429 trước khi phát dữ liệu. Tự động chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                  continue;
+                }
+              }
+              throw streamErr;
             }
+
             if (finalMetadata) {
               tokenTracker.recordRequestSuccess(
                 reqId,
@@ -326,9 +410,12 @@ class DynamicAI {
             tokenTracker.recordRequestFailure(reqId);
             lastErr = err;
             
-            if (isQuotaError(err) && attempt < keysCount - 1) {
-              console.warn(`[Gemini API] Key hiện tại bị chạm giới hạn (429 Quota Exceeded) trong Stream. Tự động xoay vòng sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-              continue;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Stream Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded trong Stream. Tự động xoay sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                continue;
+              }
             }
             
             const msg = err?.message || String(err);
@@ -362,6 +449,12 @@ class DynamicAI {
                 }
                 return;
               } catch (retryErr) {
+                if (isQuotaError(retryErr)) {
+                  markKeyRateLimited(key);
+                  if (attempt < keysCount - 1) {
+                    continue;
+                  }
+                }
                 throw handleApiError(retryErr, modelId);
               }
             }
@@ -371,14 +464,53 @@ class DynamicAI {
         }
         throw handleApiError(lastErr, params.model);
       },
+
       embedContent: async (params: any) => {
-        const key = getApiKey(true);
-        const rawModels = createGenAI(key).models;
-        try {
-          return await rawModels.embedContent(params);
-        } catch (err) {
-          throw handleApiError(err);
+        const keysCount = Math.max(1, getAvailableKeysCount());
+        let lastErr: any = null;
+
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const key = getApiKey(attempt > 0);
+          const rawModels = createGenAI(key).models;
+          try {
+            return await rawModels.embedContent(params);
+          } catch (err: any) {
+            lastErr = err;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Embed Rotation] Key bị chạm 429 Quota Exceeded. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            throw handleApiError(err);
+          }
         }
+        throw handleApiError(lastErr);
+      },
+
+      generateVideos: async (params: any) => {
+        const keysCount = Math.max(1, getAvailableKeysCount());
+        let lastErr: any = null;
+
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const key = getApiKey(attempt > 0);
+          const rawModels = createGenAI(key).models;
+          try {
+            return await rawModels.generateVideos(params);
+          } catch (err: any) {
+            lastErr = err;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Video Rotation] Key bị chạm 429 Quota Exceeded. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            throw handleApiError(err);
+          }
+        }
+        throw handleApiError(lastErr);
       }
     };
   }
@@ -386,14 +518,63 @@ class DynamicAI {
   get chats() {
     return {
       create: (params: any) => {
-        const initialKey = getApiKey(true);
-        let currentKey = initialKey;
+        let currentKey = getApiKey(false);
         let rawChats = createGenAI(currentKey).chats;
         const modelId = params.model;
         let session = rawChats.create(params);
-        let originalSendMessageStream = session.sendMessageStream.bind(session);
         
-        session.sendMessageStream = async (sendParams: any) => {
+        const wrappedSession: any = { ...session };
+
+        // Wrap sendMessage with 429 key rotation
+        wrappedSession.sendMessage = async (sendParams: any) => {
+          const keysCount = Math.max(1, getAvailableKeysCount());
+          let lastErr: any = null;
+
+          for (let attempt = 0; attempt < keysCount; attempt++) {
+            if (attempt > 0) {
+              currentKey = getApiKey(true);
+              rawChats = createGenAI(currentKey).chats;
+              const currentHistory = (session as any).history || params.history || [];
+              session = rawChats.create({
+                ...params,
+                history: currentHistory
+              });
+            }
+
+            const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
+            try {
+              const res = await session.sendMessage(sendParams);
+              if (res && res.usageMetadata) {
+                tokenTracker.recordRequestSuccess(
+                  reqId,
+                  res.usageMetadata.promptTokenCount || 0,
+                  res.usageMetadata.candidatesTokenCount || 0,
+                  res.usageMetadata.totalTokenCount || 0
+                );
+              } else {
+                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+              }
+              return res;
+            } catch (err: any) {
+              tokenTracker.recordRequestFailure(reqId);
+              lastErr = err;
+
+              if (isQuotaError(err)) {
+                markKeyRateLimited(currentKey);
+                if (attempt < keysCount - 1) {
+                  console.warn(`[Network Layer Chat Rotation] Key bị chạm 429 Quota Exceeded. Xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
+                  continue;
+                }
+              }
+
+              throw handleApiError(err, modelId);
+            }
+          }
+          throw handleApiError(lastErr, modelId);
+        };
+
+        // Wrap sendMessageStream with 429 key rotation
+        wrappedSession.sendMessageStream = async (sendParams: any) => {
           const keysCount = Math.max(1, getAvailableKeysCount());
           
           async function* runStreamWithRetry() {
@@ -403,27 +584,38 @@ class DynamicAI {
               if (attempt > 0) {
                 currentKey = getApiKey(true);
                 rawChats = createGenAI(currentKey).chats;
-                
-                // Thu hồi và kế thừa toàn bộ lịch sử trò chuyện của session trước đó để không bị mất ngữ cảnh (In-context)
-                const currentHistory = session.history || params.history || [];
-                
+                const currentHistory = (session as any).history || params.history || [];
                 session = rawChats.create({
                   ...params,
                   history: currentHistory
                 });
-                originalSendMessageStream = session.sendMessageStream.bind(session);
               }
               
               const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
               try {
-                const rawStream = await originalSendMessageStream(sendParams);
+                const rawStream = await session.sendMessageStream(sendParams);
                 let finalMetadata: any = null;
+                let yieldedAny = false;
                 
-                for await (const chunk of rawStream) {
-                  if (chunk && chunk.usageMetadata) {
-                    finalMetadata = chunk.usageMetadata;
+                try {
+                  for await (const chunk of rawStream) {
+                    yieldedAny = true;
+                    if (chunk && chunk.usageMetadata) {
+                      finalMetadata = chunk.usageMetadata;
+                    }
+                    yield chunk as GenerateContentResponse;
                   }
-                  yield chunk as GenerateContentResponse;
+                } catch (streamErr: any) {
+                  if (!yieldedAny && isQuotaError(streamErr)) {
+                    markKeyRateLimited(currentKey);
+                    tokenTracker.recordRequestFailure(reqId);
+                    lastErr = streamErr;
+                    if (attempt < keysCount - 1) {
+                      console.warn(`[Network Layer Chat Stream Rotation] 429 trước khi phát chunk. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                      continue;
+                    }
+                  }
+                  throw streamErr;
                 }
                 
                 if (finalMetadata) {
@@ -437,14 +629,17 @@ class DynamicAI {
                   tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                 }
                 
-                return; // Thành công, kết thúc vòng lặp thử lại
+                return; // Success
               } catch (err: any) {
                 tokenTracker.recordRequestFailure(reqId);
                 lastErr = err;
                 
-                if (isQuotaError(err) && attempt < keysCount - 1) {
-                  console.warn(`[Gemini API Chat] Key hiện tại bị chạm giới hạn (429 Quota Exceeded). Tự động xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
-                  continue;
+                if (isQuotaError(err)) {
+                  markKeyRateLimited(currentKey);
+                  if (attempt < keysCount - 1) {
+                    console.warn(`[Network Layer Chat Stream Rotation] Key bị chạm 429 Quota Exceeded. Xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
+                    continue;
+                  }
                 }
                 
                 throw handleApiError(err, modelId);
@@ -456,7 +651,7 @@ class DynamicAI {
           return runStreamWithRetry() as any;
         };
         
-        return session;
+        return wrappedSession;
       }
     };
   }
@@ -535,11 +730,11 @@ export const geminiService = {
     try {
       const testAI = createGenAI(key.trim());
       
-      // Thử thực tế generateContent trước bằng gemini-3.5-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
+      // Thử thực tế generateContent trước bằng gemini-3.7-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
       // (Vì models.list() chỉ kiểm tra xác thực signature của key chứ không kiểm tra được hạn mức sinh văn bản thực tế).
       try {
         const response = await testAI.models.generateContent({
-          model: "gemini-3.5-flash",
+          model: "gemini-3.7-flash",
           contents: "Hi",
           config: { maxOutputTokens: 2 }
         });
@@ -581,7 +776,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-3.5-flash", "gemini-2.5-flash"];
+      const modelsToTry = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {
@@ -1179,5 +1374,10 @@ TRẢ VỀ JSON:
     }
     const link = operation.response?.generatedVideos?.[0]?.video?.uri;
     return link ? `${link}&key=${key}` : null;
-  }
+  },
+
+  getKeyCooldownStatus,
+  clearKeyCooldown,
+  clearAllCooldowns,
+  markKeyRateLimited
 };

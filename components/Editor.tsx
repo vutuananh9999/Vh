@@ -64,14 +64,14 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
   const [localTitle, setLocalTitle] = useState('');
   
   const [proStatus, setProStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.5-flash'));
+  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash'));
   const [showTokenDetails, setShowTokenDetails] = useState(false);
   const [showLegendModal, setShowLegendModal] = useState(false);
 
   useEffect(() => {
     const update = () => {
       setProStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-      setFlashStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.5-flash'));
+      setFlashStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash'));
     };
     update();
     const unsubscribe = tokenTracker.subscribe(update);
