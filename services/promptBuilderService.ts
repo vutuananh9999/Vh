@@ -141,16 +141,16 @@ export function sampleManuscript(content: string, maxChars: number): string {
   const trimmed = content.trim();
   if (trimmed.length <= maxChars) return trimmed;
 
-  const openingLen = Math.floor(maxChars * 0.35);
+  const openingLen = Math.floor(maxChars * 0.40);
   const midLen = Math.floor(maxChars * 0.35);
-  const endingLen = Math.floor(maxChars * 0.30);
+  const endingLen = Math.floor(maxChars * 0.25);
 
   const opening = trimmed.slice(0, openingLen);
   const midStart = Math.max(openingLen, Math.floor((trimmed.length - midLen) / 2));
   const middle = trimmed.slice(midStart, midStart + midLen);
   const ending = trimmed.slice(Math.max(0, trimmed.length - endingLen));
 
-  return `${opening}\n\n[... Trích đoạn giữa bản thảo ...]\n\n${middle}\n\n[... Trích đoạn cuối bản thảo ...]\n\n${ending}`;
+  return `${opening}\n\n[... Trích đoạn diễn biến thân bài ...]\n\n${middle}\n\n[... Trích đoạn phân cảnh kết chương ...]\n\n${ending}`;
 }
 
 export function formatSmartChapterContext(
@@ -163,43 +163,51 @@ export function formatSmartChapterContext(
 ): string {
   if (!chapters || chapters.length === 0) return "(Chưa có chương truyện nào)";
 
-  const maxTotalChars = options.maxTotalChars || 12000;
+  const maxTotalChars = options.maxTotalChars || 250000;
   const numChapters = chapters.length;
-
   const totalRawChars = chapters.reduce((acc, c) => acc + (c.content?.length || 0), 0);
 
+  // If total raw content is within safe limits (supports up to 60k-80k words), provide 100% raw verbatim manuscript
   if (totalRawChars <= maxTotalChars) {
     return chapters.map((c, i) => `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ 100%)]:
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ 100% TUYỆT ĐỐI KHÔNG CẮT XÉN)]:
 ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`).join('\n\n----------------------------------------\n\n');
   }
 
   const focusId = options.focusChapterId;
   const mentionText = options.targetChapterMention?.toLowerCase() || "";
 
-  const baseBudgetPerChapter = Math.max(400, Math.floor(maxTotalChars / numChapters));
-
   return chapters.map((c, i) => {
-    const isFocus = (focusId && c.id === focusId) || (mentionText && (mentionText.includes(`chương ${i + 1}`) || mentionText.includes(`chuong ${i + 1}`) || (c.title && mentionText.includes(c.title.toLowerCase()))));
-    const isRecent = i >= numChapters - 3;
-    
-    let chapterBudget = baseBudgetPerChapter;
-    if (isFocus) {
-      chapterBudget = Math.min(3500, Math.max(2000, baseBudgetPerChapter * 2.5));
-    } else if (isRecent) {
-      chapterBudget = Math.min(1500, Math.max(800, baseBudgetPerChapter * 1.5));
+    const isFocus = (focusId && c.id === focusId) || 
+      (mentionText && (
+        mentionText.includes(`chương ${i + 1}`) || 
+        mentionText.includes(`chuong ${i + 1}`) || 
+        (c.title && mentionText.includes(c.title.toLowerCase())) ||
+        (c.id && mentionText.includes(c.id))
+      ));
+    const isRecent = i >= numChapters - 4;
+    const hasContent = !!(c.content && c.content.trim().length > 0);
+
+    // If this chapter is in focus or mentioned in user request, ALWAYS supply 100% full raw manuscript
+    if (isFocus || !hasContent) {
+      return `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
+[Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
+[Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ 100% NGUYÊN VĂN)]:
+${hasContent ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`;
     }
 
-    const hasContent = !!(c.content && c.content.trim().length > 0);
-    const sampledText = hasContent ? sampleManuscript(c.content, chapterBudget) : "(Chưa có bản thảo chi tiết)";
-    const isTruncated = hasContent && c.content.trim().length > chapterBudget;
+    // For other chapters in massive stories, preserve generous character budgets
+    const chapterBudget = isRecent ? 12000 : 6000;
+    const sampledText = sampleManuscript(c.content, chapterBudget);
+    const isTruncated = c.content.trim().length > chapterBudget;
 
     return `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU${isTruncated ? ' - TRÍCH ĐOẠN TRỌNG TÂM MỞ ĐẦU/CAO TRÀO/KẾT' : ' - NGUYÊN VĂN 100%'})]:
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU${isTruncated ? ' - TRÍCH ĐOẠN ĐẦY ĐỦ MỞ ĐẦU / CAO TRÀO / KẾT' : ' - ĐẦY ĐỦ 100%'})]:
 ${sampledText}`;
   }).join('\n\n----------------------------------------\n\n');
 }
@@ -489,7 +497,7 @@ DỮ LIỆU RA JSON:
       setting = story.setting || setting;
     }
 
-    const chapterSections = formatSmartChapterContext(chapters, { maxTotalChars: 12000 });
+    const chapterSections = formatSmartChapterContext(chapters, { maxTotalChars: 250000 });
 
     return `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN DỰA TRÊN BẢN THẢO THỰC TẾ & BẢO TỒN VĂN PHONG]
 Bạn là Đại chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên tập Cao cấp (Principal Literary Plot & Manuscript Architect).

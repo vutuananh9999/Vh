@@ -1086,7 +1086,7 @@ ${story.setting || "Chưa thiết lập"}
 [ĐỀ CƯƠNG CHI TIẾT CHƯƠNG NÀY (OUTLINE)]:
 ${chapter.outline || "Chưa thiết lập. Hãy tự thiết kế các phân cảnh kịch tính."}
 
-[BẢN THẢO / NGUYÊN MẪU HIỆN TẠI (NẾU CÓ)]:
+[BẢN THẢO / NGUYÊN MẪU HIỆN TẠI (NẾU CÓ - ĐẦY ĐỦ 100%)]:
 ${chapter.content || "(Trống - Hãy viết mới hoàn toàn)"}
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
@@ -1102,11 +1102,11 @@ Yêu cầu cụ thể:
 Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
 
     const response = await safeGenerateContent({ 
-        model: getPro(), 
+        model: getFlash(), 
         contents: [{ parts: [{ text: prompt }] }],
         config: {
             temperature: 0.85,
-            thinkingConfig: { thinkingBudget: 16000 } 
+            thinkingConfig: { thinkingBudget: 2048 } 
         }
     });
 
@@ -1116,11 +1116,11 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   async suggestOutline(chapter: Chapter, story: Story, userInstruction: string, longTermMemory: string, shortTermMemory: string): Promise<any> {
     const prompt = promptBuilderService.buildAdvancedOutlinePrompt(chapter, story, userInstruction, longTermMemory, shortTermMemory);
     const response = await safeGenerateContent({
-      model: getPro(),
+      model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         temperature: 0.7,
-        thinkingConfig: { thinkingBudget: 16000 } 
+        thinkingConfig: { thinkingBudget: 2048 } 
       }
     });
     return { text: response.text || "", usageMetadata: response.usageMetadata };
@@ -1185,7 +1185,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story) {
     let chat;
     const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 8000,
+      maxTotalChars: 250000,
       targetChapterMention: message
     });
 
