@@ -10,6 +10,8 @@ let lastLoggedKey = "";
 // Map to track keys that are temporarily rate-limited (cooling down)
 const keyCooldowns = new Map<string, number>();
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 function isKeyCoolingDown(key: string, model?: string): boolean {
   if (!key) return false;
   const cleanK = cleanKey(key);
@@ -307,184 +309,196 @@ class DynamicAI {
     return {
       generateContent: async (params: any) => {
         const keysCount = Math.max(1, getAvailableKeysCount());
+        const maxRounds = 3;
         let lastErr: any = null;
+        let currentModelId = params.model;
         
-        for (let attempt = 0; attempt < keysCount; attempt++) {
-          // Xoay vòng key (lần 0 chọn key hiện tại, từ lần 1 xoay key tiếp theo)
-          const key = getApiKey(attempt > 0);
-          const rawModels = createGenAI(key).models;
-          const modelId = params.model;
-          const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
-          
-          try {
-            const res = await rawModels.generateContent(params);
-            if (res && res.usageMetadata) {
-              tokenTracker.recordRequestSuccess(
-                reqId,
-                res.usageMetadata.promptTokenCount || 0,
-                res.usageMetadata.candidatesTokenCount || 0,
-                res.usageMetadata.totalTokenCount || 0
-              );
-            } else {
-              tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-            }
-            return res;
-          } catch (err: any) {
-            tokenTracker.recordRequestFailure(reqId);
-            lastErr = err;
+        for (let round = 0; round < maxRounds; round++) {
+          if (round > 0) {
+            const backoffMs = 1500 * Math.pow(1.8, round - 1);
+            console.warn(`[Network Layer Quota Backoff] Tất cả Key đang chạm giới hạn tần suất (429). Chờ ${Math.round(backoffMs)}ms trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
+            await sleep(backoffMs);
+          }
+
+          for (let attempt = 0; attempt < keysCount; attempt++) {
+            const key = getApiKey(attempt > 0 || round > 0);
+            const rawModels = createGenAI(key).models;
+            const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
             
-            if (isQuotaError(err)) {
-              markKeyRateLimited(key);
-              if (attempt < keysCount - 1) {
-                console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded. Tự động chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                continue;
+            try {
+              const res = await rawModels.generateContent({
+                ...params,
+                model: currentModelId
+              });
+              if (res && res.usageMetadata) {
+                tokenTracker.recordRequestSuccess(
+                  reqId,
+                  res.usageMetadata.promptTokenCount || 0,
+                  res.usageMetadata.candidatesTokenCount || 0,
+                  res.usageMetadata.totalTokenCount || 0
+                );
+              } else {
+                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
               }
-              // All keys hit 429 quota. If model was Pro, try Flash fallback immediately!
-              if (modelId === getPro() && getPro() !== getFlash()) {
-                console.warn(`[Network Layer Quota Recovery] Model Pro (${modelId}) đã chạm trần hạn ngạch (429). Tự động hạ cấp sang Flash (${getFlash()}) để hoàn thành tác vụ ngay lập tức...`);
-                const fallbackParams = {
-                  ...params,
-                  model: getFlash(),
-                  config: params.config ? {
-                    ...params.config,
-                    thinkingConfig: params.config.thinkingConfig ? {
-                      thinkingBudget: Math.min(2048, params.config.thinkingConfig.thinkingBudget || 2048)
-                    } : undefined
-                  } : undefined
-                };
+              return res;
+            } catch (err: any) {
+              tokenTracker.recordRequestFailure(reqId);
+              lastErr = err;
+              
+              if (isQuotaError(err)) {
+                markKeyRateLimited(key, 25000, currentModelId);
+                
+                // If model was Pro, downgrade to Flash immediately!
+                if (currentModelId === getPro() && getPro() !== getFlash()) {
+                  console.warn(`[Network Layer Quota Recovery] Model Pro (${currentModelId}) chạm hạn mức (429). Tự động chuyển đổi sang Flash (${getFlash()})...`);
+                  currentModelId = getFlash();
+                  proModelFailedUntil = Date.now() + 180000;
+                }
+
+                if (attempt < keysCount - 1) {
+                  console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) chạm 429. Chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                  continue;
+                }
+                // All keys in this round hit 429, will proceed to next round with backoff
+                break;
+              }
+              
+              const msg = err?.message || String(err);
+              const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+              const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+              
+              if (is403 && hasSearch) {
+                console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
+                const cleanConfig = stripGoogleSearch(params.config);
                 try {
-                  const fallbackRes = await rawModels.generateContent(fallbackParams);
-                  if (fallbackRes && fallbackRes.usageMetadata) {
+                  const res = await rawModels.generateContent({
+                    ...params,
+                    model: currentModelId,
+                    config: cleanConfig
+                  });
+                  if (res && res.usageMetadata) {
                     tokenTracker.recordRequestSuccess(
                       reqId,
-                      fallbackRes.usageMetadata.promptTokenCount || 0,
-                      fallbackRes.usageMetadata.candidatesTokenCount || 0,
-                      fallbackRes.usageMetadata.totalTokenCount || 0
+                      res.usageMetadata.promptTokenCount || 0,
+                      res.usageMetadata.candidatesTokenCount || 0,
+                      res.usageMetadata.totalTokenCount || 0
                     );
                   } else {
                     tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                   }
-                  return fallbackRes;
-                } catch (fallbackErr) {
-                  throw handleApiError(fallbackErr, getFlash());
-                }
-              }
-            }
-            
-            const msg = err?.message || String(err);
-            const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-            const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
-            
-            if (is403 && hasSearch) {
-              console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
-              const cleanConfig = stripGoogleSearch(params.config);
-              try {
-                const res = await rawModels.generateContent({
-                  ...params,
-                  config: cleanConfig
-                });
-                if (res && res.usageMetadata) {
-                  tokenTracker.recordRequestSuccess(
-                    reqId,
-                    res.usageMetadata.promptTokenCount || 0,
-                    res.usageMetadata.candidatesTokenCount || 0,
-                    res.usageMetadata.totalTokenCount || 0
-                  );
-                } else {
-                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                }
-                return res;
-              } catch (retryErr) {
-                if (isQuotaError(retryErr)) {
-                  markKeyRateLimited(key);
-                  if (attempt < keysCount - 1) {
-                    continue;
+                  return res;
+                } catch (retryErr) {
+                  if (isQuotaError(retryErr)) {
+                    markKeyRateLimited(key, 25000, currentModelId);
+                    if (attempt < keysCount - 1) {
+                      continue;
+                    }
                   }
+                  throw handleApiError(retryErr, currentModelId);
                 }
-                throw handleApiError(retryErr, modelId);
               }
+              
+              throw handleApiError(err, currentModelId);
             }
-            
-            throw handleApiError(err, modelId);
           }
         }
-        throw handleApiError(lastErr, params.model);
+        throw handleApiError(lastErr, currentModelId);
       },
 
       generateContentStream: async function* (params: any) {
         const keysCount = Math.max(1, getAvailableKeysCount());
+        const maxRounds = 3;
         let lastErr: any = null;
+        let currentModelId = params.model;
         
-        for (let attempt = 0; attempt < keysCount; attempt++) {
-          const key = getApiKey(attempt > 0);
-          const rawModels = createGenAI(key).models;
-          const modelId = params.model;
-          const reqId = tokenTracker.recordRequestStart(modelId, 1000, key);
-          
-          try {
-            const stream = await rawModels.generateContentStream(params);
-            let finalMetadata: any = null;
-            let yieldedAny = false;
+        for (let round = 0; round < maxRounds; round++) {
+          if (round > 0) {
+            const backoffMs = 1500 * Math.pow(1.8, round - 1);
+            console.warn(`[Network Layer Stream Backoff] Tất cả Key đang chạm giới hạn tần suất (429). Chờ ${Math.round(backoffMs)}ms trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
+            await sleep(backoffMs);
+          }
 
+          for (let attempt = 0; attempt < keysCount; attempt++) {
+            const key = getApiKey(attempt > 0 || round > 0);
+            const rawModels = createGenAI(key).models;
+            const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+            
             try {
-              for await (const chunk of stream) {
-                yieldedAny = true;
-                if (chunk && chunk.usageMetadata) {
-                  finalMetadata = chunk.usageMetadata;
+              const stream = await rawModels.generateContentStream({
+                ...params,
+                model: currentModelId
+              });
+              let finalMetadata: any = null;
+              let yieldedAny = false;
+
+              try {
+                for await (const chunk of stream) {
+                  yieldedAny = true;
+                  if (chunk && chunk.usageMetadata) {
+                    finalMetadata = chunk.usageMetadata;
+                  }
+                  yield chunk as GenerateContentResponse;
                 }
-                yield chunk as GenerateContentResponse;
+              } catch (streamErr: any) {
+                if (!yieldedAny && isQuotaError(streamErr)) {
+                  markKeyRateLimited(key, 25000, currentModelId);
+                  tokenTracker.recordRequestFailure(reqId);
+                  lastErr = streamErr;
+                  if (attempt < keysCount - 1) {
+                    console.warn(`[Network Layer Stream Rotation] Stream bị 429 trước khi phát dữ liệu. Chuyển sang Key tiếp theo...`);
+                    continue;
+                  }
+                  break;
+                }
+                throw streamErr;
               }
-            } catch (streamErr: any) {
-              if (!yieldedAny && isQuotaError(streamErr)) {
-                markKeyRateLimited(key);
-                tokenTracker.recordRequestFailure(reqId);
-                lastErr = streamErr;
+
+              if (finalMetadata) {
+                tokenTracker.recordRequestSuccess(
+                  reqId,
+                  finalMetadata.promptTokenCount || 0,
+                  finalMetadata.candidatesTokenCount || 0,
+                  finalMetadata.totalTokenCount || 0
+                );
+              } else {
+                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+              }
+              return;
+            } catch (err: any) {
+              tokenTracker.recordRequestFailure(reqId);
+              lastErr = err;
+              
+              if (isQuotaError(err)) {
+                markKeyRateLimited(key, 25000, currentModelId);
+                
+                if (currentModelId === getPro() && getPro() !== getFlash()) {
+                  console.warn(`[Network Layer Stream Recovery] Model Pro (${currentModelId}) chạm 429. Chuyển đổi sang Flash (${getFlash()})...`);
+                  currentModelId = getFlash();
+                  proModelFailedUntil = Date.now() + 180000;
+                }
+
                 if (attempt < keysCount - 1) {
-                  console.warn(`[Network Layer Stream Rotation] Stream bị 429 trước khi phát dữ liệu. Tự động chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                  console.warn(`[Network Layer Stream Rotation] Key (${key.slice(0, 6)}...) chạm 429 trong Stream. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
                   continue;
                 }
+                break;
               }
-              throw streamErr;
-            }
-
-            if (finalMetadata) {
-              tokenTracker.recordRequestSuccess(
-                reqId,
-                finalMetadata.promptTokenCount || 0,
-                finalMetadata.candidatesTokenCount || 0,
-                finalMetadata.totalTokenCount || 0
-              );
-            } else {
-              tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-            }
-            return;
-          } catch (err: any) {
-            tokenTracker.recordRequestFailure(reqId);
-            lastErr = err;
-            
-            if (isQuotaError(err)) {
-              markKeyRateLimited(key);
-              if (attempt < keysCount - 1) {
-                console.warn(`[Network Layer Stream Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded trong Stream. Tự động xoay sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                continue;
-              }
-              // All keys hit 429 quota. If model was Pro, try Flash fallback stream immediately!
-              if (modelId === getPro() && getPro() !== getFlash()) {
-                console.warn(`[Network Layer Stream Recovery] Model Pro (${modelId}) bị chạm 429 trong Stream. Tự động chuyển đổi sang Flash (${getFlash()})...`);
-                const fallbackParams = {
-                  ...params,
-                  model: getFlash(),
-                  config: params.config ? {
-                    ...params.config,
-                    thinkingConfig: params.config.thinkingConfig ? {
-                      thinkingBudget: Math.min(2048, params.config.thinkingConfig.thinkingBudget || 2048)
-                    } : undefined
-                  } : undefined
-                };
+              
+              const msg = err?.message || String(err);
+              const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+              const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+              
+              if (is403 && hasSearch) {
+                console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
+                const cleanConfig = stripGoogleSearch(params.config);
                 try {
-                  const fallbackStream = await rawModels.generateContentStream(fallbackParams);
+                  const stream = await rawModels.generateContentStream({
+                    ...params,
+                    model: currentModelId,
+                    config: cleanConfig
+                  });
                   let finalMetadata: any = null;
-                  for await (const chunk of fallbackStream) {
+                  for await (const chunk of stream) {
                     if (chunk && chunk.usageMetadata) {
                       finalMetadata = chunk.usageMetadata;
                     }
@@ -501,57 +515,22 @@ class DynamicAI {
                     tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                   }
                   return;
-                } catch (fallbackErr) {
-                  throw handleApiError(fallbackErr, getFlash());
+                } catch (retryErr) {
+                  if (isQuotaError(retryErr)) {
+                    markKeyRateLimited(key, 25000, currentModelId);
+                    if (attempt < keysCount - 1) {
+                      continue;
+                    }
+                  }
+                  throw handleApiError(retryErr, currentModelId);
                 }
               }
+              
+              throw handleApiError(err, currentModelId);
             }
-            
-            const msg = err?.message || String(err);
-            const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-            const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
-            
-            if (is403 && hasSearch) {
-              console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
-              const cleanConfig = stripGoogleSearch(params.config);
-              try {
-                const stream = await rawModels.generateContentStream({
-                  ...params,
-                  config: cleanConfig
-                });
-                let finalMetadata: any = null;
-                for await (const chunk of stream) {
-                  if (chunk && chunk.usageMetadata) {
-                    finalMetadata = chunk.usageMetadata;
-                  }
-                  yield chunk as GenerateContentResponse;
-                }
-                if (finalMetadata) {
-                  tokenTracker.recordRequestSuccess(
-                    reqId,
-                    finalMetadata.promptTokenCount || 0,
-                    finalMetadata.candidatesTokenCount || 0,
-                    finalMetadata.totalTokenCount || 0
-                  );
-                } else {
-                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                }
-                return;
-              } catch (retryErr) {
-                if (isQuotaError(retryErr)) {
-                  markKeyRateLimited(key);
-                  if (attempt < keysCount - 1) {
-                    continue;
-                  }
-                }
-                throw handleApiError(retryErr, modelId);
-              }
-            }
-            
-            throw handleApiError(err, modelId);
           }
         }
-        throw handleApiError(lastErr, params.model);
+        throw handleApiError(lastErr, currentModelId);
       },
 
       embedContent: async (params: any) => {
@@ -614,63 +593,21 @@ class DynamicAI {
         
         const wrappedSession: any = { ...session };
 
-        // Wrap sendMessage with 429 key rotation
+        // Wrap sendMessage with 429 key rotation & backoff
         wrappedSession.sendMessage = async (sendParams: any) => {
           const keysCount = Math.max(1, getAvailableKeysCount());
+          const maxRounds = 3;
           let lastErr: any = null;
 
-          for (let attempt = 0; attempt < keysCount; attempt++) {
-            if (attempt > 0) {
-              currentKey = getApiKey(true);
-              rawChats = createGenAI(currentKey).chats;
-              const currentHistory = (session as any).history || params.history || [];
-              session = rawChats.create({
-                ...params,
-                history: currentHistory
-              });
+          for (let round = 0; round < maxRounds; round++) {
+            if (round > 0) {
+              const backoffMs = 1500 * Math.pow(1.8, round - 1);
+              console.warn(`[Network Layer Chat Backoff] Tất cả Key đang chạm 429. Chờ ${Math.round(backoffMs)}ms...`);
+              await sleep(backoffMs);
             }
 
-            const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
-            try {
-              const res = await session.sendMessage(sendParams);
-              if (res && res.usageMetadata) {
-                tokenTracker.recordRequestSuccess(
-                  reqId,
-                  res.usageMetadata.promptTokenCount || 0,
-                  res.usageMetadata.candidatesTokenCount || 0,
-                  res.usageMetadata.totalTokenCount || 0
-                );
-              } else {
-                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-              }
-              return res;
-            } catch (err: any) {
-              tokenTracker.recordRequestFailure(reqId);
-              lastErr = err;
-
-              if (isQuotaError(err)) {
-                markKeyRateLimited(currentKey);
-                if (attempt < keysCount - 1) {
-                  console.warn(`[Network Layer Chat Rotation] Key bị chạm 429 Quota Exceeded. Xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
-                  continue;
-                }
-              }
-
-              throw handleApiError(err, modelId);
-            }
-          }
-          throw handleApiError(lastErr, modelId);
-        };
-
-        // Wrap sendMessageStream with 429 key rotation
-        wrappedSession.sendMessageStream = async (sendParams: any) => {
-          const keysCount = Math.max(1, getAvailableKeysCount());
-          
-          async function* runStreamWithRetry() {
-            let lastErr: any = null;
-            
             for (let attempt = 0; attempt < keysCount; attempt++) {
-              if (attempt > 0) {
+              if (attempt > 0 || round > 0) {
                 currentKey = getApiKey(true);
                 rawChats = createGenAI(currentKey).chats;
                 const currentHistory = (session as any).history || params.history || [];
@@ -679,59 +616,122 @@ class DynamicAI {
                   history: currentHistory
                 });
               }
-              
+
               const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
               try {
-                const rawStream = await session.sendMessageStream(sendParams);
-                let finalMetadata: any = null;
-                let yieldedAny = false;
-                
-                try {
-                  for await (const chunk of rawStream) {
-                    yieldedAny = true;
-                    if (chunk && chunk.usageMetadata) {
-                      finalMetadata = chunk.usageMetadata;
-                    }
-                    yield chunk as GenerateContentResponse;
-                  }
-                } catch (streamErr: any) {
-                  if (!yieldedAny && isQuotaError(streamErr)) {
-                    markKeyRateLimited(currentKey);
-                    tokenTracker.recordRequestFailure(reqId);
-                    lastErr = streamErr;
-                    if (attempt < keysCount - 1) {
-                      console.warn(`[Network Layer Chat Stream Rotation] 429 trước khi phát chunk. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                      continue;
-                    }
-                  }
-                  throw streamErr;
-                }
-                
-                if (finalMetadata) {
+                const res = await session.sendMessage(sendParams);
+                if (res && res.usageMetadata) {
                   tokenTracker.recordRequestSuccess(
                     reqId,
-                    finalMetadata.promptTokenCount || 0,
-                    finalMetadata.candidatesTokenCount || 0,
-                    finalMetadata.totalTokenCount || 0
+                    res.usageMetadata.promptTokenCount || 0,
+                    res.usageMetadata.candidatesTokenCount || 0,
+                    res.usageMetadata.totalTokenCount || 0
                   );
                 } else {
                   tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                 }
-                
-                return; // Success
+                return res;
               } catch (err: any) {
                 tokenTracker.recordRequestFailure(reqId);
                 lastErr = err;
-                
+
                 if (isQuotaError(err)) {
-                  markKeyRateLimited(currentKey);
+                  markKeyRateLimited(currentKey, 25000, modelId);
                   if (attempt < keysCount - 1) {
-                    console.warn(`[Network Layer Chat Stream Rotation] Key bị chạm 429 Quota Exceeded. Xoay vòng sang API Key tiếp theo và thử lại (Lượt thử ${attempt + 1}/${keysCount})...`);
+                    console.warn(`[Network Layer Chat Rotation] Key chạm 429. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
                     continue;
                   }
+                  break;
+                }
+
+                throw handleApiError(err, modelId);
+              }
+            }
+          }
+          throw handleApiError(lastErr, modelId);
+        };
+
+        // Wrap sendMessageStream with 429 key rotation & backoff
+        wrappedSession.sendMessageStream = async (sendParams: any) => {
+          const keysCount = Math.max(1, getAvailableKeysCount());
+          const maxRounds = 3;
+          
+          async function* runStreamWithRetry() {
+            let lastErr: any = null;
+            
+            for (let round = 0; round < maxRounds; round++) {
+              if (round > 0) {
+                const backoffMs = 1500 * Math.pow(1.8, round - 1);
+                console.warn(`[Network Layer Chat Stream Backoff] Tất cả Key đang chạm 429. Chờ ${Math.round(backoffMs)}ms...`);
+                await sleep(backoffMs);
+              }
+
+              for (let attempt = 0; attempt < keysCount; attempt++) {
+                if (attempt > 0 || round > 0) {
+                  currentKey = getApiKey(true);
+                  rawChats = createGenAI(currentKey).chats;
+                  const currentHistory = (session as any).history || params.history || [];
+                  session = rawChats.create({
+                    ...params,
+                    history: currentHistory
+                  });
                 }
                 
-                throw handleApiError(err, modelId);
+                const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
+                try {
+                  const rawStream = await session.sendMessageStream(sendParams);
+                  let finalMetadata: any = null;
+                  let yieldedAny = false;
+                  
+                  try {
+                    for await (const chunk of rawStream) {
+                      yieldedAny = true;
+                      if (chunk && chunk.usageMetadata) {
+                        finalMetadata = chunk.usageMetadata;
+                      }
+                      yield chunk as GenerateContentResponse;
+                    }
+                  } catch (streamErr: any) {
+                    if (!yieldedAny && isQuotaError(streamErr)) {
+                      markKeyRateLimited(currentKey, 25000, modelId);
+                      tokenTracker.recordRequestFailure(reqId);
+                      lastErr = streamErr;
+                      if (attempt < keysCount - 1) {
+                        console.warn(`[Network Layer Chat Stream Rotation] 429 trước khi phát chunk. Xoay sang Key tiếp theo...`);
+                        continue;
+                      }
+                      break;
+                    }
+                    throw streamErr;
+                  }
+                  
+                  if (finalMetadata) {
+                    tokenTracker.recordRequestSuccess(
+                      reqId,
+                      finalMetadata.promptTokenCount || 0,
+                      finalMetadata.candidatesTokenCount || 0,
+                      finalMetadata.totalTokenCount || 0
+                    );
+                  } else {
+                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                  }
+                  
+                  return; // Success
+                } catch (err: any) {
+                  tokenTracker.recordRequestFailure(reqId);
+                  lastErr = err;
+                  
+                  if (isQuotaError(err)) {
+                    markKeyRateLimited(currentKey, 25000, modelId);
+                    if (attempt < keysCount - 1) {
+                      console.warn(`[Network Layer Chat Stream Rotation] Key chạm 429. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+                      continue;
+                    }
+                    break;
+                  }
+                  
+                  throw handleApiError(err, modelId);
+                }
               }
             }
             throw handleApiError(lastErr, modelId);

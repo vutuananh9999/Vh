@@ -907,43 +907,30 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setIsGenerating(true);
     setGenerationProgress(5); 
-    setGenerationStatus("Đang đồng bộ Đa Tầng Bộ Nhớ...");
+    setGenerationStatus("Đang tải dữ liệu và chuẩn bị kiến tạo...");
     
     try {
         const stmContext = mode === 'regenerate' ? "" : chapter.content.slice(-2500);
         const entitySearchContext = chapter.outline + " " + userInstruction + " " + stmContext;
         
         let historicalContext = "";
-        if (currentStory.currentTimeline && currentStory.currentTimeline.length > 3) {
-             setGenerationStatus("Tra cứu Dữ liệu Lịch sử & Grounding...");
-             historicalContext = await geminiService.fetchHistoricalContext(currentStory.currentTimeline);
-        }
-
         let canonContext = "";
-        if (currentStory.isFanfiction) {
-            if (currentStory.fandomName && currentStory.fandomName.length > 2) {
-                 setGenerationStatus(`Tra cứu dữ liệu gốc ${currentStory.fandomName}...`);
-                 canonContext = await geminiService.fetchCanonContext(currentStory.fandomName);
-            }
-            if (currentStory.referenceDocs && currentStory.referenceDocs.length > 0) {
-                 const docsText = currentStory.referenceDocs.map(doc => `[DỮ LIỆU TỪ LORE TẬP TIN ${doc.name}]:\n${doc.content}`).join("\n\n");
-                 canonContext = canonContext ? `${canonContext}\n\n${docsText}` : docsText;
-            }
+        
+        if (currentStory.isFanfiction && currentStory.referenceDocs && currentStory.referenceDocs.length > 0) {
+             const docsText = currentStory.referenceDocs.map(doc => `[DỮ LIỆU TỪ LORE TẬP TIN ${doc.name}]:\n${doc.content}`).join("\n\n");
+             canonContext = docsText;
         }
 
-        setGenerationStatus("Truy xuất Semantic LTM & Thẩm định Tri thức...");
-        setGenerationProgress(20);
-        const [verificationReport, dynamicWorldBible] = await Promise.all([
-            geminiService.verifyKnowledge(entitySearchContext, currentStory),
-            getRelevantKnowledge(entitySearchContext, currentStory)
-        ]);
+        setGenerationStatus("Đang dệt nên thế giới và chương truyện...");
+        setGenerationProgress(25);
+        const dynamicWorldBible = await getRelevantKnowledge(entitySearchContext, currentStory);
 
-        setGenerationStatus("Aetheria đang dệt nên thực tại mới...");
-        setGenerationProgress(40);
+        setGenerationStatus("Aetheria đang viết tiếp bản thảo...");
+        setGenerationProgress(45);
 
         const initialContent = mode === 'regenerate' ? "" : chapter.content;
         const stream = geminiService.generateStoryStream(
-            initialContent, dynamicWorldBible, currentStory.planning, currentStory.characters, currentStory.interactionRules, userInstruction, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, currentStory.hasSystem || false, targetWordCount, currentStory.persistentDirectives || "", currentStory.mechanics || "", chapter.outline, verificationReport, currentStory.writingDNA, chapter.timeSetting || "", previousChapterTime, currentStory.currentTimeline || "", historicalContext, canonContext
+            initialContent, dynamicWorldBible, currentStory.planning, currentStory.characters, currentStory.interactionRules, userInstruction, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, currentStory.hasSystem || false, targetWordCount, currentStory.persistentDirectives || "", currentStory.mechanics || "", chapter.outline, "", currentStory.writingDNA, chapter.timeSetting || "", previousChapterTime, currentStory.currentTimeline || "", historicalContext, canonContext
         );
         
         let accumulated = "";
@@ -951,26 +938,24 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const chunkText = chunk.text || "";
             if (chunkText) {
                 accumulated += chunkText;
-                setGenerationProgress(prev => Math.min(90, prev + 0.3));
+                setGenerationProgress(prev => Math.min(95, prev + 0.3));
             }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
         
-        setGenerationStatus("Giai đoạn Hậu kiểm & Nhất quán hóa...");
-        setGenerationProgress(92);
+        setGenerationStatus("Lưu trữ và hoàn thiện bản thảo...");
+        setGenerationProgress(98);
         
         const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n' : '') + accumulated;
-        const correctedResult = await geminiService.enforceCompliance(finalDraft, currentStory, verificationReport);
-        
-        recordUsage(correctedResult.usageMetadata);
-        updateChapterContent(currentActiveId, correctedResult.text || finalDraft, true);
+        updateChapterContent(currentActiveId, finalDraft, true);
         
         if (storyRef.current) {
             await storageService.saveStory(storyRef.current);
-            setGenerationStatus("Đang đúc kết Tóm tắt Chương...");
-            await summarizeChapter(currentActiveId);
         }
-    } catch (e) { console.error(e); } finally {
+    } catch (e: any) { 
+        console.error(e);
+        alert(e?.message || "Lỗi trong quá trình tạo nội dung.");
+    } finally {
         setIsGenerating(false);
         setGenerationProgress(0);
         setGenerationStatus("");
@@ -1008,7 +993,6 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           updateChapterContent(activeChapterId, result.data.edited_text);
           if (storyRef.current) {
               await storageService.saveStory(storyRef.current);
-              await summarizeChapter(activeChapterId);
           }
         }
     } catch (e) { } finally { setIsGenerating(false); }
@@ -1019,8 +1003,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!currentStory || !activeChapterId) return;
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
     setIsGenerating(true);
+    setGenerationStatus("Đang tinh chỉnh chương với bảo tồn 100% nguyên mẫu...");
     try {
-        const verificationReport = await geminiService.verifyKnowledge(customInstruction || "", currentStory);
         const dynamicWorldBible = await getRelevantKnowledge(chapter.outline, currentStory);
         const stream = geminiService.refineChapterStream(chapter.content, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
         let accumulated = "";
@@ -1028,13 +1012,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             accumulated += chunk.text; 
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        const correctedResult = await geminiService.enforceCompliance(accumulated, currentStory, verificationReport);
-        recordUsage(correctedResult.usageMetadata);
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: correctedResult.text || accumulated });
+        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: accumulated });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh văn bản.");
-    } finally { setIsGenerating(false); }
+    } finally { 
+        setIsGenerating(false); 
+        setGenerationStatus("");
+    }
   };
 
   const refineSelection = async (selection: string, startIdx: number, endIdx: number, customInstruction: string) => {
@@ -1042,23 +1027,24 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!currentStory || !activeChapterId) return;
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
     setIsGenerating(true);
+    setGenerationStatus("Đang tinh chỉnh đoạn văn bản chọn lọc...");
     const prefix = chapter.content.substring(0, startIdx);
     const suffix = chapter.content.substring(endIdx);
     try {
-        const verificationReport = await geminiService.verifyKnowledge(customInstruction, currentStory);
         const stream = geminiService.refineSelectionStream(selection, prefix, suffix, currentStory, customInstruction);
         let accumulated = "";
         for await (const chunk of stream) { 
             accumulated += chunk.text; 
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        const correctedResult = await geminiService.enforceCompliance(accumulated, currentStory, verificationReport);
-        recordUsage(correctedResult.usageMetadata);
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + (correctedResult.text || accumulated) + suffix });
+        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + accumulated + suffix });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh phân đoạn.");
-    } finally { setIsGenerating(false); }
+    } finally { 
+        setIsGenerating(false); 
+        setGenerationStatus("");
+    }
   };
 
   const applyPendingEdit = () => {

@@ -163,7 +163,7 @@ export function formatSmartChapterContext(
 ): string {
   if (!chapters || chapters.length === 0) return "(Chưa có chương truyện nào)";
 
-  const maxTotalChars = options.maxTotalChars || 250000;
+  const maxTotalChars = options.maxTotalChars || 120000;
   const numChapters = chapters.length;
   const totalRawChars = chapters.reduce((acc, c) => acc + (c.content?.length || 0), 0);
 
