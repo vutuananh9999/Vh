@@ -10,12 +10,15 @@ let lastLoggedKey = "";
 // Map to track keys that are temporarily rate-limited (cooling down)
 const keyCooldowns = new Map<string, number>();
 
-function isKeyCoolingDown(key: string): boolean {
+function isKeyCoolingDown(key: string, model?: string): boolean {
   if (!key) return false;
-  const expiresAt = keyCooldowns.get(key);
+  const cleanK = cleanKey(key);
+  const modelKey = model ? `${cleanK}:${model}` : cleanK;
+  const expiresAt = keyCooldowns.get(modelKey) || keyCooldowns.get(cleanK);
   if (!expiresAt) return false;
   if (Date.now() > expiresAt) {
-    keyCooldowns.delete(key);
+    keyCooldowns.delete(modelKey);
+    keyCooldowns.delete(cleanK);
     return false;
   }
   return true;
@@ -36,7 +39,14 @@ function getKeyCooldownStatus(key: string): { isCoolingDown: boolean; remainingM
 
 function clearKeyCooldown(key: string) {
   if (key) {
-    keyCooldowns.delete(cleanKey(key));
+    const cleanK = cleanKey(key);
+    keyCooldowns.delete(cleanK);
+    // Also delete any model-specific keys
+    for (const k of Array.from(keyCooldowns.keys())) {
+      if (k.startsWith(cleanK)) {
+        keyCooldowns.delete(k);
+      }
+    }
   }
 }
 
@@ -44,10 +54,17 @@ function clearAllCooldowns() {
   keyCooldowns.clear();
 }
 
-function markKeyRateLimited(key: string, cooldownMs: number = 60000) {
+function markKeyRateLimited(key: string, cooldownMs: number = 30000, model?: string) {
   if (!key) return;
   const cleanK = cleanKey(key);
-  keyCooldowns.set(cleanK, Date.now() + cooldownMs);
+  const isPro = model && (model.includes('pro') || model === getPro());
+  if (isPro) {
+    keyCooldowns.set(`${cleanK}:${model}`, Date.now() + cooldownMs);
+    proModelFailedUntil = Date.now() + 180000; // 3 minutes cooldown for Pro
+    console.warn(`[Network Layer API Key Rotation] Pro model (${model}) đã chạm hạn mức. Tạm chuyển hướng toàn bộ sang Flash trong 3 phút.`);
+  } else {
+    keyCooldowns.set(cleanK, Date.now() + cooldownMs);
+  }
   const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
   console.warn(`[Network Layer API Key Rotation] API Key (${masked}) đã chạm giới hạn 429. Đánh dấu tạm ngưng trong ${cooldownMs / 1000}s và chuyển sang Key khả dụng tiếp theo.`);
 }
@@ -220,12 +237,13 @@ function createGenAI(apiKey: string): GoogleGenAI {
 }
 
 let proModelFailed = false;
+let proModelFailedUntil = 0;
 const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash';
 const getPro = () => {
-  if (proModelFailed) {
+  if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview';
+  return localStorage.getItem('aetheria_model_pro') || 'gemini-3.7-flash';
 };
 
 function stripGoogleSearch(config: any): any {
@@ -252,6 +270,10 @@ function handleApiError(err: any, modelId?: string): Error {
 
   const isQuota = isQuotaError(err) || msg.includes("429") || msg.toLowerCase().includes("resource_exhausted") || msg.toLowerCase().includes("quota exceeded") || msg.toLowerCase().includes("rate_limit");
   if (isQuota) {
+    if (modelId && (modelId.includes("pro") || modelId === getPro())) {
+      console.warn(`Model Pro (${modelId}) bị 429 Quota Exceeded. Tạm thời chuyển hướng sang Flash trong 3 phút...`);
+      proModelFailedUntil = Date.now() + 180000;
+    }
     return new Error(
       `Lỗi 429 (Hạn mức/Tần suất Gemini bị vượt quá): Bán kính tất cả API Key hiện tại đã chạm giới hạn tần suất (Free Tier: 15 yêu cầu/phút hoặc 250,000 tokens đầu vào/phút cho Flash). \nHướng khắc phục:\n1. Vui lòng chờ 1 phút rồi thử lại để hệ thống hồi chiêu (cooldown).\n2. Nhập thêm API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để kích hoạt cơ chế xoay vòng tự động nhân gấp nhiều lần hạn mức.\n3. Rút ngắn văn bản truyện đang soạn thảo hoặc bắt đầu một Chương mới/phiên chat mới để giảm dung lượng tokens truyền lên.`
     );
@@ -892,7 +914,7 @@ export const geminiService = {
     const prompt = promptBuilderService.buildKnowledgeVerificationPrompt(entities, story.setting);
     try {
       const response = await safeGenerateContent({
-        model: getPro(),
+        model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }], temperature: 0.1 }
       });
@@ -1039,13 +1061,13 @@ export const geminiService = {
       immediateContext, worldBible, planning, characters, interactionRules, userInstruction, pronounStyle, targetWordCount, persistentDirectives, mechanics, chapterOutline, verificationReport, currentChapterTime, previousChapterTime, currentTimeline, historicalContext, canonContext
     );
     const stream = safeGenerateContentStream({
-      model: getPro(),
+      model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: { 
         systemInstruction, 
         temperature: 1.0, 
         topP: 0.98, 
-        thinkingConfig: { thinkingBudget: 8000 } 
+        thinkingConfig: { thinkingBudget: 2048 } 
       }
     });
     for await (const chunk of stream) yield chunk;
@@ -1224,13 +1246,11 @@ Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích s
 Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và phản hồi bằng tiếng Việt.`;
 
     // Sanitize and limit chat history to recent messages to prevent token accumulation
-    const sanitizedHistory = (history || []).slice(-6).map(h => {
+    const sanitizedHistory = (history || []).slice(-4).map(h => {
       const parts = (h.parts || []).map(p => {
         let text = p.text || "";
-        if (text.length > 2000) {
-          text = text.replace(/\[PROPOSAL_CONTENT_CHAPTER_[^:]+:\s*([\s\S]{300})[\s\S]*?\]/g, (_m, prefix) => {
-            return `[Đã đề xuất sửa đổi bản thảo chương: ${prefix}... (Chi tiết đã lưu)]`;
-          });
+        if (text.length > 1500) {
+          text = text.substring(0, 1500) + "... [Đã lược bớt lịch sử]";
         }
         return { text };
       });
@@ -1261,7 +1281,7 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và ph�
     const prompt = `Nghiên cứu về: ${customTopic || story.genre}. Tìm các yếu tố phù hợp truyện "${story.title}".`;
     try {
       const response = await safeGenerateContent({
-        model: getPro(),
+        model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }] }
       });
@@ -1287,9 +1307,9 @@ ${input}
     
     try {
         const response = await safeGenerateContent({ 
-            model: getPro(), 
+            model: getFlash(), 
             contents: [{ parts: [{ text: prompt }] }],
-            config: { temperature: 0.8, thinkingConfig: { thinkingBudget: 4000 } }
+            config: { temperature: 0.8, thinkingConfig: { thinkingBudget: 2048 } }
         });
         return { text: response.text || input, usageMetadata: response.usageMetadata };
     } catch (e) { return null; }
@@ -1307,12 +1327,12 @@ TRẢ VỀ ĐỊNH DẠNG JSON CHUẨN...`;
 
     try {
       const response = await safeGenerateContent({
-        model: getPro(),
+        model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { 
             responseMimeType: "application/json",
             temperature: 0.95,
-            thinkingConfig: { thinkingBudget: 8000 }
+            thinkingConfig: { thinkingBudget: 2048 }
         }
       });
       return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
@@ -1362,9 +1382,9 @@ TRẢ VỀ JSON:
   async *refineChapterStream(content: string, worldBible: string, interactionRules: string, genre: string, writingStyle: string, pov: string, pronounStyle: string, negativePrompt: string, nsfw: boolean, customInstruction: string, persistentDirectives: string, mechanics: string, styleReference: string) {
     const prompt = promptBuilderService.buildRefineChapterPrompt(content, worldBible, interactionRules, genre, writingStyle, pov, pronounStyle, negativePrompt, nsfw, customInstruction, persistentDirectives, mechanics, styleReference || "");
     const stream = safeGenerateContentStream({
-      model: getPro(),
+      model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
-      config: { thinkingConfig: { thinkingBudget: 16000 } }
+      config: { thinkingConfig: { thinkingBudget: 2048 } }
     });
     for await (const chunk of stream) yield chunk;
   },
@@ -1397,9 +1417,9 @@ ${selection}
 
 BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
     const stream = safeGenerateContentStream({
-      model: getPro(),
+      model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
-      config: { thinkingConfig: { thinkingBudget: 8000 } }
+      config: { thinkingConfig: { thinkingBudget: 2048 } }
     });
     for await (const chunk of stream) yield chunk;
   },
@@ -1480,9 +1500,9 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
   async *translateToVietnameseStream(content: string) {
     const prompt = `Hãy dịch đoạn văn sau sang tiếng Việt một cách mượt mà, văn chương, phù hợp với phong cách tiểu thuyết. Giữ nguyên các danh từ riêng nếu cần thiết hoặc dịch chúng sao cho hay nhất. [VĂN BẢN]: ${content.substring(0, 10000)}`;
     const stream = safeGenerateContentStream({ 
-        model: getPro(), 
+        model: getFlash(), 
         contents: [{ parts: [{ text: prompt }] }],
-        config: { temperature: 0.3, thinkingConfig: { thinkingBudget: 2000 } }
+        config: { temperature: 0.3 }
     });
     for await (const chunk of stream) {
       yield chunk;
