@@ -373,14 +373,14 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     if (!isOpen) return null;
 
     const promptPresets = [
-        { label: "🔍 Tìm lỗ hổng", prompt: "Hãy phân tích toàn bộ mạch truyện và chỉ ra các lỗ hổng cốt truyện (plot holes) hoặc mâu thuẫn thời gian nếu có." },
+        { label: "🔍 Tìm lỗ hổng bản thảo", prompt: "Hãy phân tích toàn bộ [BẢN THẢO THỰC TẾ] của các chương truyện và chỉ ra các lỗ hổng cốt truyện (plot holes), chi tiết cài cắm chưa mở, hoặc mâu thuẫn thời gian/hành vi." },
         ...(activeChapter ? [{
             label: `✍️ Sửa bản thảo: ${activeChapter.title}`,
-            prompt: `Dựa trên mạch truyện hiện tại và thảo luận cốt truyện, hãy viết một bản thảo (draft) đề xuất cải tiến hoàn chỉnh cho chương "${activeChapter.title}" và bọc nó trong thẻ: [PROPOSAL_CONTENT_CHAPTER_${activeChapter.id}: <nội dung mới viết lại/sửa đổi>]`
+            prompt: `Dựa trên [BẢN THẢO THỰC TẾ] của chương "${activeChapter.title}" (ID: ${activeChapter.id}), hãy chỉnh sửa và nâng cấp toàn diện bản thảo này theo đúng văn phong tác giả, bảo tồn 100% các chi tiết, tên nhân vật, đạo cụ, lời thoại và diễn biến gốc của nguyên mẫu (TUYỆT ĐỐI KHÔNG phóng tác từ tóm tắt làm mất chi tiết). Sau đó bọc toàn bộ nội dung hoàn chỉnh trong thẻ: [PROPOSAL_CONTENT_CHAPTER_${activeChapter.id}: <nội dung bản thảo mới đã sửa>]`
         }] : []),
-        { label: "🎭 Nút thắt kịch tính", prompt: "Đề xuất một nút thắt (plot twist) bất ngờ nhưng hợp lý cho chương tiếp theo nhằm kích thích người đọc." },
-        { label: "⚔️ Đẩy mâu thuẫn nhân vật", prompt: "Đề xuất cách làm sắc nét hơn xung đột hoặc mâu thuẫn của nhân vật chính để đẩy kịch tính lên cao trào." },
-        { label: "✨ Đề xuất bản chỉnh sửa dàn ý", prompt: "Dựa trên mạch truyện hiện tại, hãy viết lại và đề xuất cho tôi một dàn ý mới cải tiến trong khối [PROPOSAL_PLANNING: ...] để tôi có thể áp dụng." }
+        { label: "🎭 Nút thắt kịch tính", prompt: "Dựa trên các chi tiết và cài cắm đã xuất hiện trong [BẢN THẢO THỰC TẾ], hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng hoàn toàn hợp logic để đẩy kịch tính lên cao trào." },
+        { label: "⚔️ Đẩy mâu thuẫn nhân vật", prompt: "Phân tích diễn biến tâm lý và các lời thoại trong [BẢN THẢO THỰC TẾ] để đề xuất cách làm sắc nét hơn xung đột hoặc mâu thuẫn của nhân vật chính." },
+        { label: "✨ Đề xuất bản chỉnh sửa dàn ý", prompt: "Dựa trên [BẢN THẢO THỰC TẾ] của các chương đã viết, hãy đề xuất một dàn ý phát triển tiếp theo hoàn chỉnh trong khối [PROPOSAL_PLANNING: ...] để tôi có thể áp dụng." }
     ];
 
     return (

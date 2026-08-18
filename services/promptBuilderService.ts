@@ -122,6 +122,20 @@ const TRUTH_KEEPER_PROTOCOL = `
    - Trước khi viết mưu kế, tự hỏi: "Kẻ địch có đủ thông minh để nhận ra không?". Nếu có, hãy để kẻ địch phản đòn.
 `;
 
+export const ORIGINAL_FIDELITY_PROTOCOL = `
+[GIAO THỨC TỐI THƯỢNG: BẢO TỒN 100% CHI TIẾT NGUYÊN MẪU & BẢN THẢO GỐC (DRAFT & CANON FIDELITY)]
+⚠️ KHI CHỈNH SỬA, TINH CHỈNH HOẶC NÂNG CẤP VĂN BẢN (REVISE/REFINE/EDIT/REWRITE):
+1. 🛡️ BẢO TỒN CHI TIẾT NGUYÊN MẪU (PRESERVE ALL SPECIFIC DETAILS):
+   - TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM MẤT các chi tiết đã có trong bản gốc/nguyên mẫu: Tên nhân vật, danh xưng, đặc điểm ngoại hình, vật phẩm/vũ khí, từng câu thoại đắt giá, bối cảnh vi mô, tình tiết phụ, các cử chỉ/hành động cụ thể và cảm xúc tinh tế.
+   - Giữ nguyên vẹn tính cách, phong thái, thói quen xưng hô và động cơ của từng nhân vật theo đúng nguyên mẫu.
+2. 🚫 CẤM TÓM TẮT & RÚT GỌN VÔ CỚ (NO SUMMARIZATION/NO OMISSIONS):
+   - Bản chỉnh sửa PHẢI DUY TRÌ HOẶC MỞ RỘNG độ dài so với bản gốc (tối thiểu 100% - 130% dung lượng bản cũ).
+   - Tuyệt đối KHÔNG được biến các đoạn đối thoại chi tiết, các phân cảnh miêu tả sống động thành 1-2 câu tóm tắt hời hợt.
+3. ✨ NÂNG CẤP VĂN PHONG NHƯNG GIỮ NGUYÊN BẢN SẮC:
+   - Nhiệm vụ chỉnh sửa là: Làm giàu hình ảnh, trau chuốt từ ngữ, tăng cường xúc cảm/ngũ quan, mài giũa nhịp điệu và làm nổi bật các chi tiết có sẵn — KHÔNG PHẢI là xóa đi viết cái khác hoàn toàn xa lạ.
+   - Nếu bản gốc có những chi tiết độc đáo hoặc ẩn ý của tác giả, PHẢI giữ lại và tôn vinh chúng.
+`;
+
 export const promptBuilderService = {
   buildStoryFoundationPrompt: (seedIdea: string, genre: string): string => {
     return `Khởi tạo một câu chuyện đắt giá dựa trên ý tưởng: "${seedIdea}" với thể loại: "${genre}". 
@@ -353,14 +367,16 @@ ${strategySection}
     verificationReport: string
   ): string => {
     return `[NHIỆM VỤ: BIÊN TẬP VIÊN KHẮC KHE - COMPLIANCE & CONSISTENCY CHECK]
-Bạn là chốt chặn cuối cùng. Hãy rà soát văn bản dưới đây để tìm lỗi LOGIC và MÂU THUẪN.
+Bạn là chốt chặn kiểm duyệt chất lượng cao cấp. Hãy rà soát văn bản dưới đây để sửa lỗi logic và trau chuốt câu từ.
+
+${ORIGINAL_FIDELITY_PROTOCOL}
 
 [TIÊU CHÍ KIỂM DUYỆT ƯU TIÊN - TRUTH KEEPER]:
-1. **Mâu thuẫn Sự kiện (Fact Check):** Có chi tiết nào mâu thuẫn với ngữ cảnh đã cung cấp không? -> Sửa ngay.
-2. **Logic Chiến thuật/Chính trị/Rồng:** Hành động có ngây thơ hoặc phi lý so với bối cảnh ASOIAF không?
-3. **Logic Nhân vật (OOC Check):** Nhân vật có hành động ngu ngốc trái với tính cách thiết lập không? (Chú ý đặc tính loài: Rồng không hành động như người).
-4. **Từ vựng:** Đảm bảo dùng từ cổ, tránh từ hiện đại.
-5. **Văn phong & Xưng hô:** ${pronounStyle}
+1. **Bảo tồn chi tiết nguyên mẫu:** Giữ nguyên 100% tên nhân vật, vật phẩm, tình tiết, lời thoại và bối cảnh đã viết trong văn bản. TUYỆT ĐỐI KHÔNG xóa bỏ, cắt ngắn hay thay đổi danh tính nguyên mẫu.
+2. **Mâu thuẫn Sự kiện (Fact Check):** Có chi tiết nào mâu thuẫn với ngữ cảnh đã cung cấp không? -> Sửa lỗi mâu thuẫn nhưng giữ trọn các chi tiết hợp lý.
+3. **Logic Chiến thuật/Chính trị/Rồng:** Hành động có ngây thơ hoặc phi lý so với bối cảnh thế giới không?
+4. **Logic Nhân vật (OOC Check):** Nhân vật có hành động ngu ngốc trái với tính cách thiết lập không?
+5. **Từ vựng & Xưng hô:** ${pronounStyle}
 
 [DỮ LIỆU BỐI CẢNH]:
 ${mechanics}
@@ -370,7 +386,7 @@ ${verificationReport}
 [VĂN BẢN CẦN RÀ SOÁT]:
 ${text}
 
-Hãy trả về bản văn đã hiệu chỉnh hoàn thiện (giữ nguyên độ dài hoặc dài hơn). TUYỆT ĐỐI KHÔNG CẮT NGẮN. Chỉ sửa lỗi logic và nâng cấp từ ngữ.`;
+Hãy trả về bản văn đã hiệu chỉnh hoàn thiện (giữ nguyên độ dài hoặc dài hơn). TUYỆT ĐỐI KHÔNG CẮT NGẮN, KHÔNG TÓM TẮT. Chỉ sửa lỗi logic, trau chuốt và nâng cấp từ ngữ.`;
   },
 
   buildKnowledgeVerificationPrompt: (entities: string, internalContext: string): string => {
@@ -384,19 +400,64 @@ DỮ LIỆU RA JSON:
 }`;
   },
 
-  buildPlotArcAnalysisPrompt: (chapters: Chapter[], storyTitle: string): string => {
-    const summaries = chapters.map((c, i) => `[CHƯƠNG ${i + 1}: ${c.title}]: ${c.summary}`).join('\n\n');
-    return `[NHIỆM VỤ: PHÂN TÍCH MẠCH TRUYỆN - PLOT INTELLIGENCE]
-Phân tích cốt truyện cho tác phẩm "${storyTitle}" dựa trên tóm tắt các chương:
+  buildPlotArcAnalysisPrompt: (storyOrChapters: Story | Chapter[], storyTitle?: string): string => {
+    let chapters: Chapter[] = [];
+    let title = storyTitle || "Tác phẩm";
+    let genre = "Tiểu thuyết";
+    let writingStyle = "Chuẩn mực văn học";
+    let characters: Character[] = [];
+    let setting = "Chưa thiết lập";
 
-${summaries}
+    if (Array.isArray(storyOrChapters)) {
+      chapters = storyOrChapters;
+      title = storyTitle || "Tác phẩm";
+    } else if (storyOrChapters && typeof storyOrChapters === 'object') {
+      const story = storyOrChapters as Story;
+      chapters = story.chapters || [];
+      title = story.title || title;
+      genre = story.genre || genre;
+      writingStyle = story.writingStyle || writingStyle;
+      characters = story.characters || [];
+      setting = story.setting || setting;
+    }
 
-TRẢ VỀ JSON:
+    const chapterSections = chapters.map((c, i) => {
+      const hasContent = !!(c.content && c.content.trim().length > 0);
+      return `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
+[Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
+[Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
+[BẢN THẢO THỰC TẾ (MANUSCRIPT DRAFT)]:
+${hasContent ? c.content : "(Chương này chưa có bản thảo chi tiết, chỉ có đề cương/tóm tắt)"}`;
+    }).join('\n\n----------------------------------------\n\n');
+
+    return `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN DỰA TRÊN BẢN THẢO THỰC TẾ & BẢO TỒN VĂN PHONG]
+Bạn là Đại chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên tập Cao cấp (Principal Literary Plot & Manuscript Architect).
+
+[THÔNG TIN TÁC PHẨM]:
+- Tên truyện: "${title}"
+- Thể loại: ${genre}
+- Phong cách viết / Giọng văn: ${writingStyle}
+- Thế giới & Bối cảnh: ${setting}
+- Nhân vật chính:
+${characters.map(c => `- ${c.name}: ${c.description || ""} (${c.role || "Nhân vật"})`).join('\n')}
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[DỮ LIỆU CÁC CHƯƠNG TRUYỆN - GỒM BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
+${chapterSections}
+
+[CHỈ THỊ PHÂN TÍCH BẮT BUỘC]:
+1. 📖 BẢN THẢO THỰC TẾ LÀ NGUYÊN MẪU DUY NHẤT: Bắt buộc phải đọc và phân tích chi tiết dựa trên từng câu chữ, lời thoại, hành động và tình huống trong [BẢN THẢO THỰC TẾ]. Tóm tắt (Summary) chỉ là tài liệu tham khảo phụ trợ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi phóng tác sai lệch sự thật và chi tiết của bản thảo!
+2. 🎭 TÔN TRỌNG TUYỆT ĐỐI VĂN PHONG VÀ ĐẶC TRƯNG TÁC GIẢ: Nhận diện chính xác giọng văn, nhịp điệu (pacing), các chi tiết ẩn dụ, cài cắm (foreshadowing) và phong cách hành văn của tác giả trong bản thảo gốc.
+3. 🔍 ĐÁNH GIÁ CHÍNH XÁC NÚT THẮT & LỖ HỔNG (Plot Holes & Chekhov's Guns): Tìm ra những chi tiết/đạo cụ/lời hứa/mối quan hệ đã xuất hiện cụ thể trong bản thảo nhưng chưa được giải quyết, hoặc các mâu thuẫn thời gian/hành vi giữa các chương.
+4. 💡 DỰ BÁO TƯƠNG LAI BÁM SÁT CHI TIẾT GỐC: Các hướng phát triển khả thi (Plot Twists) phải bắt nguồn trực tiếp từ các chi tiết thực tế của bản thảo gốc, phát triển tiếp văn phong tác giả chứ không dùng các motif khuôn sáo, rập khuôn.
+
+TRẢ VỀ ĐÚNG ĐỊNH DẠNG JSON SAU (KHÔNG KÈM TEXT NGOÀI JSON):
 {
-  "arcAnalysis": "Phân tích tổng quan cấu trúc 3 hồi, nhịp điệu (pacing) và sự phát triển nhân vật.",
-  "pacingHeatmap": [mảng số 0-100 đại diện cho độ kịch tính của từng chương],
-  "unresolvedHooks": ["Danh sách các nút thắt/cài cắm (Chekhov's Gun) chưa được giải quyết"],
-  "futurePredictions": ["3 hướng phát triển khả thi (Plot Twist) cho tương lai"]
+  "arcAnalysis": "Phân tích sâu sắc cấu trúc 3 hồi/nhiều hồi, sự phát triển tâm lý nhân vật, nhịp độ kịch tính và đánh giá sự nhất quán văn phong dựa trên bản thảo thực tế của từng chương.",
+  "pacingHeatmap": [mảng số 0-100 đại diện cho chỉ số kịch tính/nhịp độ cao trào thực tế của từng chương từ chương 1 đến hết],
+  "unresolvedHooks": ["Danh sách các chi tiết cài cắm cụ thể (Chekhov's Gun / Plot Hooks / Bí mật) đã xuất hiện trong bản thảo mà chưa được giải quyết"],
+  "futurePredictions": ["3 kịch bản nút thắt/hướng phát triển đột phá khả thi, sâu sắc, bám sát bản thảo và phong cách viết của tác giả"]
 }`;
   },
 
@@ -464,25 +525,38 @@ Quy tắc rút ra (ngắn gọn):`;
     styleReference: string
   ): string => {
     const contentRating = nsfw ? NSFW_INSTRUCTION : "";
-    return `[NHIỆM VỤ: TINH CHỈNH VÀ NÂNG CẤP VĂN BẢN]
-Hãy đóng vai một biên tập viên đại tài. Viết lại đoạn văn dưới đây dựa trên yêu cầu: "${customInstruction}".
+    return `[NHIỆM VỤ: TINH CHỈNH & ĐẠI TU VĂN BẢN CHUYÊN NGHIỆP]
+Bạn là một Đại biên tập viên và Đại văn hào. Nhiệm vụ của bạn là chỉnh sửa, nâng cấp và hoàn thiện bản thảo dưới đây theo yêu cầu của tác giả.
 
-[DỮ LIỆU NỀN]:
-- Thể loại: ${genre}
-- Xưng hô: ${pronounStyle}
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[DỮ LIỆU NỀN & THIẾT LẬP]:
+- Thể loại: ${genre} | Ngôi kể: ${pov}
+- Xưng hô & Quy tắc: ${pronounStyle}
 - Quy tắc thế giới: ${mechanics}
+- Chỉ thị bền vững: ${persistentDirectives}
+- Cấm (Negative Prompt): ${negativePrompt}
+${styleReference ? `- Phong cách tham chiếu: ${styleReference}` : ''}
 
 ${RATIONALITY_PROTOCOL}
+${TRUTH_KEEPER_PROTOCOL}
 
-[VĂN BẢN GỐC]:
+[VĂN BẢN NGUYÊN MẪU CẦN CHỈNH SỬA]:
+"""
 ${content}
+"""
 
-[YÊU CẦU]:
-- Giữ nguyên cốt truyện, chỉ nâng cấp cách diễn đạt, từ vựng và nhịp điệu.
-- ${customInstruction}
-- Đảm bảo tính logic và nhất quán.
+[CHỈ THỊ SỬA ĐỔI CỦA TÁC GIẢ]:
+"${customInstruction || 'Nâng cấp văn chương mượt mà, trau chuốt, giữ nguyên vẹn toàn bộ diễn biến và chi tiết nguyên mẫu.'}"
 
-BẮT ĐẦU VIẾT LẠI:`;
+[YÊU CẦU THỰC THI BẮT BUỘC]:
+1. 🛡️ **BẢO TỒN CHI TIẾT NGUYÊN MẪU 100%:** Giữ nguyên tất cả tên nhân vật, địa danh, đạo cụ/vật phẩm, từng dòng hội thoại, suy nghĩ nội tâm, và các diễn biến cụ thể trong bản gốc. Tuyệt đối không lược bỏ hoặc tóm tắt bất kỳ sự kiện nào.
+2. 💎 **NÂNG CẤP VĂN PHONG:** Sử dụng từ ngữ phong phú, trau chuốt câu từ, bổ sung miêu tả cảm giác/không khí, tăng tính gợi cảm và nhịp điệu văn học theo đúng phong cách yêu cầu.
+3. 🚫 **TUYỆT ĐỐI KHÔNG TÓM TẮT:** Bản sửa đổi phải chi tiết, sống động và có độ dài tương đương hoặc dài hơn bản nguyên mẫu.
+4. 📝 **ĐÚNG ĐỊNH DẠNG:** Chỉ trả về toàn bộ nội dung chương truyện hoàn chỉnh sau khi sửa, không thêm lời chào hay giải thích ngoài lề.
+${contentRating}
+
+BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
   },
 
   buildNextChapterSuggestionPrompt: (story: Story): string => {

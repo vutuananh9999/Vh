@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
-import { promptBuilderService } from "./promptBuilderService.ts";
+import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
 
 let lastKeyIndex = 0;
@@ -1005,8 +1005,9 @@ export const geminiService = {
   },
 
   async generateChapterContentFromPlot(chapter: Chapter, story: Story): Promise<any> {
-    const prompt = `Bạn là một Nhà văn chuyên nghiệp viết tiểu thuyết trực tuyến xuất sắc.
-Hãy viết hoặc chỉnh sửa/nâng cấp bản thảo (draft) cho chương "${chapter.title}" của tác phẩm "${story.title}" dựa trên các thông tin cốt truyện và định hướng mới sau đây:
+    const hasOriginalDraft = !!(chapter.content && chapter.content.trim().length > 30);
+    const prompt = `Bạn là một Đại văn hào chuyên nghiệp viết tiểu thuyết trực tuyến xuất sắc.
+Hãy viết hoặc chỉnh sửa/nâng cấp bản thảo (draft) cho chương "${chapter.title}" của tác phẩm "${story.title}" dựa trên các thông tin cốt truyện và định hướng sau đây:
 
 [THỂ LOẠI]: ${story.genre}
 [DANH SÁCH NHÂN VẬT CHÍNH]:
@@ -1018,16 +1019,18 @@ ${story.setting || "Chưa thiết lập"}
 [ĐỀ CƯƠNG CHI TIẾT CHƯƠNG NÀY (OUTLINE)]:
 ${chapter.outline || "Chưa thiết lập. Hãy tự thiết kế các phân cảnh kịch tính."}
 
-[BẢN THẢO HIỆN TẠI (NẾU CÓ)]:
+[BẢN THẢO / NGUYÊN MẪU HIỆN TẠI (NẾU CÓ)]:
 ${chapter.content || "(Trống - Hãy viết mới hoàn toàn)"}
 
+${ORIGINAL_FIDELITY_PROTOCOL}
+
 Yêu cầu cụ thể:
-1. ĐỀ CƯƠNG CHI TIẾT CHƯƠNG NÀY (OUTLINE) là nguồn ý tưởng và hướng dẫn duy nhất để viết, sửa đổi và xây dựng bản thảo chương truyện này.
-2. TUYỆT ĐỐI KHÔNG sử dụng thông tin hay ý tưởng từ bất kỳ Tóm tắt (Summary) hay Dàn ý chung (Planning) nào khác của truyện để viết, tránh làm loãng hoặc gây mâu thuẫn lặp ý với Đề cương chi tiết chương này. Chỉ lấy ý từ Đề cương chi tiết (Outline).
+1. ${hasOriginalDraft ? '⚠️ ĐÃ CÓ BẢN THẢO / NGUYÊN MẪU GỐC: Bạn PHẢI BẢO TỒN 100% các chi tiết đắt giá, tên nhân vật, đạo cụ, từng lời thoại và diễn biến cụ thể trong bản thảo hiện tại. Hãy trau chuốt, nâng cấp văn phong và kết hợp mở rộng theo định hướng của Đề cương chi tiết (Outline). TUYỆT ĐỐI KHÔNG xóa bỏ, không tóm tắt hay làm mất các chi tiết của bản thảo nguyên mẫu.' : 'Hãy bám sát Đề cương chi tiết (Outline) để kiến tạo nên một chương truyện hoàn chỉnh, giàu chi tiết và cảm xúc.'}
+2. BẢO TỒN TOÀN BỘ CHI TIẾT: Tuyệt đối không lược bỏ tên nhân vật, vật phẩm, tình huống, tâm lý hay các phân cảnh của nguyên mẫu.
 3. Viết một chương truyện hoàn chỉnh, giàu chi tiết, nhịp điệu lôi cuốn, văn phong trau chuốt, giữ đúng tính cách các nhân vật.
 4. Tuyệt đối không được tóm tắt chương, hãy viết dưới dạng truyện đọc trực tiếp (với lời thoại, hành động, miêu tả tâm lý và bối cảnh chi tiết).
 5. Sử dụng các quy tắc kể chuyện từ ngôi kể: ${story.pov || "Ngôi thứ ba"} và phong cách đại từ: ${story.pronounStyle || "Tự nhiên"}.
-6. Đảm bảo dung lượng đầy đủ, kịch tính, lôi cuốn.
+6. Đảm bảo dung lượng đầy đủ, kịch tính, lôi cuốn (tối thiểu bằng hoặc dài hơn bản thảo hiện tại).
 
 Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
 
@@ -1056,13 +1059,16 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     return { text: response.text || "", usageMetadata: response.usageMetadata };
   },
 
-  async analyzePlotArc(chapters: Chapter[], storyTitle: string): Promise<any> {
-    const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(chapters, storyTitle);
+  async analyzePlotArc(storyOrChapters: Story | Chapter[], storyTitle?: string): Promise<any> {
+    const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(storyOrChapters, storyTitle);
     try {
       const response = await safeGenerateContent({
         model: getPro(),
         contents: [{ parts: [{ text: prompt }] }],
-        config: { responseMimeType: "application/json" }
+        config: { 
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 16000 }
+        }
       });
       return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
     } catch (e) { return null; }
@@ -1108,16 +1114,30 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
 
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story) {
     let chat;
-    const chaptersContext = story.chapters.map((c, i) => `Chương ${i+1} (ID: ${c.id}) - Tiêu đề: ${c.title}:\nTóm tắt: ${c.summary || "Chưa có"}\nDàn ý: ${c.outline || "Chưa có"}\nBản thảo hiện tại (Trích đoạn): ${c.content ? (c.content.slice(0, 500) + (c.content.length > 500 ? "..." : "")) : "Chưa có"}`).join("\n\n");
-    const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor). Nhiệm vụ của bạn là cùng tác giả phân tích cốt truyện, phát hiện lỗ hổng logic, sửa chữa tác phẩm và đề xuất hướng phát triển cốt truyện tốt nhất.
-Tên truyện: ${story.title}
-Thể loại: ${story.genre}
-Dàn ý tổng thể hiện tại: ${story.planning || "Chưa có"}
+    const chaptersContext = story.chapters.map((c, i) => `=== CHƯƠNG ${i+1}: ${c.title} (ID: ${c.id}) ===
+[Đề cương chi tiết]: ${c.outline || "(Chưa có)"}
+[Tóm tắt sơ lược]: ${c.summary || "(Chưa có)"}
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU)]:
+${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`).join("\n\n----------------------------------------\n\n");
 
-Các chương hiện tại:
+    const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor). Nhiệm vụ của bạn là cùng tác giả phân tích cốt truyện, phát hiện lỗ hổng logic, sửa chữa tác phẩm và đề xuất hướng phát triển cốt truyện tốt nhất.
+Tên truyện: "${story.title}"
+Thể loại: ${story.genre}
+Phong cách viết / Giọng văn: ${story.writingStyle || "Chuẩn mực văn học"}
+Dàn ý tổng thể hiện tại: ${story.planning || "Chưa có"}
+Nhân vật chính: ${story.characters?.map(c => `${c.name} (${c.role || 'Nhân vật'})`).join(', ') || "Chưa thiết lập"}
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[DỮ LIỆU TOÀN BỘ CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
 ${chaptersContext}
 
-Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích cao.
+[GIAO THỨC TỐI THƯỢNG VỀ BẢO TỒN BẢN THẢO & VĂN PHONG]:
+1. 📖 BẢN THẢO THỰC TẾ LÀ NGUYÊN MẪU DUY NHẤT: Bắt buộc phải đọc và phân tích chi tiết dựa trên từng câu chữ, lời thoại, hành động và tình huống trong [BẢN THẢO THỰC TẾ]. Tóm tắt (Summary) chỉ là tài liệu tham khảo phụ trợ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi phóng tác sai lệch sự thật và chi tiết của bản thảo!
+2. 🎭 TÔN TRỌNG VĂN PHONG TÁC GIẢ: Bám sát giọng điệu, nhịp điệu và phong cách kể chuyện đặc trưng của tác giả.
+3. ✍️ ĐỀ XUẤT SỬA BẢN THẢO [PROPOSAL_CONTENT_CHAPTER_<id>]: Khi đưa ra đề xuất sửa đổi bản thảo chương, BẮT BUỘC PHẢI DÙNG BẢN THẢO NGUYÊN MẪU CỦA CHƯƠNG ĐÓ LÀM GỐC. Giữ trọn vẹn 100% các chi tiết, tên nhân vật, vật phẩm, tình huống, lời thoại đắt giá, chỉ chỉnh sửa trau chuốt hoặc bổ sung theo yêu cầu, TUYỆT ĐỐI KHÔNG tóm tắt hay làm mất bất kỳ chi tiết nào của bản thảo gốc.
+
+Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích sâu sắc.
 ĐẶC BIỆT: Bạn có quyền đưa ra đề xuất sửa đổi cấu trúc bằng cách thêm một trong các thẻ sau vào tin nhắn của bạn (nút "Áp dụng" sẽ tự động hiển thị cho người dùng để đồng bộ trực tiếp với bản thảo hoặc dàn ý):
 
 - Để đề xuất cập nhật Dàn ý câu chuyện (Story Planning):
@@ -1132,7 +1152,7 @@ Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích c
 - Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID của chương đó, ví dụ [PROPOSAL_CONTENT_CHAPTER_12345: nội dung bản thảo mới]):
 [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo mới hoặc sửa đổi>]
 
-Hãy viết phân tích sâu sắc và thân thiện bằng tiếng Việt.`;
+Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và phản hồi bằng tiếng Việt.`;
 
     try {
       chat = ai.chats.create({
@@ -1266,7 +1286,32 @@ TRẢ VỀ JSON:
   },
 
   async *refineSelectionStream(selection: string, prefix: string, suffix: string, story: Story, instruction: string) {
-    const prompt = `Tinh chỉnh vùng chọn: "${selection}". Bối cảnh trước: "...${prefix.slice(-500)}". Bối cảnh sau: "${suffix.slice(0, 500)}...". Yêu cầu: ${instruction}.`;
+    const prompt = `[NHIỆM VỤ: TINH CHỈNH ĐOẠN VĂN BẢN CHỌN LỌC]
+Bạn là Biên tập viên văn học cao cấp. Hãy chỉnh sửa và nâng cấp đoạn văn bản sau đây theo yêu cầu của tác giả.
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[BỐI CẢNH LIỀN TRƯỚC]:
+"...${prefix.slice(-600)}"
+
+[ĐOẠN VĂN NGUYÊN MẪU CẦN SỬA]:
+"""
+${selection}
+"""
+
+[BỐI CẢNH LIỀN SAU]:
+"${suffix.slice(0, 600)}..."
+
+[YÊU CẦU CHỈNH SỬA CỤ THỂ]:
+"${instruction || 'Trau chuốt văn phong mượt mà, giàu cảm xúc và hình ảnh'}"
+
+[QUY TẮC BẮT BUỘC]:
+1. 🛡️ GIỮ NGUYÊN TOÀN BỘ CỐT LÕI NGUYÊN MẪU: Giữ nguyên mọi chi tiết, hành động của nhân vật, đồ vật, lời thoại và ý nghĩa của đoạn văn gốc.
+2. 🚫 KHÔNG TẮT HOẶC CẮT BỚT: Tuyệt đối không tóm tắt hay làm mất các chi tiết đặc sắc trong bản gốc.
+3. 🔗 LIỀN MẠCH: Đảm bảo đoạn văn sau khi sửa khớp nối hoàn hảo và mượt mà với bối cảnh trước và sau.
+4. 📝 Chỉ trả về đúng đoạn văn đã chỉnh sửa thay thế, không kèm lời dẫn giải hay chào hỏi.
+
+BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
     const stream = safeGenerateContentStream({
       model: getPro(),
       contents: [{ parts: [{ text: prompt }] }],

@@ -1310,7 +1310,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!storyRef.current) return;
       setIsAnalyzingPlotArc(true);
       try {
-          const result = await geminiService.analyzePlotArc(storyRef.current.chapters, storyRef.current.title);
+          const result = await geminiService.analyzePlotArc(storyRef.current);
           if (result) {
               recordUsage(result.usageMetadata);
               setPlotArcAnalysis(result.data);
