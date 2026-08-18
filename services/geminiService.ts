@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
-import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL } from "./promptBuilderService.ts";
+import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
 
 let lastKeyIndex = 0;
@@ -317,6 +317,36 @@ class DynamicAI {
                 console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded. Tự động chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
                 continue;
               }
+              // All keys hit 429 quota. If model was Pro, try Flash fallback immediately!
+              if (modelId === getPro() && getPro() !== getFlash()) {
+                console.warn(`[Network Layer Quota Recovery] Model Pro (${modelId}) đã chạm trần hạn ngạch (429). Tự động hạ cấp sang Flash (${getFlash()}) để hoàn thành tác vụ ngay lập tức...`);
+                const fallbackParams = {
+                  ...params,
+                  model: getFlash(),
+                  config: params.config ? {
+                    ...params.config,
+                    thinkingConfig: params.config.thinkingConfig ? {
+                      thinkingBudget: Math.min(2048, params.config.thinkingConfig.thinkingBudget || 2048)
+                    } : undefined
+                  } : undefined
+                };
+                try {
+                  const fallbackRes = await rawModels.generateContent(fallbackParams);
+                  if (fallbackRes && fallbackRes.usageMetadata) {
+                    tokenTracker.recordRequestSuccess(
+                      reqId,
+                      fallbackRes.usageMetadata.promptTokenCount || 0,
+                      fallbackRes.usageMetadata.candidatesTokenCount || 0,
+                      fallbackRes.usageMetadata.totalTokenCount || 0
+                    );
+                  } else {
+                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                  }
+                  return fallbackRes;
+                } catch (fallbackErr) {
+                  throw handleApiError(fallbackErr, getFlash());
+                }
+              }
             }
             
             const msg = err?.message || String(err);
@@ -415,6 +445,43 @@ class DynamicAI {
               if (attempt < keysCount - 1) {
                 console.warn(`[Network Layer Stream Rotation] Key (${key.slice(0, 6)}...) bị chạm 429 Quota Exceeded trong Stream. Tự động xoay sang API Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
                 continue;
+              }
+              // All keys hit 429 quota. If model was Pro, try Flash fallback stream immediately!
+              if (modelId === getPro() && getPro() !== getFlash()) {
+                console.warn(`[Network Layer Stream Recovery] Model Pro (${modelId}) bị chạm 429 trong Stream. Tự động chuyển đổi sang Flash (${getFlash()})...`);
+                const fallbackParams = {
+                  ...params,
+                  model: getFlash(),
+                  config: params.config ? {
+                    ...params.config,
+                    thinkingConfig: params.config.thinkingConfig ? {
+                      thinkingBudget: Math.min(2048, params.config.thinkingConfig.thinkingBudget || 2048)
+                    } : undefined
+                  } : undefined
+                };
+                try {
+                  const fallbackStream = await rawModels.generateContentStream(fallbackParams);
+                  let finalMetadata: any = null;
+                  for await (const chunk of fallbackStream) {
+                    if (chunk && chunk.usageMetadata) {
+                      finalMetadata = chunk.usageMetadata;
+                    }
+                    yield chunk as GenerateContentResponse;
+                  }
+                  if (finalMetadata) {
+                    tokenTracker.recordRequestSuccess(
+                      reqId,
+                      finalMetadata.promptTokenCount || 0,
+                      finalMetadata.candidatesTokenCount || 0,
+                      finalMetadata.totalTokenCount || 0
+                    );
+                  } else {
+                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                  }
+                  return;
+                } catch (fallbackErr) {
+                  throw handleApiError(fallbackErr, getFlash());
+                }
               }
             }
             
@@ -1063,22 +1130,34 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(storyOrChapters, storyTitle);
     try {
       const response = await safeGenerateContent({
-        model: getPro(),
+        model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { 
           responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 16000 }
+          thinkingConfig: { thinkingBudget: 2048 }
         }
       });
       return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    } catch (e) {
+      try {
+        const response = await safeGenerateContent({
+          model: getFlash(),
+          contents: [{ parts: [{ text: prompt }] }],
+          config: { responseMimeType: "application/json" }
+        });
+        return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+      } catch (err) {
+        console.error("Plot Arc Analysis failed:", err);
+        return null;
+      }
+    }
   },
 
   async extractKnowledge(text: string, story: Story, categories: ExtractionCategory[] = ['characters', 'world']): Promise<any> {
     const prompt = promptBuilderService.buildKnowledgeExtractionPrompt(text, story.characters, categories);
     try {
       const response = await safeGenerateContent({
-        model: getPro(),
+        model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { responseMimeType: "application/json" }
       });
@@ -1090,17 +1169,6 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     let chat;
     try {
       chat = ai.chats.create({
-        model: getPro(),
-        config: { 
-          systemInstruction: `Bạn là Kiến trúc sư Cốt truyện. Hãy tư vấn dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives}.` 
-        },
-        history: history.map(h => ({ role: h.role, parts: h.parts }))
-      });
-      const response = await chat.sendMessageStream({ message });
-      for await (const chunk of response) yield chunk as GenerateContentResponse;
-    } catch (e) {
-      console.warn("chatPlanningStream getPro() failed, chat falling back to getFlash():", e);
-      chat = ai.chats.create({
         model: getFlash(),
         config: { 
           systemInstruction: `Bạn là Kiến trúc sư Cốt truyện. Hãy tư vấn dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives}.` 
@@ -1109,16 +1177,17 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
       });
       const response = await chat.sendMessageStream({ message });
       for await (const chunk of response) yield chunk as GenerateContentResponse;
+    } catch (e) {
+      console.warn("chatPlanningStream failed:", e);
     }
   },
 
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story) {
     let chat;
-    const chaptersContext = story.chapters.map((c, i) => `=== CHƯƠNG ${i+1}: ${c.title} (ID: ${c.id}) ===
-[Đề cương chi tiết]: ${c.outline || "(Chưa có)"}
-[Tóm tắt sơ lược]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU)]:
-${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`).join("\n\n----------------------------------------\n\n");
+    const chaptersContext = formatSmartChapterContext(story.chapters, {
+      maxTotalChars: 8000,
+      targetChapterMention: message
+    });
 
     const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor). Nhiệm vụ của bạn là cùng tác giả phân tích cốt truyện, phát hiện lỗ hổng logic, sửa chữa tác phẩm và đề xuất hướng phát triển cốt truyện tốt nhất.
 Tên truyện: "${story.title}"
@@ -1129,7 +1198,7 @@ Nhân vật chính: ${story.characters?.map(c => `${c.name} (${c.role || 'Nhân 
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
-[DỮ LIỆU TOÀN BỘ CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
+[DỮ LIỆU CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
 ${chaptersContext}
 
 [GIAO THỨC TỐI THƯỢNG VỀ BẢO TỒN BẢN THẢO & VĂN PHONG]:
@@ -1154,19 +1223,34 @@ Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích s
 
 Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và phản hồi bằng tiếng Việt.`;
 
+    // Sanitize and limit chat history to recent messages to prevent token accumulation
+    const sanitizedHistory = (history || []).slice(-6).map(h => {
+      const parts = (h.parts || []).map(p => {
+        let text = p.text || "";
+        if (text.length > 2000) {
+          text = text.replace(/\[PROPOSAL_CONTENT_CHAPTER_[^:]+:\s*([\s\S]{300})[\s\S]*?\]/g, (_m, prefix) => {
+            return `[Đã đề xuất sửa đổi bản thảo chương: ${prefix}... (Chi tiết đã lưu)]`;
+          });
+        }
+        return { text };
+      });
+      return { role: h.role, parts };
+    });
+
     try {
       chat = ai.chats.create({
-        model: getPro(),
+        model: getFlash(),
         config: { systemInstruction },
-        history: history.map(h => ({ role: h.role, parts: h.parts }))
+        history: sanitizedHistory
       });
       const response = await chat.sendMessageStream({ message });
       for await (const chunk of response) yield chunk as GenerateContentResponse;
     } catch (e) {
+      console.warn("Plot chat error, retrying without history:", e);
       chat = ai.chats.create({
         model: getFlash(),
         config: { systemInstruction },
-        history: history.map(h => ({ role: h.role, parts: h.parts }))
+        history: []
       });
       const response = await chat.sendMessageStream({ message });
       for await (const chunk of response) yield chunk as GenerateContentResponse;
