@@ -15,15 +15,13 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function isKeyCoolingDown(key: string, model?: string): boolean {
   if (!key) return false;
   const cleanK = cleanKey(key);
-  const modelKey = model ? `${cleanK}:${model}` : cleanK;
-  const expiresAt = keyCooldowns.get(modelKey) || keyCooldowns.get(cleanK);
-  if (!expiresAt) return false;
-  if (Date.now() > expiresAt) {
-    keyCooldowns.delete(modelKey);
-    keyCooldowns.delete(cleanK);
-    return false;
+  if (model) {
+    const modelExp = keyCooldowns.get(`${cleanK}:${model}`);
+    if (modelExp && Date.now() < modelExp) return true;
   }
-  return true;
+  const generalExp = keyCooldowns.get(cleanK);
+  if (generalExp && Date.now() < generalExp) return true;
+  return false;
 }
 
 function getKeyCooldownStatus(key: string): { isCoolingDown: boolean; remainingMs: number } {
@@ -56,19 +54,19 @@ function clearAllCooldowns() {
   keyCooldowns.clear();
 }
 
-function markKeyRateLimited(key: string, cooldownMs: number = 30000, model?: string) {
+function markKeyRateLimited(key: string, cooldownMs: number = 25000, model?: string) {
   if (!key) return;
   const cleanK = cleanKey(key);
-  const isPro = model && (model.includes('pro') || model === getPro());
-  if (isPro) {
+  if (model) {
     keyCooldowns.set(`${cleanK}:${model}`, Date.now() + cooldownMs);
-    proModelFailedUntil = Date.now() + 180000; // 3 minutes cooldown for Pro
-    console.warn(`[Network Layer API Key Rotation] Pro model (${model}) đã chạm hạn mức. Tạm chuyển hướng toàn bộ sang Flash trong 3 phút.`);
+    if (model.includes('pro') || model === getPro()) {
+      proModelFailedUntil = Date.now() + 180000;
+    }
   } else {
     keyCooldowns.set(cleanK, Date.now() + cooldownMs);
   }
   const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
-  console.warn(`[Network Layer API Key Rotation] API Key (${masked}) đã chạm giới hạn 429. Đánh dấu tạm ngưng trong ${cooldownMs / 1000}s và chuyển sang Key khả dụng tiếp theo.`);
+  console.warn(`[Network Layer API Key Rotation] API Key (${masked}) trên model (${model || 'chung'}) đã chạm 429. Hồi chiêu ${cooldownMs / 1000}s.`);
 }
 
 function cleanKey(val: string): string {
@@ -248,32 +246,21 @@ const getPro = () => {
   return localStorage.getItem('aetheria_model_pro') || 'gemini-3.7-flash';
 };
 
-function getNextFallbackModel(currentModel: string): string | null {
-  const fallbackChains: Record<string, string[]> = {
-    'gemini-3.1-pro-preview': ['gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
-    'gemini-2.5-pro': ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
-    'gemini-3.7-flash': ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    'gemini-3.5-flash': ['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    'gemini-3.1-flash-lite': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    'gemini-2.5-flash': ['gemini-2.5-flash-lite'],
-    'gemini-flash-latest': ['gemini-3.1-flash-lite', 'gemini-2.5-flash']
-  };
-
-  const chain = fallbackChains[currentModel];
-  if (chain && chain.length > 0) {
-    return chain[0];
+function getModelCascade(requestedModel: string): string[] {
+  const allProModels = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const allFlashModels = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+  
+  if (requestedModel && requestedModel.includes('pro')) {
+    return Array.from(new Set([requestedModel, ...allProModels]));
   }
-  if (!currentModel.includes('flash-lite') && !currentModel.includes('2.5-flash')) {
-    return 'gemini-3.1-flash-lite';
-  }
-  return null;
+  return Array.from(new Set([requestedModel || 'gemini-3.7-flash', ...allFlashModels]));
 }
 
 function cleanConfigForModel(config: any, targetModel: string): any {
   if (!config) return config;
   const newConfig = { ...config };
-  const isLiteOrNonThinking = targetModel.includes('flash-lite') || targetModel.includes('2.5-flash');
-  if (isLiteOrNonThinking && newConfig.thinkingConfig) {
+  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
+  if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
   return newConfig;
@@ -297,18 +284,14 @@ function handleApiError(err: any, modelId?: string): Error {
   
   const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
   if (is403 && modelId && modelId === getPro() && !proModelFailed) {
-    console.warn(`Model Pro (${modelId}) không được cấp quyền (403 PERMISSION_DENIED). Tự động chuyển đổi sang Model Flash cho các yêu cầu tiếp theo.`);
+    console.warn(`Model Pro (${modelId}) không được cấp quyền (403 PERMISSION_DENIED). Tự động chuyển đổi sang Flash.`);
     proModelFailed = true;
   }
 
   const isQuota = isQuotaError(err) || msg.includes("429") || msg.toLowerCase().includes("resource_exhausted") || msg.toLowerCase().includes("quota exceeded") || msg.toLowerCase().includes("rate_limit");
   if (isQuota) {
-    if (modelId && (modelId.includes("pro") || modelId === getPro())) {
-      console.warn(`Model Pro (${modelId}) bị 429 Quota Exceeded. Tạm thời chuyển hướng sang Flash trong 3 phút...`);
-      proModelFailedUntil = Date.now() + 180000;
-    }
     return new Error(
-      `Lỗi 429 (Hạn mức/Tần suất Gemini API): Toàn bộ API Key hoặc model hiện tại (${modelId || 'Gemini'}) đã chạm giới hạn tần suất Free Tier (15 lượt/phút). \n\nCách xử lý nhanh:\n1. Chờ 30 - 60 giây để Google hồi chiêu (cooldown) rồi bấm thử lại.\n2. Thêm 1-2 API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để nhân 2x-3x hạn mức.\n3. Đổi sang Model 'gemini-3.1-flash-lite' hoặc 'gemini-2.5-flash' ở thanh tác vụ bên dưới để tiếp tục ngay lập tức.`
+      `Lỗi 429 (Hạn mức Tần suất Google Free Tier): Toàn bộ API Key hoặc Model (${modelId || 'Gemini'}) đang trong thời gian hạ nhiệt.\n\n• Hãy chờ 30-60 giây để Google giải phóng hạn mức.\n• Hoặc bấm vào bảng hạn mức ở góc phải dưới Editor để chọn ngay '2.5 Flash' / '2.0 Flash'.\n• Lưu ý: Các Key tạo trong cùng 1 Google Cloud Project dùng chung 1 hạn mức 15 RPM. Tạo Key từ tài khoản Google khác để nhân đôi hạn mức.`
     );
   }
 
@@ -322,13 +305,13 @@ function handleApiError(err: any, modelId?: string): Error {
     msg.includes("400") && msg.toLowerCase().includes("key");
 
   if (isKeyError) {
-    const keyUsed = getApiKey(false); // Peek current key, do not rotate when displaying error
+    const keyUsed = getApiKey(false);
     const maskKey = keyUsed 
       ? `${keyUsed.slice(0, 6)}...${keyUsed.slice(-4)}` 
-      : "Không tìm thấy key nào";
+      : "Không tìm thấy";
       
     return new Error(
-      `Lỗi xác thực API Key của Gemini (Đang dùng: ${maskKey}). Vui lòng kiểm tra lại độ chính xác của API Key trong 'Cài đặt Toàn cầu' (nhấp vào icon bánh răng ở thanh bên) hoặc cài đặt biến môi trường của AI Studio. Chi tiết: ${msg}`
+      `Lỗi xác thực API Key của Gemini (${maskKey}). Vui lòng kiểm tra lại API Key trong 'Cài đặt Toàn cầu' (icon bánh răng). Chi tiết: ${msg}`
     );
   }
   
@@ -339,257 +322,222 @@ class DynamicAI {
   get models() {
     return {
       generateContent: async (params: any) => {
-        const keysCount = Math.max(1, getAvailableKeysCount());
-        const maxRounds = 4;
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
+        const requestedModel = params.model || getFlash();
+        const modelCascade = getModelCascade(requestedModel);
         let lastErr: any = null;
-        let currentModelId = params.model;
-        let currentParams = { ...params };
-        
-        for (let round = 0; round < maxRounds; round++) {
-          if (round > 0) {
-            const backoffMs = 1200 * Math.pow(1.6, round - 1);
-            console.warn(`[Network Layer Quota Backoff] Đang chờ ${Math.round(backoffMs)}ms để hồi chiêu hạn mức trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
-            await sleep(backoffMs);
-          }
 
-          for (let attempt = 0; attempt < keysCount; attempt++) {
-            const key = getApiKey(attempt > 0 || round > 0);
-            const rawModels = createGenAI(key).models;
-            const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
-            
-            try {
-              const res = await rawModels.generateContent({
-                ...currentParams,
-                model: currentModelId,
-                config: cleanConfigForModel(currentParams.config, currentModelId)
-              });
-              if (res && res.usageMetadata) {
-                tokenTracker.recordRequestSuccess(
-                  reqId,
-                  res.usageMetadata.promptTokenCount || 0,
-                  res.usageMetadata.candidatesTokenCount || 0,
-                  res.usageMetadata.totalTokenCount || 0
-                );
-              } else {
-                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+        for (const currentModelId of modelCascade) {
+          let currentParams = {
+            ...params,
+            model: currentModelId,
+            config: cleanConfigForModel(params.config, currentModelId)
+          };
+
+          for (let round = 0; round < 2; round++) {
+            if (round > 0) {
+              await sleep(1000);
+            }
+
+            for (let attempt = 0; attempt < keysCount; attempt++) {
+              const key = keys.length > 0 ? keys[(lastKeyIndex + attempt) % keys.length] : getApiKey();
+              if (isKeyCoolingDown(key, currentModelId)) {
+                continue;
               }
-              return res;
-            } catch (err: any) {
-              tokenTracker.recordRequestFailure(reqId);
-              lastErr = err;
-              
-              if (isQuotaError(err)) {
-                markKeyRateLimited(key, 25000, currentModelId);
-                
-                // Intelligent Cascade Model Fallback
-                const fallbackModel = getNextFallbackModel(currentModelId);
-                if (fallbackModel) {
-                  console.warn(`[Network Layer Quota Recovery] Model (${currentModelId}) chạm hạn mức 429. Tự động chuyển đổi sang model dự phòng (${fallbackModel})...`);
-                  currentModelId = fallbackModel;
-                  currentParams = {
-                    ...currentParams,
-                    config: cleanConfigForModel(currentParams.config, currentModelId)
-                  };
-                  if (currentModelId === getPro()) {
-                    proModelFailedUntil = Date.now() + 180000;
-                  }
-                }
 
-                if (attempt < keysCount - 1) {
-                  console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) chạm 429. Chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
+              const rawModels = createGenAI(key).models;
+              const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+
+              try {
+                const res = await rawModels.generateContent(currentParams);
+                if (res && res.usageMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    res.usageMetadata.promptTokenCount || 0,
+                    res.usageMetadata.candidatesTokenCount || 0,
+                    res.usageMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                return res;
+              } catch (err: any) {
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = err;
+
+                if (isQuotaError(err)) {
+                  markKeyRateLimited(key, 25000, currentModelId);
+                  console.warn(`[Network Layer] Key (${key.slice(0, 6)}...) chạm 429 trên ${currentModelId}. Xoay vòng tiếp...`);
                   continue;
                 }
-                break;
-              }
-              
-              const msg = err?.message || String(err);
-              const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-              const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
-              
-              if (is403 && hasSearch) {
-                console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
-                currentParams.config = stripGoogleSearch(currentParams.config);
-                try {
-                  const res = await rawModels.generateContent({
-                    ...currentParams,
-                    model: currentModelId,
-                    config: cleanConfigForModel(currentParams.config, currentModelId)
-                  });
-                  if (res && res.usageMetadata) {
-                    tokenTracker.recordRequestSuccess(
-                      reqId,
-                      res.usageMetadata.promptTokenCount || 0,
-                      res.usageMetadata.candidatesTokenCount || 0,
-                      res.usageMetadata.totalTokenCount || 0
-                    );
-                  } else {
-                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                  }
-                  return res;
-                } catch (retryErr) {
-                  if (isQuotaError(retryErr)) {
-                    markKeyRateLimited(key, 25000, currentModelId);
-                    if (attempt < keysCount - 1) {
+
+                const msg = err?.message || String(err);
+                const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+                const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
+
+                if (is403 && hasSearch) {
+                  currentParams.config = stripGoogleSearch(currentParams.config);
+                  try {
+                    const res = await rawModels.generateContent(currentParams);
+                    if (res && res.usageMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        res.usageMetadata.promptTokenCount || 0,
+                        res.usageMetadata.candidatesTokenCount || 0,
+                        res.usageMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    return res;
+                  } catch (retryErr: any) {
+                    if (isQuotaError(retryErr)) {
+                      markKeyRateLimited(key, 25000, currentModelId);
                       continue;
                     }
                   }
-                  throw handleApiError(retryErr, currentModelId);
                 }
+
+                if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                  console.warn(`Model ${currentModelId} không tồn tại trên endpoint, chuyển sang model kế tiếp...`);
+                  break;
+                }
+
+                if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                  continue;
+                }
+
+                throw handleApiError(err, currentModelId);
               }
-              
-              throw handleApiError(err, currentModelId);
             }
           }
         }
-        throw handleApiError(lastErr, currentModelId);
+
+        throw handleApiError(lastErr, requestedModel);
       },
 
       generateContentStream: async function* (params: any) {
-        const keysCount = Math.max(1, getAvailableKeysCount());
-        const maxRounds = 4;
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
+        const requestedModel = params.model || getFlash();
+        const modelCascade = getModelCascade(requestedModel);
         let lastErr: any = null;
-        let currentModelId = params.model;
-        let currentParams = { ...params };
-        
-        for (let round = 0; round < maxRounds; round++) {
-          if (round > 0) {
-            const backoffMs = 1200 * Math.pow(1.6, round - 1);
-            console.warn(`[Network Layer Stream Backoff] Đang chờ ${Math.round(backoffMs)}ms để hồi chiêu hạn mức trước khi thử lại stream (Vòng ${round + 1}/${maxRounds})...`);
-            await sleep(backoffMs);
-          }
 
-          for (let attempt = 0; attempt < keysCount; attempt++) {
-            const key = getApiKey(attempt > 0 || round > 0);
-            const rawModels = createGenAI(key).models;
-            const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
-            
-            try {
-              const stream = await rawModels.generateContentStream({
-                ...currentParams,
-                model: currentModelId,
-                config: cleanConfigForModel(currentParams.config, currentModelId)
-              });
-              let finalMetadata: any = null;
-              let yieldedAny = false;
+        for (const currentModelId of modelCascade) {
+          let currentParams = {
+            ...params,
+            model: currentModelId,
+            config: cleanConfigForModel(params.config, currentModelId)
+          };
+
+          for (let round = 0; round < 2; round++) {
+            if (round > 0) {
+              await sleep(1000);
+            }
+
+            for (let attempt = 0; attempt < keysCount; attempt++) {
+              const key = keys.length > 0 ? keys[(lastKeyIndex + attempt) % keys.length] : getApiKey();
+              if (isKeyCoolingDown(key, currentModelId)) {
+                continue;
+              }
+
+              const rawModels = createGenAI(key).models;
+              const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
 
               try {
-                for await (const chunk of stream) {
-                  yieldedAny = true;
-                  if (chunk && chunk.usageMetadata) {
-                    finalMetadata = chunk.usageMetadata;
-                  }
-                  yield chunk as GenerateContentResponse;
-                }
-              } catch (streamErr: any) {
-                if (!yieldedAny && isQuotaError(streamErr)) {
-                  markKeyRateLimited(key, 25000, currentModelId);
-                  tokenTracker.recordRequestFailure(reqId);
-                  lastErr = streamErr;
+                const stream = await rawModels.generateContentStream(currentParams);
+                let finalMetadata: any = null;
+                let yieldedAny = false;
 
-                  const fallbackModel = getNextFallbackModel(currentModelId);
-                  if (fallbackModel) {
-                    console.warn(`[Network Layer Stream Quota Recovery] Model (${currentModelId}) chạm 429. Chuyển sang model (${fallbackModel})...`);
-                    currentModelId = fallbackModel;
-                    currentParams = {
-                      ...currentParams,
-                      config: cleanConfigForModel(currentParams.config, currentModelId)
-                    };
-                  }
-
-                  if (attempt < keysCount - 1) {
-                    console.warn(`[Network Layer Stream Rotation] Stream bị 429 trước khi phát dữ liệu. Chuyển sang Key tiếp theo...`);
-                    continue;
-                  }
-                  break;
-                }
-                throw streamErr;
-              }
-
-              if (finalMetadata) {
-                tokenTracker.recordRequestSuccess(
-                  reqId,
-                  finalMetadata.promptTokenCount || 0,
-                  finalMetadata.candidatesTokenCount || 0,
-                  finalMetadata.totalTokenCount || 0
-                );
-              } else {
-                tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-              }
-              return;
-            } catch (err: any) {
-              tokenTracker.recordRequestFailure(reqId);
-              lastErr = err;
-              
-              if (isQuotaError(err)) {
-                markKeyRateLimited(key, 25000, currentModelId);
-                
-                const fallbackModel = getNextFallbackModel(currentModelId);
-                if (fallbackModel) {
-                  console.warn(`[Network Layer Stream Recovery] Model (${currentModelId}) chạm 429. Chuyển đổi sang (${fallbackModel})...`);
-                  currentModelId = fallbackModel;
-                  currentParams = {
-                    ...currentParams,
-                    config: cleanConfigForModel(currentParams.config, currentModelId)
-                  };
-                  if (currentModelId === getPro()) {
-                    proModelFailedUntil = Date.now() + 180000;
-                  }
-                }
-
-                if (attempt < keysCount - 1) {
-                  console.warn(`[Network Layer Stream Rotation] Key (${key.slice(0, 6)}...) chạm 429 trong Stream. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                  continue;
-                }
-                break;
-              }
-              
-              const msg = err?.message || String(err);
-              const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-              const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
-              
-              if (is403 && hasSearch) {
-                console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
-                currentParams.config = stripGoogleSearch(currentParams.config);
                 try {
-                  const stream = await rawModels.generateContentStream({
-                    ...currentParams,
-                    model: currentModelId,
-                    config: cleanConfigForModel(currentParams.config, currentModelId)
-                  });
-                  let finalMetadata: any = null;
                   for await (const chunk of stream) {
+                    yieldedAny = true;
                     if (chunk && chunk.usageMetadata) {
                       finalMetadata = chunk.usageMetadata;
                     }
                     yield chunk as GenerateContentResponse;
                   }
-                  if (finalMetadata) {
-                    tokenTracker.recordRequestSuccess(
-                      reqId,
-                      finalMetadata.promptTokenCount || 0,
-                      finalMetadata.candidatesTokenCount || 0,
-                      finalMetadata.totalTokenCount || 0
-                    );
-                  } else {
-                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                  }
-                  return;
-                } catch (retryErr) {
-                  if (isQuotaError(retryErr)) {
+                } catch (streamErr: any) {
+                  if (!yieldedAny && isQuotaError(streamErr)) {
                     markKeyRateLimited(key, 25000, currentModelId);
-                    if (attempt < keysCount - 1) {
+                    tokenTracker.recordRequestFailure(reqId);
+                    lastErr = streamErr;
+                    continue;
+                  }
+                  throw streamErr;
+                }
+
+                if (finalMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    finalMetadata.promptTokenCount || 0,
+                    finalMetadata.candidatesTokenCount || 0,
+                    finalMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                return; // Succeeded!
+              } catch (err: any) {
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = err;
+
+                if (isQuotaError(err)) {
+                  markKeyRateLimited(key, 25000, currentModelId);
+                  continue;
+                }
+
+                const msg = err?.message || String(err);
+                const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+                const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
+
+                if (is403 && hasSearch) {
+                  currentParams.config = stripGoogleSearch(currentParams.config);
+                  try {
+                    const stream = await rawModels.generateContentStream(currentParams);
+                    let finalMetadata: any = null;
+                    for await (const chunk of stream) {
+                      if (chunk && chunk.usageMetadata) {
+                        finalMetadata = chunk.usageMetadata;
+                      }
+                      yield chunk as GenerateContentResponse;
+                    }
+                    if (finalMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        finalMetadata.promptTokenCount || 0,
+                        finalMetadata.candidatesTokenCount || 0,
+                        finalMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    return;
+                  } catch (retryErr: any) {
+                    if (isQuotaError(retryErr)) {
+                      markKeyRateLimited(key, 25000, currentModelId);
                       continue;
                     }
                   }
-                  throw handleApiError(retryErr, currentModelId);
                 }
+
+                if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                  console.warn(`Model ${currentModelId} không tồn tại trên stream, thử model tiếp theo...`);
+                  break;
+                }
+
+                if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                  continue;
+                }
+
+                throw handleApiError(err, currentModelId);
               }
-              
-              throw handleApiError(err, currentModelId);
             }
           }
         }
-        throw handleApiError(lastErr, currentModelId);
+
+        throw handleApiError(lastErr, requestedModel);
       },
 
       embedContent: async (params: any) => {

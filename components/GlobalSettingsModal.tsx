@@ -162,18 +162,32 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     };
 
     const handleAddKey = () => {
-        setApiKeys([...apiKeys, ""]);
+        const newKeys = [...apiKeys, ""];
+        setApiKeys(newKeys);
     };
 
     const handleRemoveKey = (index: number) => {
         const newKeys = apiKeys.filter((_, i) => i !== index);
-        setApiKeys(newKeys.length > 0 ? newKeys : [""]);
+        const resultKeys = newKeys.length > 0 ? newKeys : [""];
+        setApiKeys(resultKeys);
+        const filteredKeys = resultKeys.map(k => k.trim()).filter(Boolean);
+        if (filteredKeys.length > 0) {
+            localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
+        } else {
+            localStorage.removeItem('aetheria_api_key');
+        }
     };
 
     const handleKeyChange = (index: number, val: string) => {
         const newKeys = [...apiKeys];
         newKeys[index] = val;
         setApiKeys(newKeys);
+        const filteredKeys = newKeys.map(k => k.trim()).filter(Boolean);
+        if (filteredKeys.length > 0) {
+            localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
+        } else {
+            localStorage.removeItem('aetheria_api_key');
+        }
     };
 
     const handleBulkImport = () => {
@@ -185,9 +199,14 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         
         if (parsedKeys.length > 0) {
             const merged = Array.from(new Set([...apiKeys.filter(Boolean), ...parsedKeys]));
-            setApiKeys(merged.length > 0 ? merged : [""]);
+            const resultKeys = merged.length > 0 ? merged : [""];
+            setApiKeys(resultKeys);
             setBulkText("");
             setShowBulkInput(false);
+            const filteredKeys = resultKeys.map(k => k.trim()).filter(Boolean);
+            if (filteredKeys.length > 0) {
+                localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
+            }
         }
     };
 
@@ -204,6 +223,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         
         // Reset flags for models
         geminiService.resetProModelFailed();
+        geminiService.clearAllCooldowns();
         
         onClose();
     };
