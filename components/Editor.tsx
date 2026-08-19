@@ -570,10 +570,13 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
           <div className="flex items-center gap-2 relative">
               {/* Tooltip detail panel */}
               {showTokenDetails && (
-                  <div className="absolute bottom-12 right-0 bg-gray-900 border border-gray-700 rounded-2xl p-4 w-72 shadow-2xl z-50 text-xs animate-fadeIn space-y-3">
-                      <h4 className="font-bold text-white border-b border-gray-800 pb-1 flex items-center justify-between">
-                          <span>Hạn Mức Google Free API</span>
-                          <span className="text-[8px] text-gray-500 uppercase tracking-widest font-normal">Google AI Studio</span>
+                  <div className="absolute bottom-12 right-0 bg-gray-900 border border-gray-700 rounded-2xl p-4 w-80 shadow-2xl z-50 text-xs animate-fadeIn space-y-3">
+                      <h4 className="font-bold text-white border-b border-gray-800 pb-1.5 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            Hạn Mức Google Free API
+                          </span>
+                          <span className="text-[9px] text-gray-500 uppercase tracking-widest font-normal">AI Studio</span>
                       </h4>
                       <div className="space-y-3">
                           {/* PRO MODEL */}
@@ -609,6 +612,58 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                                   <span>Yêu cầu/ngày (RPD):</span>
                                   <span className="text-right font-mono text-white">{flashStatus.rpdUsed} / {flashStatus.rpdLimit}</span>
                               </div>
+                          </div>
+
+                          {/* Quick Model Switch Buttons for Anti-429 */}
+                          <div className="pt-2 border-t border-gray-800 space-y-1.5 text-left">
+                            <span className="text-[10px] font-semibold text-gray-300 block">Đổi Model nhanh khi bị 429:</span>
+                            <div className="grid grid-cols-3 gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.7-flash');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
+                                  (localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash') === 'gemini-3.7-flash'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                3.7 Flash
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
+                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.1-flash-lite'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                3.1 Lite (Ít 429)
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-2.5-flash');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
+                                  localStorage.getItem('aetheria_model_flash') === 'gemini-2.5-flash'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                2.5 Flash
+                              </button>
+                            </div>
+                            <p className="text-[8px] text-gray-400 italic pt-1">
+                              * Mẹo: Thêm 1-2 API Key miễn phí từ Google AI Studio vào Cài đặt (bánh răng) để nhân đôi hạn mức.
+                            </p>
                           </div>
                       </div>
                   </div>

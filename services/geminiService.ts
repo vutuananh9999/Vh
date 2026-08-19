@@ -248,6 +248,37 @@ const getPro = () => {
   return localStorage.getItem('aetheria_model_pro') || 'gemini-3.7-flash';
 };
 
+function getNextFallbackModel(currentModel: string): string | null {
+  const fallbackChains: Record<string, string[]> = {
+    'gemini-3.1-pro-preview': ['gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+    'gemini-2.5-pro': ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+    'gemini-3.7-flash': ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    'gemini-3.5-flash': ['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    'gemini-3.1-flash-lite': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    'gemini-2.5-flash': ['gemini-2.5-flash-lite'],
+    'gemini-flash-latest': ['gemini-3.1-flash-lite', 'gemini-2.5-flash']
+  };
+
+  const chain = fallbackChains[currentModel];
+  if (chain && chain.length > 0) {
+    return chain[0];
+  }
+  if (!currentModel.includes('flash-lite') && !currentModel.includes('2.5-flash')) {
+    return 'gemini-3.1-flash-lite';
+  }
+  return null;
+}
+
+function cleanConfigForModel(config: any, targetModel: string): any {
+  if (!config) return config;
+  const newConfig = { ...config };
+  const isLiteOrNonThinking = targetModel.includes('flash-lite') || targetModel.includes('2.5-flash');
+  if (isLiteOrNonThinking && newConfig.thinkingConfig) {
+    delete newConfig.thinkingConfig;
+  }
+  return newConfig;
+}
+
 function stripGoogleSearch(config: any): any {
   if (!config) return config;
   const newConfig = { ...config };
@@ -277,7 +308,7 @@ function handleApiError(err: any, modelId?: string): Error {
       proModelFailedUntil = Date.now() + 180000;
     }
     return new Error(
-      `Lỗi 429 (Hạn mức/Tần suất Gemini bị vượt quá): Bán kính tất cả API Key hiện tại đã chạm giới hạn tần suất (Free Tier: 15 yêu cầu/phút hoặc 250,000 tokens đầu vào/phút cho Flash). \nHướng khắc phục:\n1. Vui lòng chờ 1 phút rồi thử lại để hệ thống hồi chiêu (cooldown).\n2. Nhập thêm API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để kích hoạt cơ chế xoay vòng tự động nhân gấp nhiều lần hạn mức.\n3. Rút ngắn văn bản truyện đang soạn thảo hoặc bắt đầu một Chương mới/phiên chat mới để giảm dung lượng tokens truyền lên.`
+      `Lỗi 429 (Hạn mức/Tần suất Gemini API): Toàn bộ API Key hoặc model hiện tại (${modelId || 'Gemini'}) đã chạm giới hạn tần suất Free Tier (15 lượt/phút). \n\nCách xử lý nhanh:\n1. Chờ 30 - 60 giây để Google hồi chiêu (cooldown) rồi bấm thử lại.\n2. Thêm 1-2 API Key phụ trong 'Cài đặt Toàn cầu' (icon bánh răng) để nhân 2x-3x hạn mức.\n3. Đổi sang Model 'gemini-3.1-flash-lite' hoặc 'gemini-2.5-flash' ở thanh tác vụ bên dưới để tiếp tục ngay lập tức.`
     );
   }
 
@@ -309,14 +340,15 @@ class DynamicAI {
     return {
       generateContent: async (params: any) => {
         const keysCount = Math.max(1, getAvailableKeysCount());
-        const maxRounds = 3;
+        const maxRounds = 4;
         let lastErr: any = null;
         let currentModelId = params.model;
+        let currentParams = { ...params };
         
         for (let round = 0; round < maxRounds; round++) {
           if (round > 0) {
-            const backoffMs = 1500 * Math.pow(1.8, round - 1);
-            console.warn(`[Network Layer Quota Backoff] Tất cả Key đang chạm giới hạn tần suất (429). Chờ ${Math.round(backoffMs)}ms trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
+            const backoffMs = 1200 * Math.pow(1.6, round - 1);
+            console.warn(`[Network Layer Quota Backoff] Đang chờ ${Math.round(backoffMs)}ms để hồi chiêu hạn mức trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
             await sleep(backoffMs);
           }
 
@@ -327,8 +359,9 @@ class DynamicAI {
             
             try {
               const res = await rawModels.generateContent({
-                ...params,
-                model: currentModelId
+                ...currentParams,
+                model: currentModelId,
+                config: cleanConfigForModel(currentParams.config, currentModelId)
               });
               if (res && res.usageMetadata) {
                 tokenTracker.recordRequestSuccess(
@@ -348,33 +381,39 @@ class DynamicAI {
               if (isQuotaError(err)) {
                 markKeyRateLimited(key, 25000, currentModelId);
                 
-                // If model was Pro, downgrade to Flash immediately!
-                if (currentModelId === getPro() && getPro() !== getFlash()) {
-                  console.warn(`[Network Layer Quota Recovery] Model Pro (${currentModelId}) chạm hạn mức (429). Tự động chuyển đổi sang Flash (${getFlash()})...`);
-                  currentModelId = getFlash();
-                  proModelFailedUntil = Date.now() + 180000;
+                // Intelligent Cascade Model Fallback
+                const fallbackModel = getNextFallbackModel(currentModelId);
+                if (fallbackModel) {
+                  console.warn(`[Network Layer Quota Recovery] Model (${currentModelId}) chạm hạn mức 429. Tự động chuyển đổi sang model dự phòng (${fallbackModel})...`);
+                  currentModelId = fallbackModel;
+                  currentParams = {
+                    ...currentParams,
+                    config: cleanConfigForModel(currentParams.config, currentModelId)
+                  };
+                  if (currentModelId === getPro()) {
+                    proModelFailedUntil = Date.now() + 180000;
+                  }
                 }
 
                 if (attempt < keysCount - 1) {
                   console.warn(`[Network Layer Key Rotation] Key (${key.slice(0, 6)}...) chạm 429. Chuyển sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
                   continue;
                 }
-                // All keys in this round hit 429, will proceed to next round with backoff
                 break;
               }
               
               const msg = err?.message || String(err);
               const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-              const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+              const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
               
               if (is403 && hasSearch) {
                 console.warn("Google Search tool returned 403 PERMISSION_DENIED. Retrying without search grounding...");
-                const cleanConfig = stripGoogleSearch(params.config);
+                currentParams.config = stripGoogleSearch(currentParams.config);
                 try {
                   const res = await rawModels.generateContent({
-                    ...params,
+                    ...currentParams,
                     model: currentModelId,
-                    config: cleanConfig
+                    config: cleanConfigForModel(currentParams.config, currentModelId)
                   });
                   if (res && res.usageMetadata) {
                     tokenTracker.recordRequestSuccess(
@@ -407,14 +446,15 @@ class DynamicAI {
 
       generateContentStream: async function* (params: any) {
         const keysCount = Math.max(1, getAvailableKeysCount());
-        const maxRounds = 3;
+        const maxRounds = 4;
         let lastErr: any = null;
         let currentModelId = params.model;
+        let currentParams = { ...params };
         
         for (let round = 0; round < maxRounds; round++) {
           if (round > 0) {
-            const backoffMs = 1500 * Math.pow(1.8, round - 1);
-            console.warn(`[Network Layer Stream Backoff] Tất cả Key đang chạm giới hạn tần suất (429). Chờ ${Math.round(backoffMs)}ms trước khi thử lại (Vòng ${round + 1}/${maxRounds})...`);
+            const backoffMs = 1200 * Math.pow(1.6, round - 1);
+            console.warn(`[Network Layer Stream Backoff] Đang chờ ${Math.round(backoffMs)}ms để hồi chiêu hạn mức trước khi thử lại stream (Vòng ${round + 1}/${maxRounds})...`);
             await sleep(backoffMs);
           }
 
@@ -425,8 +465,9 @@ class DynamicAI {
             
             try {
               const stream = await rawModels.generateContentStream({
-                ...params,
-                model: currentModelId
+                ...currentParams,
+                model: currentModelId,
+                config: cleanConfigForModel(currentParams.config, currentModelId)
               });
               let finalMetadata: any = null;
               let yieldedAny = false;
@@ -444,6 +485,17 @@ class DynamicAI {
                   markKeyRateLimited(key, 25000, currentModelId);
                   tokenTracker.recordRequestFailure(reqId);
                   lastErr = streamErr;
+
+                  const fallbackModel = getNextFallbackModel(currentModelId);
+                  if (fallbackModel) {
+                    console.warn(`[Network Layer Stream Quota Recovery] Model (${currentModelId}) chạm 429. Chuyển sang model (${fallbackModel})...`);
+                    currentModelId = fallbackModel;
+                    currentParams = {
+                      ...currentParams,
+                      config: cleanConfigForModel(currentParams.config, currentModelId)
+                    };
+                  }
+
                   if (attempt < keysCount - 1) {
                     console.warn(`[Network Layer Stream Rotation] Stream bị 429 trước khi phát dữ liệu. Chuyển sang Key tiếp theo...`);
                     continue;
@@ -471,10 +523,17 @@ class DynamicAI {
               if (isQuotaError(err)) {
                 markKeyRateLimited(key, 25000, currentModelId);
                 
-                if (currentModelId === getPro() && getPro() !== getFlash()) {
-                  console.warn(`[Network Layer Stream Recovery] Model Pro (${currentModelId}) chạm 429. Chuyển đổi sang Flash (${getFlash()})...`);
-                  currentModelId = getFlash();
-                  proModelFailedUntil = Date.now() + 180000;
+                const fallbackModel = getNextFallbackModel(currentModelId);
+                if (fallbackModel) {
+                  console.warn(`[Network Layer Stream Recovery] Model (${currentModelId}) chạm 429. Chuyển đổi sang (${fallbackModel})...`);
+                  currentModelId = fallbackModel;
+                  currentParams = {
+                    ...currentParams,
+                    config: cleanConfigForModel(currentParams.config, currentModelId)
+                  };
+                  if (currentModelId === getPro()) {
+                    proModelFailedUntil = Date.now() + 180000;
+                  }
                 }
 
                 if (attempt < keysCount - 1) {
@@ -486,16 +545,16 @@ class DynamicAI {
               
               const msg = err?.message || String(err);
               const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-              const hasSearch = params.config?.tools?.some((t: any) => t.googleSearch);
+              const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
               
               if (is403 && hasSearch) {
                 console.warn("Google Search tool returned 403 PERMISSION_DENIED in stream. Retrying without search grounding...");
-                const cleanConfig = stripGoogleSearch(params.config);
+                currentParams.config = stripGoogleSearch(currentParams.config);
                 try {
                   const stream = await rawModels.generateContentStream({
-                    ...params,
+                    ...currentParams,
                     model: currentModelId,
-                    config: cleanConfig
+                    config: cleanConfigForModel(currentParams.config, currentModelId)
                   });
                   let finalMetadata: any = null;
                   for await (const chunk of stream) {
@@ -752,51 +811,60 @@ const MODEL_VEO = 'veo-3.1-lite-generate-preview';
 
 // Helper for safe content generation with fallback
 async function safeGenerateContent(params: { model: string, contents: any, config?: any }): Promise<any> {
-  try {
-    return await ai.models.generateContent(params);
-  } catch (error: any) {
-    if (params.model === getPro()) {
-      console.warn("getPro() failed, falling back to getFlash():", error);
-      const fallbackConfig = params.config ? { ...params.config } : {};
-      if (fallbackConfig.thinkingConfig) {
-        delete fallbackConfig.thinkingConfig;
-      }
+  const fallbackModels = [
+    params.model,
+    'gemini-3.7-flash',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash'
+  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+  let lastError: any = null;
+  for (const modelToTry of fallbackModels) {
+    try {
+      const config = cleanConfigForModel(params.config, modelToTry);
       return await ai.models.generateContent({
         ...params,
-        model: getFlash(),
-        config: fallbackConfig
+        model: modelToTry,
+        config
       });
+    } catch (error: any) {
+      lastError = error;
+      console.warn(`safeGenerateContent failed on model ${modelToTry}, trying next fallback...`, error);
     }
-    throw error;
   }
+  throw lastError;
 }
 
 // Helper for safe streaming content generation with fallback
 async function* safeGenerateContentStream(params: { model: string, contents: any, config?: any }): AsyncGenerator<GenerateContentResponse, void, unknown> {
-  try {
-    const stream = await ai.models.generateContentStream(params);
-    for await (const chunk of stream) {
-      yield chunk as GenerateContentResponse;
-    }
-  } catch (error: any) {
-    if (params.model === getPro()) {
-      console.warn("getPro() stream failed, falling back to getFlash() stream:", error);
-      const fallbackConfig = params.config ? { ...params.config } : {};
-      if (fallbackConfig.thinkingConfig) {
-        delete fallbackConfig.thinkingConfig;
-      }
-      const streamFallback = await ai.models.generateContentStream({
+  const fallbackModels = [
+    params.model,
+    'gemini-3.7-flash',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash'
+  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+  let lastError: any = null;
+  for (const modelToTry of fallbackModels) {
+    try {
+      const config = cleanConfigForModel(params.config, modelToTry);
+      const stream = await ai.models.generateContentStream({
         ...params,
-        model: getFlash(),
-        config: fallbackConfig
+        model: modelToTry,
+        config
       });
-      for await (const chunk of streamFallback) {
+      for await (const chunk of stream) {
         yield chunk as GenerateContentResponse;
       }
-    } else {
-      throw error;
+      return; // Streamed successfully
+    } catch (error: any) {
+      lastError = error;
+      console.warn(`safeGenerateContentStream failed on model ${modelToTry}, trying next fallback...`, error);
     }
   }
+  throw lastError;
 }
 
 export const geminiService = {
