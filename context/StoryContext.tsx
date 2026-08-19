@@ -166,6 +166,8 @@ interface StoryContextType {
   deleteCharacter: (id: string) => Promise<void>;
   autoUpdateCharacter: (charId: string) => Promise<Character | null>;
   
+  splitChapter: (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => Promise<void>;
+  
   applyPendingEdit: () => void;
   discardPendingEdit: () => void;
   isAutoTranslateEnabled: boolean;
@@ -567,6 +569,51 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const newActiveId = sorted[0]?.id || null;
         setActiveChapterId(newActiveId);
     }
+    await loadStories();
+  };
+
+  const splitChapter = async (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => {
+    const currentStory = storyRef.current;
+    if (!currentStory || !segments || segments.length === 0) return;
+
+    const targetIndex = currentStory.chapters.findIndex(c => c.id === chapterId);
+    if (targetIndex === -1) return;
+
+    const originalChapter = currentStory.chapters[targetIndex];
+    
+    // Create new chapter objects for segments
+    const newSegmentChapters: Chapter[] = segments.map((seg, idx) => {
+      return {
+        id: idx === 0 ? originalChapter.id : generateId(),
+        title: seg.title || `${originalChapter.title} (Phần ${idx + 1})`,
+        content: seg.content || '',
+        summary: seg.summary || '',
+        outline: seg.outline || (idx === 0 ? originalChapter.outline : ''),
+        timeSetting: originalChapter.timeSetting || '',
+        order: 0,
+        wordGoal: Math.max(500, Math.round((originalChapter.wordGoal || 2000) / segments.length)),
+        lastUpdated: Date.now(),
+      };
+    });
+
+    const chaptersBefore = currentStory.chapters.slice(0, targetIndex);
+    const chaptersAfter = currentStory.chapters.slice(targetIndex + 1);
+
+    const combinedChapters = [...chaptersBefore, ...newSegmentChapters, ...chaptersAfter];
+
+    const reIndexedChapters = combinedChapters.map((c, i) => ({
+      ...c,
+      order: i + 1,
+    }));
+
+    const updatedStory = {
+      ...currentStory,
+      chapters: reIndexedChapters,
+    };
+
+    setStory(updatedStory);
+    await storageService.saveStory(updatedStory);
+    setActiveChapterId(newSegmentChapters[0].id);
     await loadStories();
   };
 
@@ -1656,7 +1703,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
       canUndo, canRedo, undo, redo,
       loadStories, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
-      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, deleteChapter, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
+      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, deleteChapter, splitChapter, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
       generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffe
 import { useStory } from '../context/StoryContext.tsx';
 import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DiffReview } from './DiffReview.tsx';
+import { SplitChapterModal } from './SplitChapterModal.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { tokenTracker } from '../services/tokenTracker.ts';
 
@@ -49,12 +50,14 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     sessionTotalTokens,
     remainingTokensEstimate,
     selectChapter,
+    splitChapter,
     isAutoTranslateEnabled,
     setIsAutoTranslateEnabled
   } = useStory();
 
   const [isEditMode, setIsEditMode] = useState(true);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
   const [refineCommand, setRefineCommand] = useState('');
   const [isRefinePanelOpen, setIsRefinePanelOpen] = useState(false);
   const [activeAITab, setActiveAITab] = useState<EditorTab>('refine');
@@ -377,6 +380,18 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
             </svg>
           </button>
 
+          {/* Chia nhỏ chương (Split Chapter) */}
+          <button 
+            onClick={() => setIsSplitModalOpen(true)}
+            disabled={isGenerating || !activeChapter?.content?.trim()}
+            className="p-2 rounded transition-all border shrink-0 flex items-center justify-center bg-purple-950/30 text-purple-300 border-purple-800/40 hover:bg-purple-900/40 hover:border-purple-600/60 disabled:opacity-40"
+            title="Chia nhỏ chương (Tách thành các phân đoạn nhỏ để giảm tải API & tăng chiều sâu)"
+          >
+            <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+            </svg>
+          </button>
+
           {/* Chế độ Viết / Đọc */}
           <button 
             onClick={() => setIsEditMode(!isEditMode)} 
@@ -694,6 +709,18 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
               </div>
 
               <div className="flex items-start gap-3 p-2 hover:bg-gray-800/30 rounded-xl transition-all">
+                <div className="p-1.5 rounded bg-purple-950/40 text-purple-300 border border-purple-800/50 shrink-0">
+                  <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+                  </svg>
+                </div>
+                <div>
+                  <h4 className="font-bold text-purple-300 text-[13px]">Chia nhỏ chương (Split Chapter)</h4>
+                  <p className="text-gray-400">Tự động ngắt chương dài thành các phân đoạn nhỏ hơn (theo số từ, dấu phân cảnh hoặc con trỏ). Giúp giảm tải dữ liệu gửi đi tới API, tránh nghẽn hạn mức 429 và tăng độ sắc sảo cho từng phân cảnh.</p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-2 hover:bg-gray-800/30 rounded-xl transition-all">
                 <div className="p-1.5 rounded bg-primary-900/20 text-primary-400 border border-primary-900/50 shrink-0">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -759,6 +786,17 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
         </div>
       )}
       <SummaryViewModal isOpen={isSummaryOpen} onClose={() => setIsSummaryOpen(false)} title={localTitle} summary={activeChapter.summary} chapterId={activeChapter.id} />
+      <SplitChapterModal 
+        isOpen={isSplitModalOpen} 
+        onClose={() => setIsSplitModalOpen(false)} 
+        chapter={activeChapter || null} 
+        cursorPosition={textareaRef.current?.selectionStart}
+        onSplit={async (segments) => {
+          if (activeChapterId) {
+            await splitChapter(activeChapterId, segments);
+          }
+        }}
+      />
     </div>
   );
 };
