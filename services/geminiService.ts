@@ -593,160 +593,179 @@ class DynamicAI {
   get chats() {
     return {
       create: (params: any) => {
-        let currentKey = getApiKey(false);
-        let rawChats = createGenAI(currentKey).chats;
-        const modelId = params.model;
-        let session = rawChats.create(params);
-        
-        const wrappedSession: any = { ...session };
+        const requestedModel = params.model || getFlash();
+        const modelCascade = getModelCascade(requestedModel);
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
 
-        // Wrap sendMessage with 429 key rotation & backoff
+        const wrappedSession: any = {};
+
+        // Wrap sendMessage with 429 key rotation, model cascade & backoff
         wrappedSession.sendMessage = async (sendParams: any) => {
-          const keysCount = Math.max(1, getAvailableKeysCount());
-          const maxRounds = 3;
           let lastErr: any = null;
 
-          for (let round = 0; round < maxRounds; round++) {
-            if (round > 0) {
-              const backoffMs = 1500 * Math.pow(1.8, round - 1);
-              console.warn(`[Network Layer Chat Backoff] Tất cả Key đang chạm 429. Chờ ${Math.round(backoffMs)}ms...`);
-              await sleep(backoffMs);
-            }
+          for (const currentModelId of modelCascade) {
+            const currentParams = {
+              ...params,
+              model: currentModelId,
+              config: cleanConfigForModel(params.config, currentModelId)
+            };
 
-            for (let attempt = 0; attempt < keysCount; attempt++) {
-              if (attempt > 0 || round > 0) {
-                currentKey = getApiKey(true);
-                rawChats = createGenAI(currentKey).chats;
-                const currentHistory = (session as any).history || params.history || [];
-                session = rawChats.create({
-                  ...params,
-                  history: currentHistory
-                });
-              }
-
-              const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
-              try {
-                const res = await session.sendMessage(sendParams);
-                if (res && res.usageMetadata) {
-                  tokenTracker.recordRequestSuccess(
-                    reqId,
-                    res.usageMetadata.promptTokenCount || 0,
-                    res.usageMetadata.candidatesTokenCount || 0,
-                    res.usageMetadata.totalTokenCount || 0
-                  );
-                } else {
-                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                }
-                return res;
-              } catch (err: any) {
-                tokenTracker.recordRequestFailure(reqId);
-                lastErr = err;
-
-                if (isQuotaError(err)) {
-                  markKeyRateLimited(currentKey, 25000, modelId);
-                  if (attempt < keysCount - 1) {
-                    console.warn(`[Network Layer Chat Rotation] Key chạm 429. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                    continue;
-                  }
-                  break;
-                }
-
-                throw handleApiError(err, modelId);
-              }
-            }
-          }
-          throw handleApiError(lastErr, modelId);
-        };
-
-        // Wrap sendMessageStream with 429 key rotation & backoff
-        wrappedSession.sendMessageStream = async (sendParams: any) => {
-          const keysCount = Math.max(1, getAvailableKeysCount());
-          const maxRounds = 3;
-          
-          async function* runStreamWithRetry() {
-            let lastErr: any = null;
-            
-            for (let round = 0; round < maxRounds; round++) {
+            for (let round = 0; round < 2; round++) {
               if (round > 0) {
-                const backoffMs = 1500 * Math.pow(1.8, round - 1);
-                console.warn(`[Network Layer Chat Stream Backoff] Tất cả Key đang chạm 429. Chờ ${Math.round(backoffMs)}ms...`);
-                await sleep(backoffMs);
+                await sleep(1000);
               }
 
               for (let attempt = 0; attempt < keysCount; attempt++) {
-                if (attempt > 0 || round > 0) {
-                  currentKey = getApiKey(true);
-                  rawChats = createGenAI(currentKey).chats;
-                  const currentHistory = (session as any).history || params.history || [];
-                  session = rawChats.create({
-                    ...params,
-                    history: currentHistory
-                  });
+                const key = keys.length > 0 ? keys[(lastKeyIndex + attempt) % keys.length] : getApiKey();
+                if (isKeyCoolingDown(key, currentModelId)) {
+                  continue;
                 }
-                
-                const reqId = tokenTracker.recordRequestStart(modelId, 1000, currentKey);
+
+                const rawChats = createGenAI(key).chats;
+                const currentHistory = params.history || [];
+                const session = rawChats.create({
+                  ...currentParams,
+                  history: currentHistory
+                });
+
+                const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                 try {
-                  const rawStream = await session.sendMessageStream(sendParams);
-                  let finalMetadata: any = null;
-                  let yieldedAny = false;
-                  
-                  try {
-                    for await (const chunk of rawStream) {
-                      yieldedAny = true;
-                      if (chunk && chunk.usageMetadata) {
-                        finalMetadata = chunk.usageMetadata;
-                      }
-                      yield chunk as GenerateContentResponse;
-                    }
-                  } catch (streamErr: any) {
-                    if (!yieldedAny && isQuotaError(streamErr)) {
-                      markKeyRateLimited(currentKey, 25000, modelId);
-                      tokenTracker.recordRequestFailure(reqId);
-                      lastErr = streamErr;
-                      if (attempt < keysCount - 1) {
-                        console.warn(`[Network Layer Chat Stream Rotation] 429 trước khi phát chunk. Xoay sang Key tiếp theo...`);
-                        continue;
-                      }
-                      break;
-                    }
-                    throw streamErr;
-                  }
-                  
-                  if (finalMetadata) {
+                  const res = await session.sendMessage(sendParams);
+                  if (res && res.usageMetadata) {
                     tokenTracker.recordRequestSuccess(
                       reqId,
-                      finalMetadata.promptTokenCount || 0,
-                      finalMetadata.candidatesTokenCount || 0,
-                      finalMetadata.totalTokenCount || 0
+                      res.usageMetadata.promptTokenCount || 0,
+                      res.usageMetadata.candidatesTokenCount || 0,
+                      res.usageMetadata.totalTokenCount || 0
                     );
                   } else {
                     tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                   }
-                  
-                  return; // Success
+                  return res;
                 } catch (err: any) {
                   tokenTracker.recordRequestFailure(reqId);
                   lastErr = err;
-                  
+
                   if (isQuotaError(err)) {
-                    markKeyRateLimited(currentKey, 25000, modelId);
-                    if (attempt < keysCount - 1) {
-                      console.warn(`[Network Layer Chat Stream Rotation] Key chạm 429. Xoay sang Key tiếp theo (Lượt thử ${attempt + 1}/${keysCount})...`);
-                      continue;
-                    }
+                    markKeyRateLimited(key, 25000, currentModelId);
+                    continue;
+                  }
+
+                  const msg = err?.message || String(err);
+                  if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                    console.warn(`Chat model ${currentModelId} không tồn tại, chuyển model tiếp theo trong cascade...`);
                     break;
                   }
-                  
-                  throw handleApiError(err, modelId);
+
+                  if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                    continue;
+                  }
+
+                  throw handleApiError(err, currentModelId);
                 }
               }
             }
-            throw handleApiError(lastErr, modelId);
           }
-          
+          throw handleApiError(lastErr, requestedModel);
+        };
+
+        // Wrap sendMessageStream with 429 key rotation, model cascade & backoff
+        wrappedSession.sendMessageStream = async (sendParams: any) => {
+          async function* runStreamWithRetry() {
+            let lastErr: any = null;
+
+            for (const currentModelId of modelCascade) {
+              const currentParams = {
+                ...params,
+                model: currentModelId,
+                config: cleanConfigForModel(params.config, currentModelId)
+              };
+
+              for (let round = 0; round < 2; round++) {
+                if (round > 0) {
+                  await sleep(1000);
+                }
+
+                for (let attempt = 0; attempt < keysCount; attempt++) {
+                  const key = keys.length > 0 ? keys[(lastKeyIndex + attempt) % keys.length] : getApiKey();
+                  if (isKeyCoolingDown(key, currentModelId)) {
+                    continue;
+                  }
+
+                  const rawChats = createGenAI(key).chats;
+                  const currentHistory = params.history || [];
+                  const session = rawChats.create({
+                    ...currentParams,
+                    history: currentHistory
+                  });
+
+                  const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+                  try {
+                    const rawStream = await session.sendMessageStream(sendParams);
+                    let finalMetadata: any = null;
+                    let yieldedAny = false;
+
+                    try {
+                      for await (const chunk of rawStream) {
+                        yieldedAny = true;
+                        if (chunk && chunk.usageMetadata) {
+                          finalMetadata = chunk.usageMetadata;
+                        }
+                        yield chunk as GenerateContentResponse;
+                      }
+                    } catch (streamErr: any) {
+                      if (!yieldedAny && isQuotaError(streamErr)) {
+                        markKeyRateLimited(key, 25000, currentModelId);
+                        tokenTracker.recordRequestFailure(reqId);
+                        lastErr = streamErr;
+                        continue;
+                      }
+                      throw streamErr;
+                    }
+
+                    if (finalMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        finalMetadata.promptTokenCount || 0,
+                        finalMetadata.candidatesTokenCount || 0,
+                        finalMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+
+                    return; // Success
+                  } catch (err: any) {
+                    tokenTracker.recordRequestFailure(reqId);
+                    lastErr = err;
+
+                    if (isQuotaError(err)) {
+                      markKeyRateLimited(key, 25000, currentModelId);
+                      continue;
+                    }
+
+                    const msg = err?.message || String(err);
+                    if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                      console.warn(`Chat stream model ${currentModelId} không tồn tại, thử model tiếp theo...`);
+                      break;
+                    }
+
+                    if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                      continue;
+                    }
+
+                    throw handleApiError(err, currentModelId);
+                  }
+                }
+              }
+            }
+            throw handleApiError(lastErr, requestedModel);
+          }
+
           return runStreamWithRetry() as any;
         };
-        
+
         return wrappedSession;
       }
     };
@@ -1223,7 +1242,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story) {
     let chat;
     const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 250000,
+      maxTotalChars: 32000,
       targetChapterMention: message
     });
 
