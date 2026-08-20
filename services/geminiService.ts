@@ -1239,10 +1239,11 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     }
   },
 
-  async *chatPlotStream(history: ChatMessage[], message: string, story: Story) {
+  async *chatPlotStream(history: ChatMessage[], message: string, story: Story, focusChapterId?: string) {
     let chat;
     const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 32000,
+      maxTotalChars: 400000,
+      focusChapterId,
       targetChapterMention: message
     });
 
@@ -1258,12 +1259,33 @@ ${ORIGINAL_FIDELITY_PROTOCOL}
 [DỮ LIỆU CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
 ${chaptersContext}
 
-[GIAO THỨC TỐI THƯỢNG VỀ BẢO TỒN BẢN THẢO & VĂN PHONG]:
-1. 📖 BẢN THẢO THỰC TẾ LÀ NGUYÊN MẪU DUY NHẤT: Bắt buộc phải đọc và phân tích chi tiết dựa trên từng câu chữ, lời thoại, hành động và tình huống trong [BẢN THẢO THỰC TẾ]. Tóm tắt (Summary) chỉ là tài liệu tham khảo phụ trợ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi phóng tác sai lệch sự thật và chi tiết của bản thảo!
-2. 🎭 TÔN TRỌNG VĂN PHONG TÁC GIẢ: Bám sát giọng điệu, nhịp điệu và phong cách kể chuyện đặc trưng của tác giả.
-3. ✍️ ĐỀ XUẤT SỬA BẢN THẢO [PROPOSAL_CONTENT_CHAPTER_<id>]: Khi đưa ra đề xuất sửa đổi bản thảo chương, BẮT BUỘC PHẢI DÙNG BẢN THẢO NGUYÊN MẪU CỦA CHƯƠNG ĐÓ LÀM GỐC. Giữ trọn vẹn 100% các chi tiết, tên nhân vật, vật phẩm, tình huống, lời thoại đắt giá, chỉ chỉnh sửa trau chuốt hoặc bổ sung theo yêu cầu, TUYỆT ĐỐI KHÔNG tóm tắt hay làm mất bất kỳ chi tiết nào của bản thảo gốc.
+[GIAO THỨC TỐI THƯỢNG VỀ BẢO TỒN BẢN THẢO & KHÔNG ĐƯỢC RÚT BỚT CHI TIẾT]:
+1. 📖 BẢN THẢO THỰC TẾ (MANUSCRIPT) LÀ CHÂN LÝ DUY NHẤT:
+   - Bạn PHẢI đọc và làm việc trực tiếp trên từng câu chữ, lời thoại, hành động, vật phẩm và tình huống trong phần [BẢN THẢO THỰC TẾ].
+   - Tóm tắt (Summary) và Đề cương (Outline) chỉ là tài liệu tham khảo phụ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi tự ý suy đoán hay cắt bớt các chi tiết phong phú trong bản thảo!
+2. 🚫 NGHIÊM CẤM RÚT BỚT HOẶC TÓM TẮT HỜI HỢT:
+   - Khi nhận xét hoặc trả lời người dùng, hãy trích dẫn dẫn chứng thực tế từ bản thảo.
+   - Tuyệt đối không được trả lời chung chung, không được cố tình lược bớt các chi tiết mà tác giả đã dày công xây dựng.
+3. ✍️ ĐỀ XUẤT SỬA ĐỔI BẢN THẢO [PROPOSAL_CONTENT_CHAPTER_<id>]:
+   - Khi đưa ra đề xuất sửa đổi bản thảo chương, BẮT BUỘC PHẢI DÙNG BẢN THẢO NGUYÊN MẪU CỦA CHƯƠNG ĐÓ LÀM GỐC.
+   - PHẢI viết TOÀN VĂN ĐẦY ĐỦ 100% TỪ ĐẦU ĐẾN CUỐI CHƯƠNG (Full Manuscript).
+   - GIỮ NGUYÊN VẸN 100% các tình tiết, nhân vật, lời thoại, bối cảnh đắt giá. Chỉ chỉnh sửa, trau chuốt hoặc bổ sung các phân cảnh cần thiết theo đúng yêu cầu.
+   - CẤM TUYỆT ĐỐI các hành vi lười biếng như: chèn các câu "[... giữ nguyên phần còn lại ...]", "[... đoạn này tiếp tục như cũ ...]" hoặc tóm tắt nửa chừng.
 
-Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích sâu sắc.
+[QUY TẮC BẤT KHẢ XÂM PHẠM KHI NGƯỜI DÙNG YÊU CẦU "VIỆT HÓA", "DỊCH", "CHUYỂN NGỮ", "BIÊN DỊCH", "TRAU CHUỐT CÂU TỪ"]:
+⚠️ BẢN ĐỒNG THUẬN TUYỆT ĐỐI VỀ TÍNH CHÂN THỰC NGUYÊN BẢN (STRICT LOCALIZATION & FIDELITY DIRECTIVE):
+1. 🛑 CẤM BỊA / ĐẺ THÊM CHI TIẾT (ZERO FABRICATION / NO ADDED PLOT):
+   - Khi người dùng yêu cầu "Việt hóa", "Dịch", "Chuyển ngữ", "Biên tập câu từ": Nhiệm vụ DUY NHẤT là chuyển tải nguyên vẹn 100% nội dung, tình tiết, lời thoại và ý nghĩa của văn bản gốc sang tiếng Việt mượt mà, chuẩn văn phong truyện, tự nhiên và giàu cảm xúc.
+   - CẤM TUYỆT ĐỐI tự chế thêm nhân vật, tự bịa thêm lời thoại mới, tự thêm các phân cảnh hành động hay tình huống không có trong bản gốc.
+   - CẤM tự ý thay đổi bối cảnh, kết cục, số phận hay tính cách của nhân vật so với nguyên tác.
+2. 🛑 CẤM BỎ SÓT / CẮT XÉN CHI TIẾT GỐC (ZERO OMISSIONS):
+   - Mọi phân đoạn, mọi câu thoại, từng cử chỉ, từng vật phẩm, từng sự kiện trong bản gốc BẮT BUỘC PHẢI ĐƯỢC CHUYỂN NGỮ VÀ GIỮ LẠI ĐẦY ĐỦ 100% theo đúng trình tự thời gian từ đầu đến cuối.
+   - Tuyệt đối KHÔNG được tóm tắt, KHÔNG được gộp đoạn làm biến mất chi tiết gốc.
+3. 🎯 TRỌNG TÂM:
+   - Chuyển ngữ chuẩn theo ngữ cảnh thể loại (${story.genre}), xưng hô chuẩn mực theo thiết lập nhân vật, câu từ trau chuốt, trôi chảy, giàu hình ảnh nhưng GIỮ ĐÚNG 100% CỐT TRUYỆN GỐC.
+   - Khi đưa ra [PROPOSAL_CONTENT_CHAPTER_<id>: ...]: Cung cấp TOÀN VĂN bản thảo sau khi đã Việt hóa hoàn chỉnh từ dòng đầu tiên đến dòng cuối cùng.
+
+Bạn hãy trao đổi nhiệt tình, mang tính phân tích sắc bén và thấu hiểu sâu sắc từng chi tiết của tác phẩm.
 ĐẶC BIỆT: Bạn có quyền đưa ra đề xuất sửa đổi cấu trúc bằng cách thêm một trong các thẻ sau vào tin nhắn của bạn (nút "Áp dụng" sẽ tự động hiển thị cho người dùng để đồng bộ trực tiếp với bản thảo hoặc dàn ý):
 
 - Để đề xuất cập nhật Dàn ý câu chuyện (Story Planning):
@@ -1275,17 +1297,17 @@ Bạn hãy trao đổi nhiệt tình, thân thiện và mang tính phân tích s
 - Để đề xuất cập nhật Tóm tắt một chương cụ thể (thay <chapterId> bằng ID của chương đó):
 [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <nội dung tóm tắt mới>]
 
-- Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID của chương đó, ví dụ [PROPOSAL_CONTENT_CHAPTER_12345: nội dung bản thảo mới]):
-[PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo mới hoặc sửa đổi>]
+- Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID của chương đó, ví dụ [PROPOSAL_CONTENT_CHAPTER_12345: toàn bộ nội dung bản thảo hoàn chỉnh]):
+[PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh, đầy đủ 100% từ đầu đến cuối>]
 
-Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và phản hồi bằng tiếng Việt.`;
+Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi tiết, phản hồi bằng tiếng Việt.`;
 
-    // Sanitize and limit chat history to recent messages to prevent token accumulation
-    const sanitizedHistory = (history || []).slice(-4).map(h => {
+    // Retain recent message history with generous length (up to 30,000 chars per turn)
+    const sanitizedHistory = (history || []).slice(-6).map(h => {
       const parts = (h.parts || []).map(p => {
         let text = p.text || "";
-        if (text.length > 1500) {
-          text = text.substring(0, 1500) + "... [Đã lược bớt lịch sử]";
+        if (text.length > 35000) {
+          text = text.substring(0, 35000) + "... [Đã giữ 35k ký tự]";
         }
         return { text };
       });
@@ -1295,7 +1317,11 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và ph�
     try {
       chat = ai.chats.create({
         model: getFlash(),
-        config: { systemInstruction },
+        config: { 
+          systemInstruction,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 2048 }
+        },
         history: sanitizedHistory
       });
       const response = await chat.sendMessageStream({ message });
@@ -1304,7 +1330,11 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và ph�
       console.warn("Plot chat error, retrying without history:", e);
       chat = ai.chats.create({
         model: getFlash(),
-        config: { systemInstruction },
+        config: { 
+          systemInstruction,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 2048 }
+        },
         history: []
       });
       const response = await chat.sendMessageStream({ message });

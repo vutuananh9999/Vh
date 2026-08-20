@@ -491,7 +491,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, []);
 
-  const sendPlotChatMessage = async (message: string) => {
+  const sendPlotChatMessage = async (message: string, focusChapterId?: string) => {
     if (!storyRef.current) return;
     setIsPlotPlanning(true);
     const currentStory = storyRef.current;
@@ -500,7 +500,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory({ ...currentStory, plotChatHistory: updatedHistoryWithUser });
 
     try {
-        const stream = geminiService.chatPlotStream(history, message, currentStory);
+        const stream = geminiService.chatPlotStream(history, message, currentStory, focusChapterId || activeChapterIdRef.current || undefined);
         let fullResponse = "";
         for await (const chunk of stream) {
             fullResponse += chunk.text;

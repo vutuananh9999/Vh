@@ -163,14 +163,14 @@ export function formatSmartChapterContext(
 ): string {
   if (!chapters || chapters.length === 0) return "(Chưa có chương truyện nào)";
 
-  const maxTotalChars = options.maxTotalChars || 36000;
+  const maxTotalChars = options.maxTotalChars || 400000;
   const numChapters = chapters.length;
   const focusId = options.focusChapterId;
   const mentionText = (options.targetChapterMention || "").toLowerCase();
 
-  // If small story with few chapters and small text, return full raw verbatim manuscript
+  // If entire story content fits within budget, deliver 100% full verbatim manuscript for ALL chapters!
   const totalRawChars = chapters.reduce((acc, c) => acc + (c.content?.length || 0), 0);
-  if (totalRawChars <= maxTotalChars && numChapters <= 8) {
+  if (totalRawChars <= maxTotalChars) {
     return chapters.map((c, i) => `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
@@ -178,7 +178,7 @@ export function formatSmartChapterContext(
 ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`).join('\n\n----------------------------------------\n\n');
   }
 
-  // Identify prioritized chapters (Target/Mentioned or Focused or Opening or Recent)
+  // Identify prioritized chapters (Target/Mentioned or Focused)
   const isTarget = (c: Chapter, i: number) => {
     if (focusId && c.id === focusId) return true;
     if (mentionText) {
@@ -194,13 +194,21 @@ ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa c
     if (isTarget(c, idx)) targetIndices.add(idx);
   });
 
+  // Calculate budget: reserve generous space for target chapters, then distribute remaining budget evenly across ALL other chapters
+  let targetCharsAllocated = 0;
+  targetIndices.forEach(idx => {
+    targetCharsAllocated += (chapters[idx].content?.length || 0);
+  });
+
+  const remainingBudget = Math.max(20000, maxTotalChars - targetCharsAllocated);
+  const nonTargetCount = Math.max(1, numChapters - targetIndices.size);
+  const perChapterBudget = Math.max(1200, Math.floor(remainingBudget / nonTargetCount));
+
   const renderedChapters: string[] = [];
 
   for (let i = 0; i < numChapters; i++) {
     const c = chapters[i];
     const isFocused = targetIndices.has(i);
-    const isRecent = i >= numChapters - 2;
-    const isOpening = i === 0;
     const hasContent = !!(c.content && c.content.trim().length > 0);
 
     // If targeted/focused by user: Always provide 100% full raw text!
@@ -214,24 +222,12 @@ ${hasContent ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`
       continue;
     }
 
-    // For massive stories with > 12 chapters:
-    // If not focused, compact into Summary + Outline (extremely rich in plot info, low token cost)
-    if (numChapters > 12 && !isRecent && !isOpening) {
-      const summaryText = c.summary || (hasContent ? c.content.slice(0, 300) + "..." : "(Chưa có)");
-      const block = `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
-[Đề cương]: ${c.outline || "(Chưa có)"}
-[Tóm tắt cốt truyện]: ${summaryText}`;
-      renderedChapters.push(block);
-      continue;
-    }
-
-    // For opening or recent chapters, provide outline, summary, and sampled manuscript
-    const sampleBudget = isOpening || isRecent ? 2500 : 1200;
-    const sample = hasContent ? sampleManuscript(c.content, sampleBudget) : "(Chưa có bản thảo)";
+    // For other chapters: ALWAYS include actual manuscript text (either full or sampled verbatim excerpt), never drop the manuscript!
+    const sample = hasContent ? sampleManuscript(c.content, perChapterBudget) : "(Chương này chưa có bản thảo chi tiết)";
     const block = `=== CHƯƠNG ${i + 1}: ${c.title} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ]:
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU)]:
 ${sample}`;
     renderedChapters.push(block);
   }
