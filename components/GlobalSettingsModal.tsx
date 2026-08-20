@@ -60,8 +60,14 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     }
                 }
             }
-            setModelPro(localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview");
-            setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.7-flash");
+            const rawPro = localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview";
+            const rawFlash = localStorage.getItem('aetheria_model_flash') || "gemini-3.7-flash";
+            const validPro = (rawPro.includes('1.5') || rawPro.includes('2.0')) ? 'gemini-3.1-pro-preview' : rawPro;
+            const validFlash = (rawFlash.includes('1.5') || rawFlash.includes('2.0')) ? 'gemini-3.7-flash' : rawFlash;
+            setModelPro(validPro);
+            setModelFlash(validFlash);
+            localStorage.setItem('aetheria_model_pro', validPro);
+            localStorage.setItem('aetheria_model_flash', validFlash);
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});

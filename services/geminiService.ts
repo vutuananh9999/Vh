@@ -238,22 +238,62 @@ function createGenAI(apiKey: string): GoogleGenAI {
 
 let proModelFailed = false;
 let proModelFailedUntil = 0;
-const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash';
+
+const DEPRECATED_MODELS = new Set([
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-1.5-pro',
+  'gemini-pro',
+  'gemini-1.0-pro',
+  'gemini-2.0-flash',
+  'gemini-2.0-pro',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash-thinking-exp-01-21',
+  'gemini-2.0-flash-thinking',
+  'gemini-2.0-flash-exp'
+]);
+
+function sanitizeModelName(model: string | null | undefined, fallback: string = 'gemini-3.7-flash'): string {
+  if (!model || typeof model !== 'string') return fallback;
+  const trimmed = model.trim();
+  if (DEPRECATED_MODELS.has(trimmed) || trimmed.includes('1.5') || trimmed.includes('2.0')) {
+    return fallback;
+  }
+  return trimmed;
+}
+
+const getFlash = () => {
+  if (typeof window === 'undefined') return 'gemini-3.7-flash';
+  const saved = localStorage.getItem('aetheria_model_flash');
+  const sanitized = sanitizeModelName(saved, 'gemini-3.7-flash');
+  if (saved && saved !== sanitized) {
+    localStorage.setItem('aetheria_model_flash', sanitized);
+  }
+  return sanitized;
+};
+
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return localStorage.getItem('aetheria_model_pro') || 'gemini-3.7-flash';
+  if (typeof window === 'undefined') return 'gemini-3.1-pro-preview';
+  const saved = localStorage.getItem('aetheria_model_pro');
+  const sanitized = sanitizeModelName(saved, 'gemini-3.1-pro-preview');
+  if (saved && saved !== sanitized) {
+    localStorage.setItem('aetheria_model_pro', sanitized);
+  }
+  return sanitized;
 };
 
 function getModelCascade(requestedModel: string): string[] {
-  const allProModels = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-  const allFlashModels = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+  const sanitized = sanitizeModelName(requestedModel, 'gemini-3.7-flash');
+  const allProModels = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+  const allFlashModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
   
-  if (requestedModel && requestedModel.includes('pro')) {
-    return Array.from(new Set([requestedModel, ...allProModels]));
+  if (sanitized && sanitized.includes('pro')) {
+    return Array.from(new Set([sanitized, ...allProModels]));
   }
-  return Array.from(new Set([requestedModel || 'gemini-3.7-flash', ...allFlashModels]));
+  return Array.from(new Set([sanitized || 'gemini-3.7-flash', ...allFlashModels]));
 }
 
 function cleanConfigForModel(config: any, targetModel: string): any {
