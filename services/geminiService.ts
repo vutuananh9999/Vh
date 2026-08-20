@@ -250,13 +250,15 @@ const DEPRECATED_MODELS = new Set([
   'gemini-2.0-flash-lite',
   'gemini-2.0-flash-thinking-exp-01-21',
   'gemini-2.0-flash-thinking',
-  'gemini-2.0-flash-exp'
+  'gemini-2.0-flash-exp',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro'
 ]);
 
 function sanitizeModelName(model: string | null | undefined, fallback: string = 'gemini-3.7-flash'): string {
   if (!model || typeof model !== 'string') return fallback;
   const trimmed = model.trim();
-  if (DEPRECATED_MODELS.has(trimmed) || trimmed.includes('1.5') || trimmed.includes('2.0')) {
+  if (DEPRECATED_MODELS.has(trimmed) || trimmed.includes('1.5') || trimmed.includes('2.0') || trimmed.includes('2.5')) {
     return fallback;
   }
   return trimmed;
@@ -287,8 +289,8 @@ const getPro = () => {
 
 function getModelCascade(requestedModel: string): string[] {
   const sanitized = sanitizeModelName(requestedModel, 'gemini-3.7-flash');
-  const allProModels = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
-  const allFlashModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+  const allProModels = ['gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+  const allFlashModels = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
   
   if (sanitized && sanitized.includes('pro')) {
     return Array.from(new Set([sanitized, ...allProModels]));
@@ -299,7 +301,7 @@ function getModelCascade(requestedModel: string): string[] {
 function cleanConfigForModel(config: any, targetModel: string): any {
   if (!config) return config;
   const newConfig = { ...config };
-  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
+  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro');
   if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
@@ -821,9 +823,10 @@ async function safeGenerateContent(params: { model: string, contents: any, confi
   const fallbackModels = [
     params.model,
     'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-flash-latest',
     'gemini-3.5-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-flash'
+    'gemini-3.1-flash-lite'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -848,9 +851,10 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
   const fallbackModels = [
     params.model,
     'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-flash-latest',
     'gemini-3.5-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-flash'
+    'gemini-3.1-flash-lite'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -940,7 +944,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+      const modelsToTry = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {
