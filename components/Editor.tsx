@@ -649,16 +649,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.6-flash');
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-2.5-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
-                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.6-flash'
+                                  localStorage.getItem('aetheria_model_flash') === 'gemini-2.5-flash'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
                                 }`}
                               >
-                                3.6 Flash
+                                2.5 Flash
                               </button>
                             </div>
                             <p className="text-[8px] text-gray-400 italic pt-1">

@@ -121,23 +121,25 @@ function extractKeys(stored: string): string[] {
 }
 
 function getAllKeys(): string[] {
+  const envKey = (typeof process !== 'undefined' && process.env && (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY))
+    || (typeof import.meta !== 'undefined' && (import.meta as any).env && ((import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY))
+    || '';
+
   if (typeof window === 'undefined') {
-    const sys = process.env.GEMINI_API_KEY || '';
-    return sys ? [sys] : [];
+    return envKey ? [envKey] : [];
   }
   const stored = localStorage.getItem('aetheria_api_key') || '';
   const userKeys = extractKeys(stored);
   if (userKeys.length > 0) {
     return userKeys;
   }
-  const sysKey = process.env.GEMINI_API_KEY || '';
-  return sysKey ? [sysKey] : [];
+  return envKey ? [envKey] : [];
 }
 
 function getApiKey(rotate: boolean = false): string {
   const keys = getAllKeys();
   if (keys.length === 0) {
-    const sysKey = process.env.GEMINI_API_KEY || '';
+    const sysKey = (typeof process !== 'undefined' && process.env && (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || process.env.API_KEY)) || '';
     logKeyChange(sysKey, true);
     return sysKey;
   }
@@ -227,81 +229,34 @@ function logKeyChange(key: string, isSystem: boolean) {
 
 function createGenAI(apiKey: string): GoogleGenAI {
   return new GoogleGenAI({
-    apiKey: apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build'
-      }
-    }
+    apiKey: apiKey
   });
 }
 
 let proModelFailed = false;
 let proModelFailedUntil = 0;
-
-const DEPRECATED_MODELS = new Set([
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-  'gemini-1.5-pro',
-  'gemini-pro',
-  'gemini-1.0-pro',
-  'gemini-2.0-flash',
-  'gemini-2.0-pro',
-  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash-thinking-exp-01-21',
-  'gemini-2.0-flash-thinking',
-  'gemini-2.0-flash-exp',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro'
-]);
-
-function sanitizeModelName(model: string | null | undefined, fallback: string = 'gemini-3.7-flash'): string {
-  if (!model || typeof model !== 'string') return fallback;
-  const trimmed = model.trim();
-  if (DEPRECATED_MODELS.has(trimmed) || trimmed.includes('1.5') || trimmed.includes('2.0') || trimmed.includes('2.5')) {
-    return fallback;
-  }
-  return trimmed;
-}
-
-const getFlash = () => {
-  if (typeof window === 'undefined') return 'gemini-3.7-flash';
-  const saved = localStorage.getItem('aetheria_model_flash');
-  const sanitized = sanitizeModelName(saved, 'gemini-3.7-flash');
-  if (saved && saved !== sanitized) {
-    localStorage.setItem('aetheria_model_flash', sanitized);
-  }
-  return sanitized;
-};
-
+const getFlash = () => localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash';
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  if (typeof window === 'undefined') return 'gemini-3.1-pro-preview';
-  const saved = localStorage.getItem('aetheria_model_pro');
-  const sanitized = sanitizeModelName(saved, 'gemini-3.1-pro-preview');
-  if (saved && saved !== sanitized) {
-    localStorage.setItem('aetheria_model_pro', sanitized);
-  }
-  return sanitized;
+  return localStorage.getItem('aetheria_model_pro') || 'gemini-3.7-flash';
 };
 
 function getModelCascade(requestedModel: string): string[] {
-  const sanitized = sanitizeModelName(requestedModel, 'gemini-3.7-flash');
-  const allProModels = ['gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
-  const allFlashModels = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+  const allProModels = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const allFlashModels = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
   
-  if (sanitized && sanitized.includes('pro')) {
-    return Array.from(new Set([sanitized, ...allProModels]));
+  if (requestedModel && requestedModel.includes('pro')) {
+    return Array.from(new Set([requestedModel, ...allProModels]));
   }
-  return Array.from(new Set([sanitized || 'gemini-3.7-flash', ...allFlashModels]));
+  return Array.from(new Set([requestedModel || 'gemini-3.7-flash', ...allFlashModels]));
 }
 
 function cleanConfigForModel(config: any, targetModel: string): any {
   if (!config) return config;
   const newConfig = { ...config };
-  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro');
+  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
   if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
@@ -823,10 +778,9 @@ async function safeGenerateContent(params: { model: string, contents: any, confi
   const fallbackModels = [
     params.model,
     'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-flash-latest',
     'gemini-3.5-flash',
-    'gemini-3.1-flash-lite'
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -851,10 +805,9 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
   const fallbackModels = [
     params.model,
     'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-flash-latest',
     'gemini-3.5-flash',
-    'gemini-3.1-flash-lite'
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -944,7 +897,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
+      const modelsToTry = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {

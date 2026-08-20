@@ -60,14 +60,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     }
                 }
             }
-            const rawPro = localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview";
-            const rawFlash = localStorage.getItem('aetheria_model_flash') || "gemini-3.7-flash";
-            const validPro = (rawPro.includes('1.5') || rawPro.includes('2.0') || rawPro.includes('2.5')) ? 'gemini-3.1-pro-preview' : rawPro;
-            const validFlash = (rawFlash.includes('1.5') || rawFlash.includes('2.0') || rawFlash.includes('2.5')) ? 'gemini-3.7-flash' : rawFlash;
-            setModelPro(validPro);
-            setModelFlash(validFlash);
-            localStorage.setItem('aetheria_model_pro', validPro);
-            localStorage.setItem('aetheria_model_flash', validFlash);
+            setModelPro(localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview");
+            setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.7-flash");
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
@@ -887,13 +881,13 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                 >
                                     <optgroup label="Dòng Pro (Suy luận sâu & Cốt truyện phức tạp)">
                                         <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Mặc định Pro - Suy luận sâu, viết tiểu thuyết)</option>
+                                        <option value="gemini-2.5-pro">gemini-2.5-pro (Pro 2.5 - Cốt truyện ổn định)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Flash (Tốc độ cao & Hạn mức rộng)">
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Mới nhất, thông minh & tốc độ vượt trội)</option>
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Chuẩn khuyến nghị mới)</option>
-                                        <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất)</option>
                                         <option value="gemini-3.5-flash">gemini-3.5-flash (Flash 3.5 - Cực nhanh & tiết kiệm)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Phản hồi siêu nhanh)</option>
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5)</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -911,13 +905,14 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                 >
                                     <optgroup label="Dòng Flash (Khuyên dùng)">
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Mặc định Flash 3.7 - Mới nhất, nhanh & chuẩn xác)</option>
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Chuẩn khuyến nghị mới)</option>
-                                        <option value="gemini-flash-latest">gemini-flash-latest (Luôn trỏ về bản Flash mới nhất)</option>
                                         <option value="gemini-3.5-flash">gemini-3.5-flash (Flash 3.5 - Rất nhanh & ổn định)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Tiết kiệm tối đa TPM/RPM)</option>
+                                        <option value="gemini-flash-latest">gemini-flash-latest (Luôn trỏ về bản Flash mới nhất)</option>
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Pro (Nếu muốn Chat bằng model mạnh hơn)">
                                         <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Sử dụng Pro cho Chat & Phân tích)</option>
+                                        <option value="gemini-2.5-pro">gemini-2.5-pro (Sử dụng Pro 2.5 cho Chat)</option>
                                     </optgroup>
                                 </select>
                             </div>
