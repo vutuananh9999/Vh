@@ -176,7 +176,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-gray-850 border border-gray-700 text-gray-300 font-mono">
               <span className="text-gray-400 text-[10px]">Model:</span>
               <select
-                value={geminiService.getFlash ? geminiService.getFlash() : 'gemini-2.5-flash'}
+                value={geminiService.getFlash ? geminiService.getFlash() : 'gemini-3.6-flash'}
                 onChange={(e) => {
                   const newModel = e.target.value;
                   localStorage.setItem('aetheria_model_flash', newModel);
@@ -187,10 +187,11 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 className="bg-transparent text-amber-400 font-bold text-[11px] focus:outline-none cursor-pointer"
                 title="Thay đổi Model AI đang sử dụng"
               >
-                <option value="gemini-2.5-flash" className="bg-gray-900 text-amber-400">gemini-2.5-flash (Khuyên dùng - Nhanh & Ổn định nhất)</option>
-                <option value="gemini-2.0-flash" className="bg-gray-900 text-amber-400">gemini-2.0-flash (Ổn định cao)</option>
-                <option value="gemini-3.7-flash" className="bg-gray-900 text-amber-400">gemini-3.7-flash (Đang bị quá tải 503 tại Google)</option>
-                <option value="gemini-2.5-pro" className="bg-gray-900 text-purple-400">gemini-2.5-pro (Mô hình lớn)</option>
+                <option value="gemini-3.6-flash" className="bg-gray-900 text-amber-400">gemini-3.6-flash (Chuẩn Google 2026 - Tốc độ cao & Hỗ trợ tất cả Key)</option>
+                <option value="gemini-3.6-pro" className="bg-gray-900 text-purple-400">gemini-3.6-pro (Pro 3.6 - Phân tích cốt truyện chuyên sâu)</option>
+                <option value="gemini-2.5-flash" className="bg-gray-900 text-amber-400">gemini-2.5-flash (Flash 2.5)</option>
+                <option value="gemini-2.0-flash" className="bg-gray-900 text-amber-400">gemini-2.0-flash (Flash 2.0)</option>
+                <option value="gemini-3.7-flash" className="bg-gray-900 text-amber-400">gemini-3.7-flash (Flash 3.7)</option>
               </select>
             </div>
 

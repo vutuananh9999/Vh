@@ -238,36 +238,40 @@ let proModelFailed = false;
 let proModelFailedUntil = 0;
 
 const VALID_MODELS = new Set([
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.6-pro',
   'gemini-3.7-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-2.5-flash',
   'gemini-2.5-pro',
-  'gemini-3.1-pro-preview'
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite'
 ]);
 
 function normalizeModel(modelName: string | null | undefined, fallback: string): string {
   if (!modelName) return fallback;
   const clean = modelName.trim().toLowerCase();
   if (VALID_MODELS.has(clean)) return clean;
-  if (clean.includes('pro')) return 'gemini-2.5-pro';
+  if (clean.includes('3.6') && clean.includes('pro')) return 'gemini-3.6-pro';
+  if (clean.includes('3.6')) return 'gemini-3.6-flash';
+  if (clean.includes('pro')) return 'gemini-3.6-pro';
   if (clean.includes('3.7')) return 'gemini-3.7-flash';
   if (clean.includes('2.0')) return 'gemini-2.0-flash';
-  return 'gemini-2.5-flash';
+  return 'gemini-3.6-flash';
 }
 
-const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), 'gemini-2.5-flash');
+const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), 'gemini-3.6-flash');
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return normalizeModel(localStorage.getItem('aetheria_model_pro'), 'gemini-2.5-pro');
+  return normalizeModel(localStorage.getItem('aetheria_model_pro'), 'gemini-3.6-pro');
 };
 
 function getModelCascade(requestedModel: string): string[] {
   const normalized = normalizeModel(requestedModel, getFlash());
-  const allProModels = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.7-flash'];
-  const allFlashModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-3.7-flash'];
+  const allProModels = ['gemini-3.6-pro', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+  const allFlashModels = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.6-pro', 'gemini-3.7-flash'];
   
   if (normalized.includes('pro')) {
     return Array.from(new Set([normalized, ...allProModels]));
