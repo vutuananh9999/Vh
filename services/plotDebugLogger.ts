@@ -235,7 +235,16 @@ class PlotDebugLoggerService {
     let statusCode: number | string = 'ERROR';
     let advice = customAdvice || '';
 
-    if (errLower.includes('429') || errLower.includes('resource_exhausted') || errLower.includes('quota')) {
+    if (errLower.includes('503') || errLower.includes('high demand') || errLower.includes('unavailable') || errLower.includes('overloaded')) {
+      status = 'error';
+      statusCode = 503;
+      advice = `[LỖI 503 MÁY CHỦ GOOGLE QUÁ TẢI (HIGH DEMAND)]
+1. Nguyên nhân: Model "${item.model}" trên máy chủ Google đang bị quá tải đột biến do lượng truy cập toàn cầu quá lớn. Request bị xếp hàng đợi quá lâu (40-90 giây) dẫn đến lỗi UNAVAILABLE.
+2. Tại sao Preview không bị?: Preview trên AI Studio có hạ tầng ưu tiên riêng. Khi chạy trên domain Netlify, request qua Google Free API sẽ bị nghẽn nếu model đó đang hot (như 3.7 Flash).
+3. Giải pháp Khắc phục tức thì:
+• Chuyển sang model 'gemini-2.5-flash' hoặc 'gemini-2.0-flash' trong Cài đặt ⚙️ (phản hồi siêu tốc trong 0.5s - 1s, cực kỳ ổn định, không bị nghẽn 503).
+• Tạm thời không sử dụng 'gemini-3.7-flash' cho đến khi Google mở rộng thêm hạ tầng.`;
+    } else if (errLower.includes('429') || errLower.includes('resource_exhausted') || errLower.includes('quota')) {
       status = 'rate_limit_429';
       statusCode = 429;
       advice = `[LỖI 429 GOOGLE FREE TIER QUOTA EXCEEDED]

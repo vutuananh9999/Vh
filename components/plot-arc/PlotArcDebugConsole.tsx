@@ -172,10 +172,26 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               <span>{storedKeys.length} Key đã cấu hình</span>
             </div>
 
-            {/* Model Badge */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-850 border border-gray-700 text-gray-300 font-mono">
-              <span className="text-gray-400">Model:</span>
-              <span className="font-bold text-amber-400">{geminiService.getFlash ? geminiService.getFlash() : 'gemini-2.5-flash'}</span>
+            {/* Model Selector Badge */}
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-gray-850 border border-gray-700 text-gray-300 font-mono">
+              <span className="text-gray-400 text-[10px]">Model:</span>
+              <select
+                value={geminiService.getFlash ? geminiService.getFlash() : 'gemini-2.5-flash'}
+                onChange={(e) => {
+                  const newModel = e.target.value;
+                  localStorage.setItem('aetheria_model_flash', newModel);
+                  showNotification(`Đã chuyển Model sang: ${newModel}`);
+                  // Force re-render
+                  setLogs([...plotDebugLogger.getLogs()]);
+                }}
+                className="bg-transparent text-amber-400 font-bold text-[11px] focus:outline-none cursor-pointer"
+                title="Thay đổi Model AI đang sử dụng"
+              >
+                <option value="gemini-2.5-flash" className="bg-gray-900 text-amber-400">gemini-2.5-flash (Khuyên dùng - Nhanh & Ổn định nhất)</option>
+                <option value="gemini-2.0-flash" className="bg-gray-900 text-amber-400">gemini-2.0-flash (Ổn định cao)</option>
+                <option value="gemini-3.7-flash" className="bg-gray-900 text-amber-400">gemini-3.7-flash (Đang bị quá tải 503 tại Google)</option>
+                <option value="gemini-2.5-pro" className="bg-gray-900 text-purple-400">gemini-2.5-pro (Mô hình lớn)</option>
+              </select>
             </div>
 
             {/* 429 Alert Counter */}
