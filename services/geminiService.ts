@@ -1239,7 +1239,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story, focusChapterId?: string) {
     let chat;
     const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 400000,
+      maxTotalChars: 65000,
       focusChapterId,
       targetChapterMention: message
     });
