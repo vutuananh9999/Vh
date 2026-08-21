@@ -3,6 +3,8 @@ import { Chapter, ChatMessage } from '../types.ts';
 import { useStory } from '../context/StoryContext.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { ChapterTimelineCard } from './plot-arc/ChapterTimelineCard.tsx';
+import { PlotArcDebugConsole } from './plot-arc/PlotArcDebugConsole.tsx';
+import { plotDebugLogger } from '../services/plotDebugLogger.ts';
 
 interface Props {
     isOpen: boolean;
@@ -41,7 +43,16 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         updateChapterContent
     } = useStory();
 
-    const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit'>('timeline');
+    const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'debug'>('timeline');
+    const [debugErrorCount, setDebugErrorCount] = useState(0);
+
+    useEffect(() => {
+        const unsubscribe = plotDebugLogger.subscribe(logs => {
+            const errs = logs.filter(l => l.status === 'rate_limit_429' || (l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming')).length;
+            setDebugErrorCount(errs);
+        });
+        return () => unsubscribe();
+    }, []);
     const [coEditSubTab, setCoEditSubTab] = useState<'chat' | 'proposals'>('chat');
     const [coEditInput, setCoEditInput] = useState('');
     const [toast, setToast] = useState<string | null>(null);
@@ -484,6 +495,19 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                 className={`px-2 sm:px-2.5 py-0.5 text-[8.5px] sm:text-[9.5px] text-center font-black uppercase rounded-md transition-all ${activeTab === 'co-edit' ? 'bg-rose-600 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}
                             >
                                 Co-Edit
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('debug')} 
+                                className={`relative px-2 sm:px-2.5 py-0.5 text-[8.5px] sm:text-[9.5px] text-center font-black uppercase rounded-md transition-all flex items-center gap-1 ${activeTab === 'debug' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}
+                                title="Debug Console - Xem chi tiết log API, nguyên nhân lỗi 429 và kiểm tra API Key"
+                            >
+                                <svg className="w-2.5 h-2.5 text-indigo-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                                <span>Debug Log</span>
+                                {debugErrorCount > 0 && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                                )}
                             </button>
                         </div>
                     </div>
@@ -1113,6 +1137,11 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                 </div>
                             </div>
                         </div>
+                    )}
+
+                    {/* Tab 4: Debug Log Console */}
+                    {activeTab === 'debug' && (
+                        <PlotArcDebugConsole onSwitchToChat={() => setActiveTab('co-edit')} />
                     )}
                 </div>
             </div>

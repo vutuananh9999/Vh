@@ -3,6 +3,7 @@ import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
 import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
+import { plotDebugLogger } from "./plotDebugLogger.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -1182,6 +1183,19 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
 
   async analyzePlotArc(storyOrChapters: Story | Chapter[], storyTitle?: string): Promise<any> {
     const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(storyOrChapters, storyTitle);
+    const activeKey = getApiKey();
+    const logId = plotDebugLogger.startLog({
+      type: 'plot_analysis',
+      title: `Phân tích Mạch Cốt truyện (${storyTitle || 'Toàn tác phẩm'})`,
+      model: getFlash(),
+      apiKey: activeKey,
+      keyIndex: lastKeyIndex + 1,
+      totalKeys: getAvailableKeysCount(),
+      keySource: 'localStorage',
+      message: prompt.substring(0, 500) + '...',
+      systemInstruction: 'Plot Arc JSON Analyzer'
+    });
+
     try {
       const response = await safeGenerateContent({
         model: getFlash(),
@@ -1191,17 +1205,26 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
           thinkingConfig: { thinkingBudget: 2048 }
         }
       });
+      plotDebugLogger.completeSuccess(logId, {
+        fullResponse: response.text || "",
+        usageMetadata: response.usageMetadata
+      });
       return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) {
+    } catch (e: any) {
       try {
         const response = await safeGenerateContent({
           model: getFlash(),
           contents: [{ parts: [{ text: prompt }] }],
           config: { responseMimeType: "application/json" }
         });
+        plotDebugLogger.completeSuccess(logId, {
+          fullResponse: response.text || "",
+          usageMetadata: response.usageMetadata
+        });
         return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-      } catch (err) {
+      } catch (err: any) {
         console.error("Plot Arc Analysis failed:", err);
+        plotDebugLogger.recordFailure(logId, err);
         return null;
       }
     }
@@ -1299,7 +1322,7 @@ Bạn hãy trao đổi nhiệt tình, mang tính phân tích sắc bén và th�
 
 Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi tiết, phản hồi bằng tiếng Việt.`;
 
-    // Retain recent message history with generous length (up to 30,000 chars per turn)
+    // Retain recent message history with generous length (up to 35,000 chars per turn)
     const sanitizedHistory = (history || []).slice(-6).map(h => {
       const parts = (h.parts || []).map(p => {
         let text = p.text || "";
@@ -1310,6 +1333,24 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
       });
       return { role: h.role, parts };
     });
+
+    const activeKey = getApiKey();
+    const logId = plotDebugLogger.startLog({
+      type: 'plot_chat',
+      title: `Plot Co-Edit: ${message.substring(0, 35)}${message.length > 35 ? '...' : ''}`,
+      model: getFlash(),
+      apiKey: activeKey,
+      keyIndex: lastKeyIndex + 1,
+      totalKeys: getAvailableKeysCount(),
+      keySource: 'localStorage',
+      message,
+      systemInstruction,
+      historyTurns: sanitizedHistory.length,
+      chaptersContextChars: chaptersContext.length
+    });
+
+    let fullAccumulatedResponse = "";
+    let finalUsageMetadata: any = null;
 
     try {
       chat = ai.chats.create({
@@ -1322,20 +1363,71 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
         history: sanitizedHistory
       });
       const response = await chat.sendMessageStream({ message });
-      for await (const chunk of response) yield chunk as GenerateContentResponse;
-    } catch (e) {
-      console.warn("Plot chat error, retrying without history:", e);
-      chat = ai.chats.create({
-        model: getFlash(),
-        config: { 
-          systemInstruction,
-          temperature: 0.7,
-          thinkingConfig: { thinkingBudget: 2048 }
-        },
-        history: []
+      for await (const chunk of response) {
+        const text = chunk.text || "";
+        if (text) {
+          fullAccumulatedResponse += text;
+          plotDebugLogger.updateStreaming(logId, text);
+        }
+        if (chunk.usageMetadata) {
+          finalUsageMetadata = chunk.usageMetadata;
+        }
+        yield chunk as GenerateContentResponse;
+      }
+      plotDebugLogger.completeSuccess(logId, {
+        fullResponse: fullAccumulatedResponse,
+        usageMetadata: finalUsageMetadata
       });
-      const response = await chat.sendMessageStream({ message });
-      for await (const chunk of response) yield chunk as GenerateContentResponse;
+    } catch (e: any) {
+      console.warn("Plot chat error, retrying without history:", e);
+      plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 sau khi lược bỏ toàn bộ lịch sử chat...");
+
+      const retryLogId = plotDebugLogger.startLog({
+        type: 'plot_chat',
+        title: `[Retry Không Lịch Sử] Plot Co-Edit: ${message.substring(0, 35)}...`,
+        model: getFlash(),
+        apiKey: getApiKey(),
+        keyIndex: lastKeyIndex + 1,
+        totalKeys: getAvailableKeysCount(),
+        keySource: 'localStorage',
+        message,
+        systemInstruction,
+        historyTurns: 0,
+        chaptersContextChars: chaptersContext.length
+      });
+
+      try {
+        chat = ai.chats.create({
+          model: getFlash(),
+          config: { 
+            systemInstruction,
+            temperature: 0.7,
+            thinkingConfig: { thinkingBudget: 2048 }
+          },
+          history: []
+        });
+        const response = await chat.sendMessageStream({ message });
+        let retryAccumulated = "";
+        let retryMetadata: any = null;
+        for await (const chunk of response) {
+          const text = chunk.text || "";
+          if (text) {
+            retryAccumulated += text;
+            plotDebugLogger.updateStreaming(retryLogId, text);
+          }
+          if (chunk.usageMetadata) {
+            retryMetadata = chunk.usageMetadata;
+          }
+          yield chunk as GenerateContentResponse;
+        }
+        plotDebugLogger.completeSuccess(retryLogId, {
+          fullResponse: retryAccumulated,
+          usageMetadata: retryMetadata
+        });
+      } catch (retryErr: any) {
+        plotDebugLogger.recordFailure(retryLogId, retryErr);
+        throw retryErr;
+      }
     }
   },
 
@@ -1587,6 +1679,25 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
     return link ? `${link}&key=${key}` : null;
   },
 
+  async testSingleKeyDirectly(apiKey: string, modelToTest?: string): Promise<{ text: string; usageMetadata?: any }> {
+    const rawAi = createGenAI(apiKey);
+    const targetModel = modelToTest || getFlash();
+    const response = await rawAi.models.generateContent({
+      model: targetModel,
+      contents: [{ parts: [{ text: "Hello Gemini, ping test 1 2 3." }] }],
+      config: {
+        temperature: 0.1
+      }
+    });
+    return {
+      text: response.text || "OK",
+      usageMetadata: response.usageMetadata
+    };
+  },
+
+  getAllKeys,
+  getFlash,
+  getPro,
   getKeyCooldownStatus,
   clearKeyCooldown,
   clearAllCooldowns,
