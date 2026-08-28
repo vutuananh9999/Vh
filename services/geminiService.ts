@@ -4,6 +4,7 @@ import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspirat
 import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
 import { plotDebugLogger } from "./plotDebugLogger.ts";
+import { requestThrottleService } from "./requestThrottleService.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -1143,17 +1144,24 @@ export const geminiService = {
   },
 
   async generateChapterSummary(title: string, content: string): Promise<any> {
-    const prompt = `Hãy tóm tắt đầy đủ các sự kiện quan trọng trong chương "${title}" (khoảng 200 từ). Tập trung vào chuyển biến của nhân vật và các vật phẩm/thông tin mới. [NỘI DUNG]: ${content.substring(0, 10000)}`;
-    const response = await ai.models.generateContent({ 
-        model: getFlash(), 
-        contents: [{ parts: [{ text: prompt }] }] 
+    return requestThrottleService.enqueuePromise(async () => {
+      const prompt = `Hãy tóm tắt đầy đủ các sự kiện quan trọng trong chương "${title}" (khoảng 200 từ). Tập trung vào chuyển biến của nhân vật và các vật phẩm/thông tin mới. [NỘI DUNG]: ${content.substring(0, 10000)}`;
+      const response = await ai.models.generateContent({ 
+          model: getFlash(), 
+          contents: [{ parts: [{ text: prompt }] }] 
+      });
+      return { text: response.text || "", usageMetadata: response.usageMetadata };
+    }, {
+      name: `Tóm tắt: ${title}`,
+      type: 'chapter_summary',
+      priority: 'normal'
     });
-    return { text: response.text || "", usageMetadata: response.usageMetadata };
   },
 
   async generateChapterContentFromPlot(chapter: Chapter, story: Story): Promise<any> {
-    const hasOriginalDraft = !!(chapter.content && chapter.content.trim().length > 30);
-    const prompt = `Bạn là một Đại văn hào chuyên nghiệp viết tiểu thuyết trực tuyến xuất sắc.
+    return requestThrottleService.enqueuePromise(async () => {
+      const hasOriginalDraft = !!(chapter.content && chapter.content.trim().length > 30);
+      const prompt = `Bạn là một Đại văn hào chuyên nghiệp viết tiểu thuyết trực tuyến xuất sắc.
 Hãy viết hoặc chỉnh sửa/nâng cấp bản thảo (draft) cho chương "${chapter.title}" của tác phẩm "${story.title}" dựa trên các thông tin cốt truyện và định hướng sau đây:
 
 [THỂ LOẠI]: ${story.genre}
@@ -1181,16 +1189,21 @@ Yêu cầu cụ thể:
 
 Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
 
-    const response = await safeGenerateContent({ 
-        model: getFlash(), 
-        contents: [{ parts: [{ text: prompt }] }],
-        config: {
-            temperature: 0.85,
-            thinkingConfig: { thinkingBudget: 2048 } 
-        }
-    });
+      const response = await safeGenerateContent({ 
+          model: getFlash(), 
+          contents: [{ parts: [{ text: prompt }] }],
+          config: {
+              temperature: 0.85,
+              thinkingConfig: { thinkingBudget: 2048 } 
+          }
+      });
 
-    return { text: response.text || "", usageMetadata: response.usageMetadata };
+      return { text: response.text || "", usageMetadata: response.usageMetadata };
+    }, {
+      name: `Soạn thảo: ${chapter.title}`,
+      type: 'content_gen',
+      priority: 'normal'
+    });
   },
 
   async suggestOutline(chapter: Chapter, story: Story, userInstruction: string, longTermMemory: string, shortTermMemory: string): Promise<any> {
@@ -1207,52 +1220,58 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   },
 
   async analyzePlotArc(storyOrChapters: Story | Chapter[], storyTitle?: string): Promise<any> {
-    const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(storyOrChapters, storyTitle);
-    const activeKey = getApiKey();
-    const logId = plotDebugLogger.startLog({
-      type: 'plot_analysis',
-      title: `Phân tích Mạch Cốt truyện (${storyTitle || 'Toàn tác phẩm'})`,
-      model: getFlash(),
-      apiKey: activeKey,
-      keyIndex: lastKeyIndex + 1,
-      totalKeys: getAvailableKeysCount(),
-      keySource: 'localStorage',
-      message: prompt.substring(0, 500) + '...',
-      systemInstruction: 'Plot Arc JSON Analyzer'
-    });
-
-    try {
-      const response = await safeGenerateContent({
+    return requestThrottleService.enqueuePromise(async () => {
+      const prompt = promptBuilderService.buildPlotArcAnalysisPrompt(storyOrChapters, storyTitle);
+      const activeKey = getApiKey();
+      const logId = plotDebugLogger.startLog({
+        type: 'plot_analysis',
+        title: `Phân tích Mạch Cốt truyện (${storyTitle || 'Toàn tác phẩm'})`,
         model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { 
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 2048 }
-        }
+        apiKey: activeKey,
+        keyIndex: lastKeyIndex + 1,
+        totalKeys: getAvailableKeysCount(),
+        keySource: 'localStorage',
+        message: prompt.substring(0, 500) + '...',
+        systemInstruction: 'Plot Arc JSON Analyzer'
       });
-      plotDebugLogger.completeSuccess(logId, {
-        fullResponse: response.text || "",
-        usageMetadata: response.usageMetadata
-      });
-      return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e: any) {
+
       try {
         const response = await safeGenerateContent({
           model: getFlash(),
           contents: [{ parts: [{ text: prompt }] }],
-          config: { responseMimeType: "application/json" }
+          config: { 
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 2048 }
+          }
         });
         plotDebugLogger.completeSuccess(logId, {
           fullResponse: response.text || "",
           usageMetadata: response.usageMetadata
         });
         return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-      } catch (err: any) {
-        console.error("Plot Arc Analysis failed:", err);
-        plotDebugLogger.recordFailure(logId, err);
-        return null;
+      } catch (e: any) {
+        try {
+          const response = await safeGenerateContent({
+            model: getFlash(),
+            contents: [{ parts: [{ text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+          });
+          plotDebugLogger.completeSuccess(logId, {
+            fullResponse: response.text || "",
+            usageMetadata: response.usageMetadata
+          });
+          return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+        } catch (err: any) {
+          console.error("Plot Arc Analysis failed:", err);
+          plotDebugLogger.recordFailure(logId, err);
+          return null;
+        }
       }
-    }
+    }, {
+      name: `Phân tích Mạch truyện (${storyTitle || 'Toàn tác phẩm'})`,
+      type: 'plot_analysis',
+      priority: 'low'
+    });
   },
 
   async extractKnowledge(text: string, story: Story, categories: ExtractionCategory[] = ['characters', 'world']): Promise<any> {
@@ -1285,7 +1304,6 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   },
 
   async *chatPlotStream(history: ChatMessage[], message: string, story: Story, focusChapterId?: string) {
-    let chat;
     const chaptersContext = formatSmartChapterContext(story.chapters, {
       maxTotalChars: 65000,
       focusChapterId,
@@ -1359,67 +1377,25 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
       return { role: h.role, parts };
     });
 
-    const activeKey = getApiKey();
-    const logId = plotDebugLogger.startLog({
-      type: 'plot_chat',
-      title: `Plot Co-Edit: ${message.substring(0, 35)}${message.length > 35 ? '...' : ''}`,
-      model: getFlash(),
-      apiKey: activeKey,
-      keyIndex: lastKeyIndex + 1,
-      totalKeys: getAvailableKeysCount(),
-      keySource: 'localStorage',
-      message,
-      systemInstruction,
-      historyTurns: sanitizedHistory.length,
-      chaptersContextChars: chaptersContext.length
-    });
-
-    let fullAccumulatedResponse = "";
-    let finalUsageMetadata: any = null;
-
-    try {
-      chat = ai.chats.create({
-        model: getFlash(),
-        config: { 
-          systemInstruction,
-          temperature: 0.7,
-          thinkingConfig: { thinkingBudget: 2048 }
-        },
-        history: sanitizedHistory
-      });
-      const response = await chat.sendMessageStream({ message });
-      for await (const chunk of response) {
-        const text = chunk.text || "";
-        if (text) {
-          fullAccumulatedResponse += text;
-          plotDebugLogger.updateStreaming(logId, text);
-        }
-        if (chunk.usageMetadata) {
-          finalUsageMetadata = chunk.usageMetadata;
-        }
-        yield chunk as GenerateContentResponse;
-      }
-      plotDebugLogger.completeSuccess(logId, {
-        fullResponse: fullAccumulatedResponse,
-        usageMetadata: finalUsageMetadata
-      });
-    } catch (e: any) {
-      console.warn("Plot chat error, retrying without history:", e);
-      plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 sau khi lược bỏ toàn bộ lịch sử chat...");
-
-      const retryLogId = plotDebugLogger.startLog({
+    const stream = requestThrottleService.enqueueStream(async function* () {
+      let chat;
+      const activeKey = getApiKey();
+      const logId = plotDebugLogger.startLog({
         type: 'plot_chat',
-        title: `[Retry Không Lịch Sử] Plot Co-Edit: ${message.substring(0, 35)}...`,
+        title: `Plot Co-Edit: ${message.substring(0, 35)}${message.length > 35 ? '...' : ''}`,
         model: getFlash(),
-        apiKey: getApiKey(),
+        apiKey: activeKey,
         keyIndex: lastKeyIndex + 1,
         totalKeys: getAvailableKeysCount(),
         keySource: 'localStorage',
         message,
         systemInstruction,
-        historyTurns: 0,
+        historyTurns: sanitizedHistory.length,
         chaptersContextChars: chaptersContext.length
       });
+
+      let fullAccumulatedResponse = "";
+      let finalUsageMetadata: any = null;
 
       try {
         chat = ai.chats.create({
@@ -1429,30 +1405,83 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
             temperature: 0.7,
             thinkingConfig: { thinkingBudget: 2048 }
           },
-          history: []
+          history: sanitizedHistory
         });
         const response = await chat.sendMessageStream({ message });
-        let retryAccumulated = "";
-        let retryMetadata: any = null;
         for await (const chunk of response) {
           const text = chunk.text || "";
           if (text) {
-            retryAccumulated += text;
-            plotDebugLogger.updateStreaming(retryLogId, text);
+            fullAccumulatedResponse += text;
+            plotDebugLogger.updateStreaming(logId, text);
           }
           if (chunk.usageMetadata) {
-            retryMetadata = chunk.usageMetadata;
+            finalUsageMetadata = chunk.usageMetadata;
           }
           yield chunk as GenerateContentResponse;
         }
-        plotDebugLogger.completeSuccess(retryLogId, {
-          fullResponse: retryAccumulated,
-          usageMetadata: retryMetadata
+        plotDebugLogger.completeSuccess(logId, {
+          fullResponse: fullAccumulatedResponse,
+          usageMetadata: finalUsageMetadata
         });
-      } catch (retryErr: any) {
-        plotDebugLogger.recordFailure(retryLogId, retryErr);
-        throw retryErr;
+      } catch (e: any) {
+        console.warn("Plot chat error, retrying without history:", e);
+        plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 sau khi lược bỏ toàn bộ lịch sử chat...");
+
+        const retryLogId = plotDebugLogger.startLog({
+          type: 'plot_chat',
+          title: `[Retry Không Lịch Sử] Plot Co-Edit: ${message.substring(0, 35)}...`,
+          model: getFlash(),
+          apiKey: getApiKey(),
+          keyIndex: lastKeyIndex + 1,
+          totalKeys: getAvailableKeysCount(),
+          keySource: 'localStorage',
+          message,
+          systemInstruction,
+          historyTurns: 0,
+          chaptersContextChars: chaptersContext.length
+        });
+
+        try {
+          chat = ai.chats.create({
+            model: getFlash(),
+            config: { 
+              systemInstruction,
+              temperature: 0.7,
+              thinkingConfig: { thinkingBudget: 2048 }
+            },
+            history: []
+          });
+          const response = await chat.sendMessageStream({ message });
+          let retryAccumulated = "";
+          let retryMetadata: any = null;
+          for await (const chunk of response) {
+            const text = chunk.text || "";
+            if (text) {
+              retryAccumulated += text;
+              plotDebugLogger.updateStreaming(retryLogId, text);
+            }
+            if (chunk.usageMetadata) {
+              retryMetadata = chunk.usageMetadata;
+            }
+            yield chunk as GenerateContentResponse;
+          }
+          plotDebugLogger.completeSuccess(retryLogId, {
+            fullResponse: retryAccumulated,
+            usageMetadata: retryMetadata
+          });
+        } catch (retryErr: any) {
+          plotDebugLogger.recordFailure(retryLogId, retryErr);
+          throw retryErr;
+        }
       }
+    }, {
+      name: `Plot Co-Edit Chat: ${message.substring(0, 30)}`,
+      type: 'plot_chat',
+      priority: 'high'
+    });
+
+    for await (const chunk of stream) {
+      yield chunk;
     }
   },
 

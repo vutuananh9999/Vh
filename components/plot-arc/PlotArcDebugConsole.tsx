@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { plotDebugLogger, PlotDebugLogItem } from '../../services/plotDebugLogger.ts';
 import { geminiService } from '../../services/geminiService.ts';
+import { requestThrottleService, ThrottleState, QueueMode } from '../../services/requestThrottleService.ts';
 
 interface Props {
   onSwitchToChat?: () => void;
@@ -14,8 +15,16 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; statusText: string; latency?: number }>>({});
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
   const [inspectorTab, setInspectorTab] = useState<'overview' | 'system' | 'message' | 'response' | 'error'>('overview');
+  const [throttleState, setThrottleState] = useState<ThrottleState>(requestThrottleService.getState());
 
   const hostEnv = useMemo(() => plotDebugLogger.getHostEnv(), []);
+
+  useEffect(() => {
+    const unsubThrottle = requestThrottleService.subscribe((state) => {
+      setThrottleState(state);
+    });
+    return () => unsubThrottle();
+  }, []);
 
   useEffect(() => {
     const unsubscribe = plotDebugLogger.subscribe((updatedLogs) => {
@@ -292,6 +301,76 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             ))}
           </div>
         )}
+
+        {/* Request Throttling & Queue Management Bar */}
+        <div className="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center justify-between gap-3 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Queue Mode Badge */}
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono font-bold ${
+              throttleState.effectiveConcurrency === 1
+                ? 'bg-amber-950/50 border-amber-600/40 text-amber-300'
+                : 'bg-indigo-950/50 border-indigo-600/40 text-indigo-300'
+            }`}>
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              <span>
+                Hàng Đợi: {throttleState.effectiveConcurrency === 1 ? 'Tuần Tự 1-Luồng (Chống 429)' : `Song Song (${throttleState.effectiveConcurrency} Luồng)`}
+              </span>
+            </div>
+
+            {/* Queue Counter Indicators */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-850 border border-gray-700 text-gray-300">
+              <span className={`w-2 h-2 rounded-full ${throttleState.activeCount > 0 ? 'bg-amber-400 animate-ping' : 'bg-gray-500'}`}></span>
+              <span className="font-bold text-gray-200">Đang chạy: {throttleState.activeCount}</span>
+              <span className="text-gray-500">|</span>
+              <span className="text-gray-300">Đang chờ: <b className="text-amber-400">{throttleState.pendingCount}</b></span>
+              <span className="text-gray-500">|</span>
+              <span className="text-gray-400 text-[10px]">Đã xử lý: {throttleState.totalProcessed}</span>
+            </div>
+
+            {/* Paused Warning if 429 occurred */}
+            {throttleState.isPaused && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/80 border border-rose-600/60 text-rose-300 font-bold animate-pulse">
+                <span>⏸️ Hàng đợi tạm nghỉ: {throttleState.pauseReason}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Mode Selector & Delay Tuner */}
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 text-[10px] uppercase font-bold">Chế độ Queue:</span>
+            <select
+              value={throttleState.mode}
+              onChange={(e) => {
+                const newMode = e.target.value as QueueMode;
+                requestThrottleService.setMode(newMode);
+                showNotification(`Đã chuyển chế độ điều tiết sang: ${newMode}`);
+              }}
+              className="bg-gray-850 border border-gray-700 text-cyan-300 font-bold text-[11px] rounded-lg px-2 py-1 focus:outline-none focus:border-cyan-500 cursor-pointer"
+            >
+              <option value="auto" className="bg-gray-900 text-cyan-300">Tự động theo Host (Khuyến nghị)</option>
+              <option value="sequential" className="bg-gray-900 text-amber-300">Bắt buộc Tuần tự 1-by-1 (Netlify Safe)</option>
+              <option value="parallel" className="bg-gray-900 text-indigo-300">Bắt buộc Song song 4-luồng (Turbo)</option>
+            </select>
+
+            <select
+              value={throttleState.interRequestDelayMs}
+              onChange={(e) => {
+                const delay = parseInt(e.target.value, 10);
+                requestThrottleService.setInterRequestDelay(delay);
+                showNotification(`Đã chỉnh độ giãn cách giữa các lệnh: ${delay}ms`);
+              }}
+              className="bg-gray-850 border border-gray-700 text-gray-300 font-mono text-[10.5px] rounded-lg px-2 py-1 focus:outline-none cursor-pointer"
+              title="Khoảng nghỉ giữa các request để Google hồi phục token bucket"
+            >
+              <option value="0" className="bg-gray-900">Nghỉ 0ms (Không đệm)</option>
+              <option value="300" className="bg-gray-900">Nghỉ 300ms (Nhanh)</option>
+              <option value="800" className="bg-gray-900">Nghỉ 800ms (Chuẩn Netlify)</option>
+              <option value="1500" className="bg-gray-900">Nghỉ 1500ms (Siêu an toàn)</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Main Content Area: Split List & Inspector */}

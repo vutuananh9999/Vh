@@ -1,8 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useStory } from '../context/StoryContext';
 import { PRONOUN_STYLES, compilePronounStyle } from '../constants';
 import { Character, EntityType } from '../types';
+import { TokenUsageMeter } from './TokenUsageMeter';
+import { calculateWizardMetrics } from '../services/tokenEstimator';
 
 const SUGGESTED_GENRES = [
     "Tiên Hiệp", "Huyền Huyễn", "Kiếm Hiệp", "Đô Thị", 
@@ -82,10 +84,64 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
   const [showSuggestionModal, setShowSuggestionModal] = useState(false);
   const [selectedSuggestions, setSelectedSuggestions] = useState<Record<string, boolean>>({});
 
+  // Active Model State for Token Calculation & Preview
+  const [activeModel, setActiveModel] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('aetheria_model_flash') || 'gemini-3.6-flash';
+    }
+    return 'gemini-3.6-flash';
+  });
+
+  const handleModelChange = (newModelId: string) => {
+    setActiveModel(newModelId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('aetheria_model_flash', newModelId);
+    }
+  };
+
   const getFinalPronounPrompt = () => {
       const style = PRONOUN_STYLES.find(s => s.id === pronounStyleId);
       return style && style.config ? compilePronounStyle(style.label, style.config) : "";
   };
+
+  // Real-time Token & Context Metrics calculation
+  const wizardMetrics = useMemo(() => {
+    return calculateWizardMetrics({
+      title,
+      synopsis,
+      genre,
+      currentTimeline,
+      pov,
+      pronounStyle: getFinalPronounPrompt(),
+      isFanfiction,
+      fandomName,
+      fanfictionContent: fanfictionFile?.content,
+      mcName,
+      mcSpecies,
+      mcGender,
+      mcArchetype,
+      mcBackground,
+      interactionRules,
+      setting,
+      mechanics,
+      hasSystem,
+      negativePrompt,
+      maps,
+      officials,
+      logistics,
+      economy,
+      nsfw,
+      planning,
+      currentStep: step
+    }, activeModel);
+  }, [
+    title, synopsis, genre, currentTimeline, pov, pronounStyleId,
+    isFanfiction, fandomName, fanfictionFile,
+    mcName, mcSpecies, mcGender, mcArchetype, mcBackground,
+    interactionRules, setting, mechanics, hasSystem,
+    negativePrompt, maps, officials, logistics, economy, nsfw,
+    planning, step, activeModel
+  ]);
 
   const handleExpandSetting = async () => {
       if (!setting.trim()) return;
@@ -356,12 +412,19 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
                 <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
                     <div className="h-full bg-gradient-to-r from-primary-500 to-purple-500 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(168,85,247,0.5)]" style={{ width: `${progressPercentage}%` }}></div>
                 </div>
-                <div className="flex justify-between mt-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                <div className="flex justify-between mt-2 mb-4 text-[10px] font-bold uppercase tracking-widest text-gray-500">
                     <span>Cơ bản</span>
                     <span>Nhân vật</span>
                     <span>Thế giới</span>
                     <span>Hoàn tất</span>
                 </div>
+
+                {/* Real-time Token Usage Meter */}
+                <TokenUsageMeter
+                    metrics={wizardMetrics}
+                    activeModel={activeModel}
+                    onModelChange={handleModelChange}
+                />
             </div>
 
              <div className="p-8 overflow-y-auto custom-scrollbar max-h-[70vh]">

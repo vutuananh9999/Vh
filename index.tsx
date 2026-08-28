@@ -2,6 +2,10 @@
 import React from 'react';
 import * as ReactDOMClient from 'react-dom/client';
 import App from './App.tsx';
+import { registerServiceWorker } from './services/serviceWorkerRegistration.ts';
+
+// Initialize Service Worker
+registerServiceWorker();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
