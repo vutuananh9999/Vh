@@ -1,6 +1,14 @@
 
 export type ExtractionCategory = 'characters' | 'world' | 'mechanics' | 'dna';
 
+export type TranslationStyleMode = 'natural' | 'wuxia' | 'fantasy' | 'modern' | 'custom';
+
+export interface TranslationOptions {
+  styleMode?: TranslationStyleMode;
+  customInstruction?: string;
+  pronounOverride?: string;
+}
+
 export interface WritingDNA {
   narrativeVoice: string; 
   vocabularyPalette: string[]; 

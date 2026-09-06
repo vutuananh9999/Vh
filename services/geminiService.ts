@@ -1705,13 +1705,37 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
     } catch (e) { return null; }
   },
 
-  async *translateToVietnameseStream(content: string) {
-    const prompt = `Hãy dịch đoạn văn sau sang tiếng Việt một cách mượt mà, văn chương, phù hợp với phong cách tiểu thuyết. Giữ nguyên các danh từ riêng nếu cần thiết hoặc dịch chúng sao cho hay nhất. [VĂN BẢN]: ${content.substring(0, 10000)}`;
-    const stream = safeGenerateContentStream({ 
-        model: getFlash(), 
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { temperature: 0.3 }
+  async *translateToVietnameseStream(
+    content: string,
+    story?: Story | null,
+    options?: {
+      chapterTitle?: string;
+      styleMode?: string;
+      customInstruction?: string;
+      pronounOverride?: string;
+    }
+  ) {
+    const prompt = promptBuilderService.buildVietnameseLocalizationPrompt(content, story, options);
+    const chapterName = options?.chapterTitle || 'Chương truyện';
+    
+    const stream = requestThrottleService.enqueueStream(async function* () {
+      const genStream = safeGenerateContentStream({ 
+          model: getFlash(), 
+          contents: [{ parts: [{ text: prompt }] }],
+          config: { 
+            temperature: 0.65,
+            thinkingConfig: { thinkingBudget: 2048 }
+          }
+      });
+      for await (const chunk of genStream) {
+        yield chunk;
+      }
+    }, {
+      name: `Việt Hóa: ${chapterName}`,
+      type: 'content_gen',
+      priority: 'high'
     });
+
     for await (const chunk of stream) {
       yield chunk;
     }

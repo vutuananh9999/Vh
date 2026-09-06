@@ -52,9 +52,12 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     selectChapter,
     splitChapter,
     isAutoTranslateEnabled,
-    setIsAutoTranslateEnabled
+    setIsAutoTranslateEnabled,
+    translationOptions,
+    setTranslationOptions
   } = useStory();
 
+  const [showTranslateSettings, setShowTranslateSettings] = useState(false);
   const [isEditMode, setIsEditMode] = useState(true);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
@@ -409,12 +412,132 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
             )}
           </button>
 
-          {/* Dịch sang Tiếng Việt */}
-          <button onClick={() => translateChapter(activeChapterId!)} disabled={isGenerating} className="p-2 rounded text-gray-400 hover:text-emerald-400 transition-colors border border-gray-800 shrink-0" title="AI Dịch sang Tiếng Việt">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
-            </svg>
-          </button>
+          {/* Dịch / Việt hoá Văn Học Đỉnh Cao */}
+          <div className="relative inline-flex items-center shrink-0">
+            <button 
+              onClick={() => {
+                setShowTranslateSettings(false);
+                translateChapter(activeChapterId!);
+              }} 
+              disabled={isGenerating} 
+              className={`p-2 rounded-l transition-all border shrink-0 flex items-center gap-1.5 ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-900/30 hover:border-emerald-500/50'} bg-emerald-950/20 text-emerald-400 border-emerald-800/40`} 
+              title="Đại Biên Tập & Việt Hóa Văn Học Đỉnh Cao (Khử sượng/convert, mượt mà câu từ)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+              </svg>
+              <span className="hidden sm:inline text-[11px] font-semibold text-emerald-300">
+                {translationOptions?.styleMode === 'wuxia' ? 'Tiên Hiệp' :
+                 translationOptions?.styleMode === 'fantasy' ? 'Tây Phương' :
+                 translationOptions?.styleMode === 'modern' ? 'Hiện Đại' : 'Thuần Việt'}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTranslateSettings(!showTranslateSettings)}
+              className={`p-2 -ml-px rounded-r transition-all border border-l-0 bg-emerald-950/20 hover:bg-emerald-900/30 text-emerald-400 border-emerald-800/40 ${showTranslateSettings ? 'bg-emerald-900/40 text-emerald-300' : ''}`}
+              title="Tùy chỉnh phong cách & Xưng hô Việt hóa"
+            >
+              <svg className={`w-3 h-3 transition-transform ${showTranslateSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {/* Popover Tùy chỉnh Việt hóa */}
+            {showTranslateSettings && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowTranslateSettings(false)} />
+                <div className="absolute top-full left-0 mt-2 w-80 bg-gray-900/95 backdrop-blur-md border border-emerald-500/30 rounded-2xl shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-800">
+                    <div className="flex items-center gap-1.5 text-emerald-400 font-semibold text-xs uppercase tracking-wider">
+                      <span>💎</span>
+                      <span>Việt Hóa Văn Học Đỉnh Cao</span>
+                    </div>
+                    <button 
+                      type="button"
+                      onClick={() => setShowTranslateSettings(false)}
+                      className="text-gray-500 hover:text-gray-300 text-xs p-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-gray-400 mb-3 leading-relaxed">
+                    Khử sạch 100% cảm giác thô ráp, cấu trúc câu convert hay dịch máy. Chọn phong cách văn phong phù hợp:
+                  </p>
+
+                  {/* Mode Grid */}
+                  <div className="grid grid-cols-2 gap-1.5 mb-3">
+                    {[
+                      { id: 'natural', label: '🌟 Thuần Việt', desc: 'Mượt mà, giàu nhạc tính' },
+                      { id: 'wuxia', label: '🗡️ Tiên Hiệp', desc: 'Hán-Việt hào sảng, tu chân' },
+                      { id: 'fantasy', label: '🏰 Tây Phương', desc: 'Quý tộc, sử thi kinh điển' },
+                      { id: 'modern', label: '🏙️ Hiện Đại', desc: 'Sắc sảo, xưng hô tự nhiên' },
+                    ].map((mode) => {
+                      const isSelected = (translationOptions?.styleMode || 'natural') === mode.id;
+                      return (
+                        <button
+                          type="button"
+                          key={mode.id}
+                          onClick={() => setTranslationOptions(prev => ({ ...prev, styleMode: mode.id as any }))}
+                          className={`p-2 rounded-xl text-left border transition-all ${
+                            isSelected
+                              ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-300 shadow-sm'
+                              : 'bg-gray-800/30 border-gray-800 hover:border-gray-700 text-gray-400'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold">{mode.label}</div>
+                          <div className="text-[10px] opacity-75 mt-0.5 truncate">{mode.desc}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Xưng hô riêng */}
+                  <div className="mb-2.5">
+                    <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-1">
+                      Xưng hô ưu tiên (tùy chọn)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="VD: Ta - Nàng, Huynh - Muội, Lãnh chúa..."
+                      value={translationOptions?.pronounOverride || ''}
+                      onChange={(e) => setTranslationOptions(prev => ({ ...prev, pronounOverride: e.target.value }))}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-emerald-500/50"
+                    />
+                  </div>
+
+                  {/* Chỉ thị đặc thù */}
+                  <div className="mb-3">
+                    <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-1">
+                      Chỉ thị dịch riêng (tùy chọn)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="VD: Giữ tên vật phẩm tiếng Anh, tăng tả cảnh..."
+                      value={translationOptions?.customInstruction || ''}
+                      onChange={(e) => setTranslationOptions(prev => ({ ...prev, customInstruction: e.target.value }))}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-emerald-500/50"
+                    />
+                  </div>
+
+                  {/* Action button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTranslateSettings(false);
+                      translateChapter(activeChapterId!);
+                    }}
+                    disabled={isGenerating}
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-600/20 flex items-center justify-center gap-1.5"
+                  >
+                    <span>⚡</span>
+                    <span>Việt Hóa Ngay Chương Này</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Auto Next (Dịch tự động) */}
           <button 
@@ -794,8 +917,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                   </svg>
                 </div>
                 <div>
-                  <h4 className="font-bold text-white text-[13px]">AI Dịch sang Tiếng Việt</h4>
-                  <p className="text-gray-400">Gọi AI dịch nghĩa toàn bộ nội dung của chương hiện tại sang tiếng Việt với văn phong mượt mà, lưu loát.</p>
+                  <h4 className="font-bold text-white text-[13px]">AI Đại Biên Tập & Việt Hóa Văn Học</h4>
+                  <p className="text-gray-400">Gọi AI chuyển ngữ và biên tập chương truyện sang tiếng Việt văn chương đỉnh cao, quét sạch 100% văn phong thô ráp, cấu trúc convert máy sượng sùng. Hỗ trợ 4 phong cách: Thuần Việt, Cổ phong Tiên hiệp, Tây phương kỳ ảo và Hiện đại đô thị.</p>
                 </div>
               </div>
 

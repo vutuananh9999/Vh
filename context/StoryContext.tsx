@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { Story, Chapter, Character, VectorData, BackupData, PinnedMemory, ChatMessage, ReferenceDocument, WebInspiration, EvolutionLog, DocumentAnalysis, ExtractionCategory, KnowledgeLog, WritingDNA } from '../types.ts';
+import { Story, Chapter, Character, VectorData, BackupData, PinnedMemory, ChatMessage, ReferenceDocument, WebInspiration, EvolutionLog, DocumentAnalysis, ExtractionCategory, KnowledgeLog, WritingDNA, TranslationOptions, TranslationStyleMode } from '../types.ts';
 import { storageService } from '../services/storage.ts';
 import { geminiService } from '../services/geminiService.ts';
 import { ragService, getMagnitude } from '../services/ragService.ts';
@@ -141,7 +141,9 @@ interface StoryContextType {
   summarizeChapter: (id: string) => Promise<void>;
   summarizeAllChaptersSequentially: () => Promise<void>;
   generateChapterContentFromPlot: (id: string) => Promise<string>;
-  translateChapter: (id: string) => Promise<void>;
+  translateChapter: (id: string, options?: TranslationOptions) => Promise<void>;
+  translationOptions: TranslationOptions;
+  setTranslationOptions: React.Dispatch<React.SetStateAction<TranslationOptions>>;
   suggestActiveChapterOutline: () => Promise<void>;
   generateChapterVideo: () => Promise<void>;
   analyzeStoryPlotArc: () => Promise<void>;
@@ -263,6 +265,19 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [chapterSuggestion, setChapterSuggestion] = useState<ChapterSuggestion | null>(null);
   const [isSuggestingChapter, setIsSuggestingChapter] = useState(false);
   const [isAutoTranslateEnabled, setIsAutoTranslateEnabled] = useState(false);
+  const [translationOptions, setTranslationOptions] = useState<TranslationOptions>(() => {
+    try {
+      const saved = localStorage.getItem('aetheria_translation_options');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return { styleMode: 'natural' };
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aetheria_translation_options', JSON.stringify(translationOptions));
+    } catch (e) {}
+  }, [translationOptions]);
   
   // Token State
   const [lastTokenUsage, setLastTokenUsage] = useState<TokenUsage | null>(null);
@@ -877,13 +892,25 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const translateChapter = async (id: string) => {
-    const targetChapter = storyRef.current?.chapters.find(c => c.id === id);
+  const translateChapter = async (id: string, options?: TranslationOptions) => {
+    const currentStory = storyRef.current;
+    const targetChapter = currentStory?.chapters.find(c => c.id === id);
     if (!targetChapter || !targetChapter.content || targetChapter.content.length < 10) return;
+    
+    const activeOptions = options || translationOptions;
     setIsGenerating(true);
-    setGenerationStatus("Đang dịch sang tiếng Việt...");
+    setGenerationStatus("Đang đại biên tập & Việt hóa văn học đỉnh cao...");
     try {
-        const stream = geminiService.translateToVietnameseStream(targetChapter.content);
+        const stream = geminiService.translateToVietnameseStream(
+          targetChapter.content,
+          currentStory,
+          {
+            chapterTitle: targetChapter.title,
+            styleMode: activeOptions.styleMode,
+            customInstruction: activeOptions.customInstruction,
+            pronounOverride: activeOptions.pronounOverride
+          }
+        );
         let accumulated = "";
         let finalMetadata = null;
         
@@ -902,7 +929,6 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (isAutoTranslateEnabled) {
             updateChapterContent(id, accumulated, true);
             
-            const currentStory = storyRef.current;
             if (currentStory) {
                 const sorted = [...currentStory.chapters].sort((a, b) => a.order - b.order);
                 const currentIndex = sorted.findIndex(c => c.id === id);
@@ -910,10 +936,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     const nextChapter = sorted[currentIndex + 1];
                     setTimeout(() => {
                         setActiveChapterId(nextChapter.id);
-                        translateChapter(nextChapter.id);
+                        translateChapter(nextChapter.id, activeOptions);
                     }, 800); 
                 } else {
-                    alert("Đã dịch xong toàn bộ các chương!");
+                    alert("Đã hoàn tất Việt hóa toàn bộ các chương!");
                 }
             }
         } else {
@@ -1709,7 +1735,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,
       exportStory, exportAllStories, importStory, importStoryFromTxt, importChaptersFromTxt, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
       applyPendingEdit, discardPendingEdit,
-      isAutoTranslateEnabled, setIsAutoTranslateEnabled
+      isAutoTranslateEnabled, setIsAutoTranslateEnabled,
+      translationOptions, setTranslationOptions
     }}>
       {children}
     </StoryContext.Provider>

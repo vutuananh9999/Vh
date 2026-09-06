@@ -689,5 +689,126 @@ TRẢ VỀ JSON:
   "outline": "Dàn ý chi tiết 4 beat",
   "logicCheck": "Lưu ý để tránh lỗi logic/sức mạnh ảo hoặc logic địa điểm/thời gian"
 }`;
+  },
+
+  buildVietnameseLocalizationPrompt: (
+    content: string, 
+    story?: Story | null, 
+    options?: {
+      chapterTitle?: string;
+      styleMode?: string;
+      customInstruction?: string;
+      pronounOverride?: string;
+    }
+  ): string => {
+    const genre = story?.genre || "Tiểu thuyết";
+    const pronounStyle = options?.pronounOverride || story?.pronounStyle || "Tự nhiên, phù hợp bối cảnh & quan hệ";
+    const setting = story?.setting || "";
+    const mechanics = story?.mechanics || "";
+    const persistentDirectives = story?.persistentDirectives || "";
+    const styleMode = options?.styleMode || "natural";
+    const chapterName = options?.chapterTitle || "Chương truyện";
+    const customInst = options?.customInstruction || "";
+    const nsfwRating = story?.nsfw ? NSFW_INSTRUCTION : "";
+
+    let styleModeGuidance = "";
+    switch (styleMode) {
+      case "wuxia":
+        styleModeGuidance = `
+- PHONG CÁCH CỔ PHONG / TIÊN HIỆP / KIẾM HIỆP:
+  * Sử dụng hệ từ vựng Hán-Việt tinh hoa, hào sảng, uy phong, thấm đượm khí chất giang hồ hoặc tu chân phiêu dật.
+  * Xưng hô chuẩn mực: Đạo hữu, huynh đệ, sư huynh/sư muội, vãn bối/tiền bối, bản tọa, lão phu, tại hạ, các hạ.
+  * Giữ đúng thuật ngữ tu tiên, công pháp, linh bảo, cảnh giới, chiêu thức võ công, không dịch ngô nghê.`;
+        break;
+      case "fantasy":
+        styleModeGuidance = `
+- PHONG CÁCH TÂY PHƯƠNG KỲ ẢO / SỬ THI (EPIC FANTASY):
+  * Mang âm hưởng dịch thuật tiểu thuyết phương Tây kinh điển (như Chúa Nhẫn, Trò Chơi Vương Quyền, Harry Potter).
+  * Lời văn trang trọng, cổ kính, u trầm và giàu tính gợi cảm không gian sử thi.
+  * Xưng hô chuẩn phong vị quý tộc phương Tây: Lãnh chúa, Ngài, Bệ hạ, Hiệp sĩ, Huân tước, Phu nhân, Tiểu thư.
+  * TUYỆT ĐỐI KHÔNG dùng từ Hán-Việt cổ trang phương Đông gượng gạo (như "sư huynh", "tiểu tử", "bản tọa") trong bối cảnh lâu đài hiệp sĩ phương Tây.`;
+        break;
+      case "modern":
+        styleModeGuidance = `
+- PHONG CÁCH ĐÔ THỊ / HIỆN ĐẠI / KHOA HUYỄN:
+  * Ngôn ngữ gãy gọn, nhịp điệu nhanh, phản ánh đúng hơi thở đời sống hiện đại.
+  * Lời thoại chân thực, sắc sảo, tự nhiên như lời ăn tiếng nói ngoài đời (Tôi - anh, cậu - tớ, ông - tôi, hắn - cô ta, mày - tao khi giận dữ).
+  * Tuyệt đối tránh các từ xưng hô cổ trang sượng sùng như "ngươi - ta" trong bối cảnh hiện đại.`;
+        break;
+      case "natural":
+      default:
+        styleModeGuidance = `
+- PHONG CÁCH THUẦN VIỆT VĂN CHƯƠNG (KHUYÊN DÙNG):
+  * Ưu tiên cao nhất là sự mềm mại, uyển chuyển, giàu nhạc tính và trong sáng của tiếng Việt.
+  * Đọc lên êm tai, câu cú liên kết mượt mà như được chấp bút trực tiếp bởi tác giả tiếng Việt xuất sắc.
+  * Khử sạch 100% cảm giác dịch thô, dịch máy hay cấu trúc câu convert gượng gạo.`;
+        break;
+    }
+
+    const charactersContext = story?.characters && story.characters.length > 0
+      ? `[HỒ SƠ NHÂN VẬT THAM CHIẾU (GIỮ ĐÚNG TÊN & XƯNG HÔ)]:\n` +
+        story.characters.slice(0, 20).map(c => `- ${c.name} (${c.role}): ${c.description || ''}; Xưng hô/tính cách: ${c.traits?.join(', ') || 'Bình thường'}`).join('\n')
+      : '';
+
+    return `[NHIỆM VỤ: ĐẠI BIÊN TẬP & VIỆT HÓA VĂN HỌC ĐỈNH CAO - ERADICATE ROUGHNESS PROTOCOL]
+Bạn là một Đại dịch giả văn học và Trưởng ban biên tập tiểu thuyết kỳ cựu.
+Nhiệm vụ của bạn là VIỆT HÓA VÀ BIÊN TẬP LẠI TOÀN BỘ VĂN BẢN dưới đây thành tiếng Việt văn học đỉnh cao, mượt mà, sâu sắc, xóa bỏ triệt để mọi dấu vết "thô cứng", "sượng sùng" hay "văn phong convert/dịch máy".
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[THIẾT LẬP TÁC PHẨM]:
+- Tiêu đề chương: ${chapterName}
+- Thể loại truyện: ${genre}
+- Hệ thống xưng hô định hình: ${pronounStyle}
+${setting ? `- Bối cảnh thế giới: ${setting}` : ''}
+${mechanics ? `- Quy tắc/Thuật ngữ đặc thù: ${mechanics}` : ''}
+${persistentDirectives ? `- Chỉ thị phong cách bền vững: ${persistentDirectives}` : ''}
+${charactersContext}
+
+[ĐỊNH HƯỚNG PHONG CÁCH VIỆT HÓA]:
+${styleModeGuidance}
+${customInst ? `\n- CHỈ THỊ RIÊNG CỦA TÁC GIẢ: "${customInst}"` : ''}
+
+[GIAO THỨC XÓA BỎ VĂN PHONG "THÔ RÁP / CONVERT / DỊCH MÁY"]:
+1. 🚫 TIÊU DIỆT CÁC CẤU TRÚC CÂU RẬP KHUÔN, SƯỢNG SÙNG:
+   * "trong lòng không khỏi..." / "không khỏi có chút..." ➔ SỬA THÀNH: "trong lòng dấy lên...", "bất giác thấy...", "không nén được một thoáng...", hoặc miêu tả thẳng cảm xúc.
+   * "nhịn không được..." / "nhịn không được mà..." ➔ SỬA THÀNH: "không kìm được...", "bất giác...", "buột miệng...", "vô thức...".
+   * "hung hăng trừng mắt một cái" / "hung hăng đánh tới" ➔ SỬA THÀNH: "trừng mắt dữ dội...", "nhìn chằm chằm đầy căm phẫn...", "tung đòn sấm sét...".
+   * "khóe miệng co quắp một trận" ➔ SỬA THÀNH: "khóe môi giật giật...", "cười gượng gạo...", "nét mặt méo xệch...".
+   * "chỉ thấy..." (lạm dụng ở đầu câu) ➔ SỬA THÀNH: lược bỏ từ thừa, miêu tả trực diện hình ảnh/hành động.
+   * "bất quá..." ➔ SỬA THÀNH: "thế nhưng...", "tuy nhiên...", "ngặt nỗi...", "có điều...".
+   * "một đạo thân ảnh" / "một đạo kiếm mang" ➔ SỬA THÀNH: "một bóng người...", "vệt kiếm quang xé gió...", "luồng hàn mang vụt lóe...".
+   * "sắc mặt biến đổi một trận" ➔ SỬA THÀNH: "sắc mặt thoắt biến ảo...", "vẻ mặt chợt sa sầm...", "nét mặt chuyển sang bàng hoàng...".
+   * "mang theo một cỗ..." ➔ SỬA THÀNH: "toát lên vẻ...", "cuộn trào luồng...", "pha lẫn chút...".
+   * "ngươi đây là muốn chết" ➔ SỬA THÀNH: "ngươi chán sống rồi sao?!", "mày muốn tìm cái chết à?!".
+   * "được nhìn thấy bởi..." / "bị hắn thu vào trong mắt" ➔ SỬA THÀNH câu chủ động tự nhiên tiếng Việt: "hắn đều thu trọn vào tầm mắt".
+   * Tránh lặp chủ ngữ liên tục (như 3 câu liền đều mở đầu bằng "Hắn...", "Hắn...", "Hắn...").
+
+2. 🎭 XƯNG HÔ TỰ NHIÊN & KHẨU KHÍ NHÂN VẬT:
+   * Xưng hô phải phù hợp hoàn cảnh, độ tuổi, cấp bậc và cảm xúc của nhân vật theo đúng thiết lập.
+   * Lời thoại phải có "khẩu khí": Lúc uy nghi phải hào sảng đanh thép; lúc tình cảm phải tha thiết dịu dàng; lúc mỉa mai phải sắc bén; lúc sợ hãi phải ngập ngừng run rẩy.
+
+3. 🌊 NHỊP ĐIỆU VĂN CHƯƠNG & VỐN TỪ THUẦN VIỆT:
+   * Câu văn phải có nhịp thở: Cảnh hành động dùng câu ngắn, dứt khoát; cảnh nội tâm, phong cảnh dùng câu phức giàu nhạc tính, từ láy, từ gợi hình, gợi cảm.
+   * Chấm câu thanh thoát, không viết câu lê thê dài dòng với quá nhiều liên từ thừa thãi.
+
+4. 🛡️ BẢO TỒN NGUYÊN TÁC 100% (ZERO FABRICATION / ZERO OMISSION):
+   * Phải Việt hóa ĐẦY ĐỦ 100% từng câu thoại, từng cử chỉ, từng sự kiện, từng hành động, từng đạo cụ từ đầu đến cuối bản thảo.
+   * TUYỆT ĐỐI KHÔNG TỰ BỊA THÊM tình tiết ngoài nguyên tác.
+   * TUYỆT ĐỐI KHÔNG LƯỢC BỎ HAY TÓM TẮT bất kỳ phân đoạn nào. Độ dài bản dịch phải tương đương hoặc dài hơn bản gốc nhờ việc trau chuốt lời văn.
+   * Giữ nguyên các danh từ riêng, tên nhân vật, địa danh, tên chiêu thức, bảo vật, cảnh giới tu luyện đã định hình.
+
+5. 📜 ĐỊNH DẠNG ĐẦU RA:
+   * Chỉ xuất DUY NHẤT toàn văn nội dung chương truyện đã được Việt hóa và trau chuốt hoàn chỉnh từ dòng đầu đến dòng cuối.
+   * CẤM thêm bất kỳ lời mào đầu, lời chào, lời giải thích hay ký hiệu ngoài lề nào của AI.
+
+${nsfwRating}
+
+[VĂN BẢN GỐC CẦN VIỆT HÓA & TRAU CHUỐT]:
+"""
+${content}
+"""
+
+BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH:`;
   }
 };
