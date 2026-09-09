@@ -7,6 +7,7 @@ export interface TranslationOptions {
   styleMode?: TranslationStyleMode;
   customInstruction?: string;
   pronounOverride?: string;
+  outputTarget?: 'new_chapter' | 'overwrite'; // 'new_chapter' (Khuyên dùng: tạo chương mới đối chiếu) | 'overwrite' (Ghi đè)
 }
 
 export interface WritingDNA {
@@ -134,6 +135,13 @@ export interface Chapter {
   wordGoal?: number;
   lastUpdated: number;
   videoUrl?: string;
+  originalContent?: string; // Bản gốc / Nguyên tác đối chiếu
+  translatedContent?: string; // Bản dịch Việt hóa lưu riêng biệt trong Menu Bản Dịch
+  translatedTitle?: string; // Tiêu đề Việt hóa
+  translationStyle?: string; // Phong cách dịch
+  translationLastUpdated?: number; // Thời gian cập nhật bản dịch
+  sourceChapterId?: string; // ID chương gốc nếu là chương dịch
+  isTranslation?: boolean; // Đánh dấu là bản Việt hóa
 }
 
 export interface Story {

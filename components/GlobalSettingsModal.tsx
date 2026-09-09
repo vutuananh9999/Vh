@@ -15,7 +15,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [bulkText, setBulkText] = useState("");
     const [showBulkInput, setShowBulkInput] = useState(false);
     const [modelPro, setModelPro] = useState("gemini-3.1-pro-preview");
-    const [modelFlash, setModelFlash] = useState("gemini-3.7-flash");
+    const [modelFlash, setModelFlash] = useState("gemini-3.8-flash");
     const [testingIndex, setTestingIndex] = useState<number | null>(null);
     const [testResults, setTestResults] = useState<{ [key: number]: { success: boolean; message: string } }>({});
     const [isFetchingAllStatuses, setIsFetchingAllStatuses] = useState(false);
@@ -61,7 +61,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 }
             }
             setModelPro(localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview");
-            setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.7-flash");
+            setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.8-flash");
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
@@ -219,7 +219,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         }
         
         localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-3.1-pro-preview');
-        localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-3.7-flash');
+        localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-3.8-flash');
         
         // Reset flags for models
         geminiService.resetProModelFailed();
@@ -880,15 +880,17 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     onChange={(e) => setModelPro(e.target.value)}
                                 >
                                     <optgroup label="Dòng Pro (Suy luận sâu & Cốt truyện phức tạp)">
-                                        <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6 - Mới nhất, suy luận sâu & tối ưu cốt truyện)</option>
+                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 - Mới nhất, suy luận sâu & tối ưu cốt truyện)</option>
+                                        <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6 - Suy luận chuyên sâu)</option>
                                         <option value="gemini-2.5-pro">gemini-2.5-pro (Pro 2.5 - Cốt truyện ổn định)</option>
-                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro Preview)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Flash (Tốc độ cao & Hạn mức rộng)">
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích tất cả Key)</option>
-                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5)</option>
-                                        <option value="gemini-2.0-flash">gemini-2.0-flash (Flash 2.0)</option>
-                                        <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Mới nhất, tốc độ cao & hỗ trợ mọi Key)</option>
+                                        <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Hybrid reasoning)</option>
+                                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 tốt nhất)</option>
+                                        <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
+                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5 - Dự phòng)</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -905,13 +907,16 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     onChange={(e) => setModelFlash(e.target.value)}
                                 >
                                     <optgroup label="Dòng Flash (Khuyên dùng)">
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Mặc định Flash 3.6 - Tốc độ cao & Hỗ trợ tất cả Key)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Mặc định Flash 3.8 - Mới nhất, tốc độ cao & hỗ trợ mọi Key)</option>
+                                        <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Xử lý ngữ cảnh nhanh, thinking)</option>
+                                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 cực tốt)</option>
+                                        <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
+                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6)</option>
                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5)</option>
-                                        <option value="gemini-2.0-flash">gemini-2.0-flash (Flash 2.0)</option>
-                                        <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Pro (Nếu muốn Chat bằng model mạnh hơn)">
-                                        <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6 - Suy luận chuyên sâu)</option>
+                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 - Suy luận sâu nhất)</option>
+                                        <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6)</option>
                                         <option value="gemini-2.5-pro">gemini-2.5-pro (Pro 2.5)</option>
                                     </optgroup>
                                 </select>

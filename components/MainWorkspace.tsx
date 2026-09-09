@@ -12,6 +12,7 @@ import { WebInspirationModal } from './WebInspirationModal.tsx';
 import { PlotArcModal } from './PlotArcModal.tsx';
 import { ChapterSuggestionModal } from './ChapterSuggestionModal.tsx';
 import { HelpGuideModal } from './HelpGuideModal.tsx';
+import { BilingualReviewModal } from './BilingualReviewModal.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 
 export const MainWorkspace: React.FC = () => {
@@ -20,8 +21,15 @@ export const MainWorkspace: React.FC = () => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [isPlotArcOpen, setIsPlotArcOpen] = useState(false);
     const [isHelpOpen, setIsHelpOpen] = useState(false);
+    const [isBilingualOpen, setIsBilingualOpen] = useState(false);
+    const [bilingualChapterId, setBilingualChapterId] = useState<string | undefined>(undefined);
 
     if (!story) return null;
+
+    const handleOpenBilingual = (chapterId?: string) => {
+        setBilingualChapterId(chapterId);
+        setIsBilingualOpen(true);
+    };
 
     return (
         <div className="flex h-full overflow-hidden bg-gray-950 text-slate-200 selection:bg-primary-500/30 selection:text-white relative">
@@ -40,6 +48,7 @@ export const MainWorkspace: React.FC = () => {
                 onClose={() => setIsSidebarOpen(false)}
                 onOpenPlotArc={() => setIsPlotArcOpen(true)}
                 onOpenHelp={() => setIsHelpOpen(true)}
+                onOpenBilingualReview={handleOpenBilingual}
             />
 
             {/* Main Content Area */}
@@ -48,6 +57,7 @@ export const MainWorkspace: React.FC = () => {
                 <Editor 
                     onOpenSidebar={() => setIsSidebarOpen(true)} 
                     onOpenPlotArc={() => setIsPlotArcOpen(true)}
+                    onOpenBilingualReview={handleOpenBilingual}
                 />
             </main>
 
@@ -62,6 +72,11 @@ export const MainWorkspace: React.FC = () => {
                 />
             </ErrorBoundary>
             <HelpGuideModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+            <BilingualReviewModal 
+                isOpen={isBilingualOpen} 
+                onClose={() => setIsBilingualOpen(false)} 
+                defaultChapterId={bilingualChapterId} 
+            />
             
             {/* AI Insight Modals */}
             <KnowledgeReviewModal />

@@ -239,40 +239,47 @@ let proModelFailed = false;
 let proModelFailedUntil = 0;
 
 const VALID_MODELS = new Set([
-  'gemini-3.6-flash',
-  'gemini-3.6-pro',
-  'gemini-3.7-flash',
+  'gemini-3.8-flash',
   'gemini-3.1-pro-preview',
+  'gemini-3.7-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.6-pro',
+  'gemini-3.6-flash',
   'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite'
+  'gemini-2.5-pro'
 ]);
 
 function normalizeModel(modelName: string | null | undefined, fallback: string): string {
   if (!modelName) return fallback;
   const clean = modelName.trim().toLowerCase();
   if (VALID_MODELS.has(clean)) return clean;
+  if (clean.includes('3.8')) return 'gemini-3.8-flash';
+  if (clean.includes('3.1') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
+  if (clean.includes('3.1') && (clean.includes('lite') || clean.includes('flash'))) return 'gemini-3.1-flash-lite';
+  if (clean.includes('latest')) return 'gemini-flash-latest';
+  if (clean.includes('3.7')) return 'gemini-3.7-flash';
   if (clean.includes('3.6') && clean.includes('pro')) return 'gemini-3.6-pro';
   if (clean.includes('3.6')) return 'gemini-3.6-flash';
-  if (clean.includes('pro')) return 'gemini-3.6-pro';
-  if (clean.includes('3.7')) return 'gemini-3.7-flash';
-  if (clean.includes('2.0')) return 'gemini-2.0-flash';
-  return 'gemini-3.6-flash';
+  if (clean.includes('pro')) return 'gemini-3.1-pro-preview';
+  if (clean.includes('2.5') && clean.includes('pro')) return 'gemini-2.5-pro';
+  if (clean.includes('2.5')) return 'gemini-2.5-flash';
+  if (clean.includes('2.0')) return 'gemini-3.8-flash'; // Convert deprecated 2.0 to 3.8
+  return fallback;
 }
 
-const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), 'gemini-3.6-flash');
+const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), 'gemini-3.8-flash');
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return normalizeModel(localStorage.getItem('aetheria_model_pro'), 'gemini-3.6-pro');
+  return normalizeModel(localStorage.getItem('aetheria_model_pro'), 'gemini-3.1-pro-preview');
 };
 
 function getModelCascade(requestedModel: string): string[] {
   const normalized = normalizeModel(requestedModel, getFlash());
-  const allProModels = ['gemini-3.6-pro', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'];
-  const allFlashModels = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.6-pro', 'gemini-3.7-flash'];
+  const allProModels = ['gemini-3.1-pro-preview', 'gemini-3.8-flash', 'gemini-3.6-pro', 'gemini-3.7-flash', 'gemini-2.5-pro', 'gemini-3.1-flash-lite'];
+  const allFlashModels = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'];
   
   if (normalized.includes('pro')) {
     return Array.from(new Set([normalized, ...allProModels]));
@@ -283,7 +290,7 @@ function getModelCascade(requestedModel: string): string[] {
 function cleanConfigForModel(config: any, targetModel: string): any {
   if (!config) return config;
   const newConfig = { ...config };
-  const supportsThinking = targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
+  const supportsThinking = targetModel.includes('3.8') || targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
   if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
@@ -804,9 +811,11 @@ const MODEL_VEO = 'veo-3.1-lite-generate-preview';
 async function safeGenerateContent(params: { model: string, contents: any, config?: any }): Promise<any> {
   const fallbackModels = [
     params.model,
+    'gemini-3.8-flash',
     'gemini-3.7-flash',
-    'gemini-3.5-flash',
     'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.6-flash',
     'gemini-2.5-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
@@ -831,9 +840,11 @@ async function safeGenerateContent(params: { model: string, contents: any, confi
 async function* safeGenerateContentStream(params: { model: string, contents: any, config?: any }): AsyncGenerator<GenerateContentResponse, void, unknown> {
   const fallbackModels = [
     params.model,
+    'gemini-3.8-flash',
     'gemini-3.7-flash',
-    'gemini-3.5-flash',
     'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.6-flash',
     'gemini-2.5-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
@@ -878,11 +889,11 @@ export const geminiService = {
     try {
       const testAI = createGenAI(key.trim());
       
-      // Thử thực tế generateContent trước bằng gemini-3.7-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
+      // Thử thực tế generateContent trước bằng gemini-3.8-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
       // (Vì models.list() chỉ kiểm tra xác thực signature của key chứ không kiểm tra được hạn mức sinh văn bản thực tế).
       try {
         const response = await testAI.models.generateContent({
-          model: "gemini-3.7-flash",
+          model: "gemini-3.8-flash",
           contents: "Hi",
           config: { maxOutputTokens: 2 }
         });
@@ -924,7 +935,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+      const modelsToTry = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash", "gemini-2.5-flash"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {

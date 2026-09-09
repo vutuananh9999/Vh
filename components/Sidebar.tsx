@@ -4,6 +4,7 @@ import { CharacterList } from './CharacterList.tsx';
 import { Chapter, ExtractionCategory } from '../types.ts';
 import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DeleteChapterModal } from './DeleteChapterModal.tsx';
+import { TranslationsMenu } from './TranslationsMenu.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 
 interface Props {
@@ -12,9 +13,10 @@ interface Props {
     onClose: () => void; 
     onOpenPlotArc?: () => void;
     onOpenHelp: () => void;
+    onOpenBilingualReview?: (chapterId?: string) => void;
 }
 
-export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOpenPlotArc, onOpenHelp }) => {
+export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOpenPlotArc, onOpenHelp, onOpenBilingualReview }) => {
   const { 
     story, activeChapterId, selectChapter, addChapter, deleteChapter, 
     userInstruction, setUserInstruction,
@@ -28,7 +30,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
     triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, exportStory // Added
   } = useStory();
   
-  const [tab, setTab] = useState<'chapters' | 'planning' | 'knowledge'>('chapters');
+  const [tab, setTab] = useState<'chapters' | 'translations' | 'planning' | 'knowledge'>('chapters');
   const [planningSubTab, setPlanningSubTab] = useState<'blueprint' | 'arc'>('blueprint');
   const [knowledgeSubTab, setKnowledgeSubTab] = useState<'core' | 'characters' | 'directives' | 'ingest'>('core');
   const [viewingSummary, setViewingSummary] = useState<Chapter | null>(null);
@@ -190,7 +192,8 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
   const getWordCount = fastWordCount;
 
   const activeChapter = story?.chapters.find(c => c.id === activeChapterId);
-  const sortedChapters = story ? [...story.chapters].sort((a, b) => a.order - b.order) : [];
+  const translatedCount = story ? story.chapters.filter(c => !!c.translatedContent && c.translatedContent.trim().length > 0).length : 0;
+  const sortedChapters = story ? [...story.chapters].filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]')).sort((a, b) => a.order - b.order) : [];
 
   const containerClass = `fixed inset-y-0 left-0 z-50 w-80 bg-gray-900 border-r border-gray-800 glass-panel shadow-2xl transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 flex flex-col h-[100dvh] ${isOpen ? 'translate-x-0' : '-translate-x-full'}`;
 
@@ -220,12 +223,23 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
       {/* TABS */}
       <div className="flex border-b border-gray-800 shrink-0">
         <button onClick={() => setTab('chapters')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'chapters' ? 'text-primary-400 border-b-2 border-primary-500 bg-primary-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Chương</button>
-        <button onClick={() => setTab('planning')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'planning' ? 'text-emerald-400 border-b-2 border-emerald-500 bg-emerald-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Kế hoạch</button>
+        <button onClick={() => setTab('translations')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'translations' ? 'text-emerald-400 border-b-2 border-emerald-500 bg-emerald-500/5' : 'text-gray-500 hover:text-gray-300'}`}>
+          <span className="flex items-center justify-center gap-1">
+            <span>Bản Dịch</span>
+            {translatedCount > 0 && (
+              <span className="text-[8px] px-1 py-0.2 bg-emerald-950 text-emerald-300 rounded border border-emerald-800 font-semibold">{translatedCount}</span>
+            )}
+          </span>
+        </button>
+        <button onClick={() => setTab('planning')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'planning' ? 'text-blue-400 border-b-2 border-blue-500 bg-blue-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Kế hoạch</button>
         <button onClick={() => setTab('knowledge')} className={`flex-1 py-3 text-[9px] font-bold uppercase transition-all ${tab === 'knowledge' ? 'text-purple-400 border-b-2 border-purple-500 bg-purple-500/5' : 'text-gray-500 hover:text-gray-300'}`}>Kho</button>
       </div>
 
       {/* CONTENT AREA */}
       <div className={`flex-1 flex flex-col ${tab === 'planning' && planningSubTab === 'blueprint' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'} bg-gray-900/50`}>
+        {tab === 'translations' && (
+          <TranslationsMenu onOpenBilingualReview={(chId) => onOpenBilingualReview?.(chId)} />
+        )}
         {tab === 'chapters' && (
           <div className={`p-2 space-y-1 pb-4`}>
             <div className="px-2 py-3 mb-2 space-y-2">
@@ -277,7 +291,14 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                         ) : (
                             <div className="flex flex-col gap-1 min-w-0">
                                 <div className="text-[10px] font-bold truncate text-gray-400 group-hover:text-gray-200 flex items-center justify-between">
-                                    <span className="truncate">{chapter.title}</span>
+                                    <span className="truncate flex items-center gap-1">
+                                        <span className="truncate">{chapter.title}</span>
+                                        {(chapter.translatedContent || chapter.isTranslation || chapter.title.startsWith('[Việt Hóa]')) && (
+                                            <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 font-semibold shrink-0" title="Đã có bản dịch">
+                                                Dịch
+                                            </span>
+                                        )}
+                                    </span>
                                     <span className="text-[8px] font-black text-gray-600 shrink-0 ml-2">{currentWords} / {chapter.wordGoal || 2000}</span>
                                 </div>
                                 <div className="w-full h-1 bg-gray-950 rounded-full overflow-hidden border border-gray-800">

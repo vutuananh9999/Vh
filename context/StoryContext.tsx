@@ -24,6 +24,7 @@ interface PendingEdit {
     chapterId: string;
     original: string;
     modified: string;
+    isTranslation?: boolean;
 }
 
 interface ChapterHistory {
@@ -170,10 +171,16 @@ interface StoryContextType {
   
   splitChapter: (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => Promise<void>;
   
-  applyPendingEdit: () => void;
+  applyPendingEdit: (mode?: 'overwrite' | 'new_chapter') => void;
   discardPendingEdit: () => void;
   isAutoTranslateEnabled: boolean;
   setIsAutoTranslateEnabled: (v: boolean) => void;
+  editorVersion: 'original' | 'translation';
+  setEditorVersion: (v: 'original' | 'translation') => void;
+  updateChapterTranslation: (chapterId: string, translatedContent: string, translatedTitle?: string) => Promise<void>;
+  promoteTranslationToMain: (chapterId: string) => Promise<void>;
+  revertChapterToOriginal: (chapterId: string) => Promise<void>;
+  exportAllTranslations: () => void;
 }
 
 const StoryContext = createContext<StoryContextType | undefined>(undefined);
@@ -265,12 +272,16 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [chapterSuggestion, setChapterSuggestion] = useState<ChapterSuggestion | null>(null);
   const [isSuggestingChapter, setIsSuggestingChapter] = useState(false);
   const [isAutoTranslateEnabled, setIsAutoTranslateEnabled] = useState(false);
+  const [editorVersion, setEditorVersion] = useState<'original' | 'translation'>('original');
   const [translationOptions, setTranslationOptions] = useState<TranslationOptions>(() => {
     try {
       const saved = localStorage.getItem('aetheria_translation_options');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { outputTarget: 'new_chapter', ...parsed };
+      }
     } catch (e) {}
-    return { styleMode: 'natural' };
+    return { styleMode: 'natural', outputTarget: 'new_chapter' };
   });
 
   useEffect(() => {
@@ -899,59 +910,201 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     const activeOptions = options || translationOptions;
     setIsGenerating(true);
-    setGenerationStatus("Đang đại biên tập & Việt hóa văn học đỉnh cao...");
-    try {
-        const stream = geminiService.translateToVietnameseStream(
-          targetChapter.content,
-          currentStory,
-          {
-            chapterTitle: targetChapter.title,
-            styleMode: activeOptions.styleMode,
-            customInstruction: activeOptions.customInstruction,
-            pronounOverride: activeOptions.pronounOverride
-          }
-        );
-        let accumulated = "";
-        let finalMetadata = null;
-        
-        for await (const chunk of stream) {
-            if (chunk.text) {
-                accumulated += chunk.text;
-                if (isAutoTranslateEnabled) {
-                    updateChapterContent(id, accumulated, false);
-                }
-            }
-            if (chunk.usageMetadata) finalMetadata = chunk.usageMetadata;
-        }
+    setGenerationStatus("Đang đại biên tập & Việt hóa văn học đỉnh cao vào Menu Bản Dịch...");
 
-        if (finalMetadata) recordUsage(finalMetadata);
-        
-        if (isAutoTranslateEnabled) {
-            updateChapterContent(id, accumulated, true);
-            
-            if (currentStory) {
-                const sorted = [...currentStory.chapters].sort((a, b) => a.order - b.order);
-                const currentIndex = sorted.findIndex(c => c.id === id);
-                if (currentIndex !== -1 && currentIndex < sorted.length - 1) {
-                    const nextChapter = sorted[currentIndex + 1];
-                    setTimeout(() => {
-                        setActiveChapterId(nextChapter.id);
-                        translateChapter(nextChapter.id, activeOptions);
-                    }, 800); 
-                } else {
-                    alert("Đã hoàn tất Việt hóa toàn bộ các chương!");
-                }
-            }
-        } else {
-            setPendingEdit({ chapterId: id, original: targetChapter.content, modified: accumulated });
+    // Tự động chuyển view sang tab 'translation' để người dùng theo dõi nội dung được sinh trực tiếp
+    setActiveChapterId(id);
+    setEditorVersion('translation');
+
+    const sourceText = targetChapter.originalContent || targetChapter.content;
+
+    try {
+      // Đảm bảo originalContent luôn được lưu trữ nếu chưa có
+      if (!targetChapter.originalContent) {
+        setStory(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            chapters: prev.chapters.map(c => c.id === id ? { ...c, originalContent: c.content } : c)
+          };
+        });
+      }
+
+      const stream = geminiService.translateToVietnameseStream(
+        sourceText,
+        currentStory,
+        {
+          chapterTitle: targetChapter.title,
+          styleMode: activeOptions.styleMode,
+          customInstruction: activeOptions.customInstruction,
+          pronounOverride: activeOptions.pronounOverride
         }
+      );
+
+      let accumulated = "";
+      let finalMetadata = null;
+
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          accumulated += chunk.text;
+          // Cập nhật real-time vào translatedContent trong Menu Bản Dịch
+          setStory(prev => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              chapters: prev.chapters.map(c => c.id === id ? {
+                ...c,
+                originalContent: c.originalContent || c.content,
+                translatedContent: accumulated,
+                translationStyle: activeOptions.styleMode,
+                translationLastUpdated: Date.now()
+              } : c)
+            };
+          });
+        }
+        if (chunk.usageMetadata) finalMetadata = chunk.usageMetadata;
+      }
+
+      if (finalMetadata) recordUsage(finalMetadata);
+
+      // Lưu bền vững vào storage
+      if (storyRef.current) {
+        const finalUpdated = {
+          ...storyRef.current,
+          chapters: storyRef.current.chapters.map(c => c.id === id ? {
+            ...c,
+            originalContent: c.originalContent || c.content,
+            translatedContent: accumulated,
+            translationStyle: activeOptions.styleMode,
+            translationLastUpdated: Date.now()
+          } : c)
+        };
+        setStory(finalUpdated);
+        storyRef.current = finalUpdated;
+        await storageService.saveStory(finalUpdated);
+      }
+
+      // Xử lý dịch tự động liên tục nếu bật Auto Next
+      if (isAutoTranslateEnabled) {
+        const sorted = [...(storyRef.current || currentStory).chapters]
+          .filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]'))
+          .sort((a, b) => a.order - b.order);
+
+        const currentIndex = sorted.findIndex(c => c.id === id);
+        if (currentIndex !== -1 && currentIndex < sorted.length - 1) {
+          const nextChapter = sorted[currentIndex + 1];
+          setTimeout(() => {
+            setActiveChapterId(nextChapter.id);
+            translateChapter(nextChapter.id, activeOptions);
+          }, 800);
+        } else {
+          alert("Đã hoàn tất Việt hóa toàn bộ các chương trong Menu Bản Dịch!");
+        }
+      }
     } catch (e: any) {
-        console.error(e);
-        alert(e?.message || "Kết nối quá yếu (LTE). Quá trình bị gián đoạn, vui lòng thử lại.");
-    } finally { 
-        setIsGenerating(false);
-        setGenerationStatus("");
+      console.error(e);
+      alert(e?.message || "Kết nối quá yếu (LTE). Quá trình bị gián đoạn, vui lòng thử lại.");
+    } finally {
+      setIsGenerating(false);
+      setGenerationStatus("");
     }
+  };
+
+  const updateChapterTranslation = async (chapterId: string, translatedContent: string, translatedTitle?: string) => {
+    if (!storyRef.current) return;
+    const updatedChapters = storyRef.current.chapters.map(c => {
+      if (c.id === chapterId) {
+        return {
+          ...c,
+          translatedContent,
+          translatedTitle: translatedTitle !== undefined ? translatedTitle : c.translatedTitle,
+          translationLastUpdated: Date.now()
+        };
+      }
+      return c;
+    });
+    const updatedStory = { ...storyRef.current, chapters: updatedChapters };
+    setStory(updatedStory);
+    storyRef.current = updatedStory;
+    await storageService.saveStory(updatedStory);
+  };
+
+  const promoteTranslationToMain = async (chapterId: string) => {
+    if (!storyRef.current) return;
+    const chapter = storyRef.current.chapters.find(c => c.id === chapterId);
+    if (!chapter || !chapter.translatedContent) return;
+
+    const updatedChapters = storyRef.current.chapters.map(c => {
+      if (c.id === chapterId) {
+        return {
+          ...c,
+          originalContent: c.originalContent || c.content,
+          content: c.translatedContent!,
+          lastUpdated: Date.now()
+        };
+      }
+      return c;
+    });
+    const updatedStory = { ...storyRef.current, chapters: updatedChapters };
+    setStory(updatedStory);
+    storyRef.current = updatedStory;
+    await storageService.saveStory(updatedStory);
+    setEditorVersion('original');
+  };
+
+  const revertChapterToOriginal = async (chapterId: string) => {
+    if (!storyRef.current) return;
+    const chapter = storyRef.current.chapters.find(c => c.id === chapterId);
+    if (!chapter || !chapter.originalContent) return;
+
+    const updatedChapters = storyRef.current.chapters.map(c => {
+      if (c.id === chapterId) {
+        return {
+          ...c,
+          content: c.originalContent || c.content,
+          lastUpdated: Date.now()
+        };
+      }
+      return c;
+    });
+    const updatedStory = { ...storyRef.current, chapters: updatedChapters };
+    setStory(updatedStory);
+    storyRef.current = updatedStory;
+    await storageService.saveStory(updatedStory);
+    setEditorVersion('original');
+  };
+
+  const exportAllTranslations = () => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+    const translatedChapters = currentStory.chapters
+      .filter(c => !!c.translatedContent && c.translatedContent.trim().length > 0)
+      .sort((a, b) => a.order - b.order);
+
+    if (translatedChapters.length === 0) {
+      alert("Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!");
+      return;
+    }
+
+    let fullText = `${currentStory.title} - BẢN VIỆT HÓA\n`;
+    fullText += `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')}\n`;
+    fullText += `Tổng số chương: ${translatedChapters.length}\n`;
+    fullText += `==========================================\n\n`;
+
+    translatedChapters.forEach((ch, idx) => {
+      const title = ch.translatedTitle || ch.title;
+      fullText += `CHƯƠNG ${idx + 1}: ${title}\n`;
+      fullText += `------------------------------------------\n`;
+      fullText += `${ch.translatedContent}\n\n\n`;
+    });
+
+    const blob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const suggestNewChapter = async () => {
@@ -1120,11 +1273,71 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const applyPendingEdit = () => {
+  const applyPendingEdit = (mode: 'overwrite' | 'new_chapter' = 'new_chapter') => {
     if (pendingEdit) {
-        const { chapterId, modified } = pendingEdit;
-        updateChapterContent(chapterId, modified, true);
-        setPendingEdit(null);
+      const { chapterId, original, modified, isTranslation } = pendingEdit;
+      const currentStory = storyRef.current;
+      if (!currentStory) return;
+      const targetChapter = currentStory.chapters.find(c => c.id === chapterId);
+      if (!targetChapter) return;
+
+      if (mode === 'new_chapter') {
+        const cleanBaseTitle = targetChapter.title.replace(/^\[Việt Hóa\]\s*/i, '').trim();
+        const newTitle = isTranslation || targetChapter.title.startsWith('[Việt Hóa]')
+          ? (targetChapter.title.startsWith('[Việt Hóa]') ? `${targetChapter.title} (Bản mới)` : `[Việt Hóa] ${cleanBaseTitle || targetChapter.title}`)
+          : `${targetChapter.title} (Bản mới)`;
+
+        const newChapterId = generateId();
+        const newChapter: Chapter = {
+          id: newChapterId,
+          title: newTitle,
+          content: modified,
+          summary: targetChapter.summary || '',
+          outline: targetChapter.outline || '',
+          timeSetting: targetChapter.timeSetting,
+          order: targetChapter.order + 1,
+          wordGoal: targetChapter.wordGoal || 2000,
+          lastUpdated: Date.now(),
+          originalContent: original,
+          sourceChapterId: targetChapter.id,
+          isTranslation: true
+        };
+
+        const updatedChapters: Chapter[] = [];
+        for (const ch of currentStory.chapters) {
+          if (ch.order > targetChapter.order) {
+            updatedChapters.push({ ...ch, order: ch.order + 1 });
+          } else {
+            updatedChapters.push(ch);
+          }
+        }
+        updatedChapters.push(newChapter);
+        updatedChapters.sort((a, b) => a.order - b.order);
+
+        const updatedStory = { ...currentStory, chapters: updatedChapters };
+        setStory(updatedStory);
+        storyRef.current = updatedStory;
+        storageService.saveStory(updatedStory);
+        setActiveChapterId(newChapterId);
+      } else {
+        // Ghi đè: Vẫn lưu giữ bản gốc originalContent để đối soát sau này
+        const updatedChapters = currentStory.chapters.map(c => {
+          if (c.id === chapterId) {
+            return {
+              ...c,
+              content: modified,
+              originalContent: c.originalContent || original,
+              lastUpdated: Date.now()
+            };
+          }
+          return c;
+        });
+        const updatedStory = { ...currentStory, chapters: updatedChapters };
+        setStory(updatedStory);
+        storyRef.current = updatedStory;
+        storageService.saveStory(updatedStory);
+      }
+      setPendingEdit(null);
     }
   };
 
@@ -1736,7 +1949,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       exportStory, exportAllStories, importStory, importStoryFromTxt, importChaptersFromTxt, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
       applyPendingEdit, discardPendingEdit,
       isAutoTranslateEnabled, setIsAutoTranslateEnabled,
-      translationOptions, setTranslationOptions
+      translationOptions, setTranslationOptions,
+      editorVersion, setEditorVersion,
+      updateChapterTranslation, promoteTranslationToMain, revertChapterToOriginal,
+      exportAllTranslations
     }}>
       {children}
     </StoryContext.Provider>

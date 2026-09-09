@@ -4,6 +4,7 @@ import { useStory } from '../context/StoryContext.tsx';
 import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DiffReview } from './DiffReview.tsx';
 import { SplitChapterModal } from './SplitChapterModal.tsx';
+import { BilingualReviewModal } from './BilingualReviewModal.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { tokenTracker } from '../services/tokenTracker.ts';
 
@@ -12,9 +13,10 @@ type EditorTab = 'refine' | 'sensory' | 'transform' | 'critique';
 interface EditorProps {
   onOpenSidebar?: () => void;
   onOpenPlotArc?: () => void;
+  onOpenBilingualReview?: (chapterId?: string) => void;
 }
 
-export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) => {
+export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, onOpenBilingualReview }) => {
   const { 
     story, 
     activeChapterId, 
@@ -54,10 +56,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     isAutoTranslateEnabled,
     setIsAutoTranslateEnabled,
     translationOptions,
-    setTranslationOptions
+    setTranslationOptions,
+    editorVersion,
+    setEditorVersion,
+    updateChapterTranslation,
+    promoteTranslationToMain,
+    revertChapterToOriginal
   } = useStory();
 
   const [showTranslateSettings, setShowTranslateSettings] = useState(false);
+  const [isBilingualModalOpen, setIsBilingualModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(true);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
@@ -70,14 +78,14 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
   const [localTitle, setLocalTitle] = useState('');
   
   const [proStatus, setProStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash'));
+  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash'));
   const [showTokenDetails, setShowTokenDetails] = useState(false);
   const [showLegendModal, setShowLegendModal] = useState(false);
 
   useEffect(() => {
     const update = () => {
       setProStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-      setFlashStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash'));
+      setFlashStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash'));
     };
     update();
     const unsubscribe = tokenTracker.subscribe(update);
@@ -93,6 +101,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
   const lastSentTitleRef = useRef('');
   const initialContentRef = useRef<string>('');
   const prevActiveChapterIdRef = useRef<string | null>(null);
+  const prevEditorVersionRef = useRef<'original' | 'translation'>('original');
   const prevIsGeneratingRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -165,22 +174,28 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
 
   useEffect(() => {
     if (activeChapter) {
-        const isChapterSwitch = prevActiveChapterIdRef.current !== activeChapterId;
-        const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
-        const isExternalContentUpdate = activeChapter.content !== localContent && activeChapter.content !== lastSentContentRef.current;
-        const isExternalTitleUpdate = activeChapter.title !== localTitle && activeChapter.title !== lastSentTitleRef.current;
+        const isTranslation = editorVersion === 'translation';
+        const targetContent = isTranslation ? (activeChapter.translatedContent || '') : activeChapter.content;
+        const targetTitle = isTranslation ? (activeChapter.translatedTitle || activeChapter.title) : activeChapter.title;
 
-        if (isChapterSwitch || isGenerationFinish || isExternalContentUpdate || isExternalTitleUpdate) {
-            setLocalTitle(activeChapter.title);
-            setLocalContent(activeChapter.content);
-            initialContentRef.current = activeChapter.content;
-            lastSentContentRef.current = activeChapter.content;
-            lastSentTitleRef.current = activeChapter.title;
+        const isChapterSwitch = prevActiveChapterIdRef.current !== activeChapterId;
+        const isVersionSwitch = prevEditorVersionRef.current !== editorVersion;
+        const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
+        const isExternalContentUpdate = targetContent !== localContent && targetContent !== lastSentContentRef.current;
+        const isExternalTitleUpdate = targetTitle !== localTitle && targetTitle !== lastSentTitleRef.current;
+
+        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalContentUpdate || isExternalTitleUpdate) {
+            setLocalTitle(targetTitle);
+            setLocalContent(targetContent);
+            initialContentRef.current = targetContent;
+            lastSentContentRef.current = targetContent;
+            lastSentTitleRef.current = targetTitle;
         }
     }
     prevActiveChapterIdRef.current = activeChapterId;
+    prevEditorVersionRef.current = editorVersion;
     prevIsGeneratingRef.current = isGenerating;
-  }, [activeChapterId, activeChapter?.content, activeChapter?.title, isGenerating]);
+  }, [activeChapterId, activeChapter?.content, activeChapter?.translatedContent, activeChapter?.title, activeChapter?.translatedTitle, isGenerating, editorVersion]);
 
   useLayoutEffect(() => {
     if (textareaRef.current && isEditMode) {
@@ -201,12 +216,17 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     return fastWordCount(localContent);
   }, [localContent]);
 
-  const performSave = useCallback((content: string) => {
+  const performSave = useCallback((content: string, title?: string) => {
     if (activeChapterId) {
         lastSentContentRef.current = content;
-        updateChapterContent(activeChapterId, content);
+        if (editorVersion === 'translation') {
+          updateChapterTranslation(activeChapterId, content, title);
+        } else {
+          updateChapterContent(activeChapterId, content);
+          if (title !== undefined) updateChapterTitle(activeChapterId, title);
+        }
     }
-  }, [activeChapterId, updateChapterContent]);
+  }, [activeChapterId, editorVersion, updateChapterContent, updateChapterTitle, updateChapterTranslation]);
 
   const handleManualSave = () => {
     setIsSavingManual(true);
@@ -259,7 +279,11 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
     setLocalTitle(newTitle);
     if (activeChapterId) {
         lastSentTitleRef.current = newTitle;
-        updateChapterTitle(activeChapterId, newTitle);
+        if (editorVersion === 'translation') {
+          updateChapterTranslation(activeChapterId, localContent, newTitle);
+        } else {
+          updateChapterTitle(activeChapterId, newTitle);
+        }
     }
   };
 
@@ -349,7 +373,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
 
   return (
     <div className={`flex-1 flex flex-col overflow-hidden bg-gray-950 transition-all duration-700 ${(isGenerating || isAuditingChapter || isCheckingErrors) ? 'ring-inset ring-1 ring-purple-500/20 shadow-[inset_0_0_50px_rgba(168,85,247,0.05)]' : ''}`}>
-      {pendingEdit && <DiffReview original={pendingEdit.original} modified={pendingEdit.modified} onAccept={applyPendingEdit} onDiscard={discardPendingEdit} />}
+      {pendingEdit && (
+        <DiffReview 
+          original={pendingEdit.original} 
+          modified={pendingEdit.modified} 
+          onAccept={() => applyPendingEdit('overwrite')} 
+          onAcceptNewChapter={() => applyPendingEdit('new_chapter')}
+          onDiscard={discardPendingEdit} 
+          isTranslation={pendingEdit.isTranslation}
+        />
+      )}
       <div className="z-40 flex items-center px-4 py-2 bg-gray-900 border-b border-gray-800 shrink-0 gap-2 overflow-x-auto custom-scrollbar no-scrollbar">
           {onOpenSidebar && (
             <button 
@@ -521,6 +554,17 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                     />
                   </div>
 
+                  {/* Vị trí lưu bản dịch */}
+                  <div className="mb-3 p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold mb-1">
+                      <span>💎</span>
+                      <span>Lưu trữ chuyên biệt trong Menu Bản Dịch</span>
+                    </div>
+                    <p className="text-[9px] text-gray-400 leading-snug">
+                      Bản dịch được lưu độc lập trong tab <strong>Bản Dịch</strong> ở thanh bên và xem trực tiếp ở tab <strong>✨ Bản Dịch</strong>. Bản gốc được giữ nguyên 100% để đối soát song ngữ bất kỳ lúc nào!
+                    </p>
+                  </div>
+
                   {/* Action button */}
                   <button
                     type="button"
@@ -549,6 +593,21 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
             </svg>
             <div className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-gray-950 ${isAutoTranslateEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-gray-600'}`}></div>
+          </button>
+
+          {/* Đối Soát Song Ngữ (Nguyên Tác & Bản Dịch) */}
+          <button
+            type="button"
+            onClick={() => onOpenBilingualReview ? onOpenBilingualReview(activeChapterId || undefined) : setIsBilingualModalOpen(true)}
+            className="p-2 rounded transition-all border shrink-0 flex items-center gap-1.5 bg-blue-950/20 text-blue-400 border-blue-800/40 hover:bg-blue-900/30 hover:border-blue-500/50"
+            title="Đối Soát Song Ngữ (Mở màn hình đối chiếu song song giữa Nguyên Tác và Bản Việt Hóa để gọt giũa câu từ)"
+          >
+            <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+            <span className="hidden xl:inline text-[11px] font-semibold text-blue-300">
+              Đối Soát
+            </span>
           </button>
 
           {/* Mạch truyện (AI Co-Edit) */}
@@ -599,6 +658,108 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
       >
         {isGenerating && <div className="sticky top-0 left-0 right-0 z-[60] h-1 w-full bg-gray-900 overflow-hidden"><div className="absolute top-0 bottom-0 bg-primary-500 transition-all duration-300" style={{ width: `${generationProgress}%` }}></div></div>}
         <div className="max-w-3xl mx-auto py-6 px-4 md:py-16 md:px-8 min-h-screen">
+          {/* VERSION SWITCHER & TRANSLATION CONTROLS */}
+          <div className="mb-6 p-2 rounded-2xl bg-gray-900/90 border border-gray-800 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-1.5 p-1 bg-gray-950 rounded-xl border border-gray-800/80">
+              <button
+                type="button"
+                onClick={() => setEditorVersion('original')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  editorVersion === 'original'
+                    ? 'bg-primary-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span>📖</span>
+                <span>Bản Gốc</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEditorVersion('translation')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  editorVersion === 'translation'
+                    ? 'bg-emerald-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span>✨</span>
+                <span>Bản Dịch</span>
+                {activeChapter.translatedContent && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300"></span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onOpenBilingualReview ? onOpenBilingualReview(activeChapter.id) : setIsBilingualModalOpen(true)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-950/40 transition-all flex items-center gap-1 border border-blue-900/40"
+                title="Mở bảng đối chiếu song ngữ hai cột"
+              >
+                <span>⚖️</span>
+                <span>Đối Soát</span>
+              </button>
+            </div>
+
+            {/* Quick status on the right */}
+            <div className="flex items-center gap-2">
+              {editorVersion === 'translation' ? (
+                activeChapter.translatedContent ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-emerald-400/80 hidden sm:inline">
+                      ✓ Đang xem Bản Dịch (Menu Bản Dịch)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm("Áp dụng bản dịch này làm nội dung chính của chương? (Bản gốc vẫn được bảo lưu an toàn)")) {
+                          promoteTranslationToMain(activeChapter.id);
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded-lg text-xs font-medium transition-all"
+                    >
+                      Áp dụng làm bản chính
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[10px] text-orange-400 font-medium">
+                    Chương này chưa có bản dịch
+                  </span>
+                )
+              ) : (
+                activeChapter.translatedContent ? (
+                  <button
+                    type="button"
+                    onClick={() => setEditorVersion('translation')}
+                    className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1"
+                  >
+                    <span>Đã có bản dịch</span>
+                    <span>→</span>
+                  </button>
+                ) : null
+              )}
+            </div>
+          </div>
+
+          {/* If Translation Mode and empty */}
+          {editorVersion === 'translation' && !activeChapter.translatedContent && !isGenerating && (
+            <div className="mb-6 p-6 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 text-center space-y-3">
+              <div className="text-2xl">✨</div>
+              <h4 className="text-sm font-bold text-emerald-300">Chương này chưa có bản dịch trong Menu Bản Dịch</h4>
+              <p className="text-xs text-gray-400 max-w-md mx-auto">
+                Bản gốc vẫn giữ nguyên vẹn 100%. Khi dịch, kết quả sẽ được lưu độc lập vào Menu Bản Dịch để bạn có thể xem lại hoặc đối soát bất cứ lúc nào.
+              </p>
+              <button
+                type="button"
+                onClick={() => translateChapter(activeChapter.id)}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center gap-2 mx-auto"
+              >
+                <span>⚡</span>
+                <span>Việt Hóa Ngay (Văn học đỉnh cao)</span>
+              </button>
+            </div>
+          )}
+
           <input type="text" value={localTitle} onChange={handleTitleChange} className="w-full bg-transparent text-2xl md:text-4xl font-serif font-bold text-gray-100 mb-6 md:mb-8 outline-none border-b border-transparent focus:border-primary-500/20 pb-2" placeholder="Tiêu đề chương..." />
           <div className="relative text-base md:text-lg leading-relaxed font-serif"><textarea ref={textareaRef} value={localContent} onChange={handleContentChange} onKeyDown={handleKeyDown} onSelect={handleSelection} placeholder="Hành trình bắt đầu từ đây..." className={`w-full bg-transparent text-gray-300 focus:outline-none resize-none overflow-hidden p-0 border-none m-0 leading-[1.8] ${!isEditMode ? 'hidden' : 'block'}`} spellCheck={false} readOnly={isGenerating} />{!isEditMode && <div className="whitespace-pre-wrap text-gray-300 leading-[1.8]">{localContent}</div>}</div>
         </div>
@@ -740,15 +901,43 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                           {/* Quick Model Switch Buttons for Anti-429 */}
                           <div className="pt-2 border-t border-gray-800 space-y-1.5 text-left">
                             <span className="text-[10px] font-semibold text-gray-300 block">Đổi Model nhanh khi bị 429:</span>
-                            <div className="grid grid-cols-3 gap-1">
+                            <div className="grid grid-cols-4 gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.8-flash');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
+                                  (localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash') === 'gemini-3.8-flash'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                3.8 Flash
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
+                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.1-flash-lite'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                3.1 Lite
+                              </button>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   localStorage.setItem('aetheria_model_flash', 'gemini-3.7-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
-                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
-                                  (localStorage.getItem('aetheria_model_flash') || 'gemini-3.7-flash') === 'gemini-3.7-flash'
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
+                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.7-flash'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
                                 }`}
@@ -758,24 +947,10 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
-                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
-                                }}
-                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
-                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.1-flash-lite'
-                                    ? 'bg-emerald-600 text-white font-bold shadow'
-                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
-                                }`}
-                              >
-                                3.1 Lite (Ít 429)
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
                                   localStorage.setItem('aetheria_model_flash', 'gemini-2.5-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
-                                className={`px-2 py-1 rounded text-[9px] font-medium transition-all ${
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
                                   localStorage.getItem('aetheria_model_flash') === 'gemini-2.5-flash'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
@@ -974,6 +1149,11 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc }) 
             await splitChapter(activeChapterId, segments);
           }
         }}
+      />
+      <BilingualReviewModal
+        isOpen={isBilingualModalOpen}
+        onClose={() => setIsBilingualModalOpen(false)}
+        defaultChapterId={activeChapterId}
       />
     </div>
   );

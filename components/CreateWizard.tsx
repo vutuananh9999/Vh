@@ -87,9 +87,9 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
   // Active Model State for Token Calculation & Preview
   const [activeModel, setActiveModel] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('aetheria_model_flash') || 'gemini-3.6-flash';
+      return localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash';
     }
-    return 'gemini-3.6-flash';
+    return 'gemini-3.8-flash';
   });
 
   const handleModelChange = (newModelId: string) => {

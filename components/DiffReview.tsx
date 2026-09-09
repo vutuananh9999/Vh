@@ -5,10 +5,12 @@ interface Props {
     original: string;
     modified: string;
     onAccept: () => void;
+    onAcceptNewChapter?: () => void;
     onDiscard: () => void;
+    isTranslation?: boolean;
 }
 
-export const DiffReview: React.FC<Props> = ({ original, modified, onAccept, onDiscard }) => {
+export const DiffReview: React.FC<Props> = ({ original, modified, onAccept, onAcceptNewChapter, onDiscard, isTranslation }) => {
     const [splitPercent, setSplitPercent] = useState(50);
     const [isResizing, setIsResizing] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -57,18 +59,28 @@ export const DiffReview: React.FC<Props> = ({ original, modified, onAccept, onDi
                     </div>
                 </div>
                 
-                <div className="flex gap-3">
+                <div className="flex flex-wrap items-center gap-2 md:gap-3">
                     <button 
                         onClick={onDiscard}
-                        className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-bold text-xs transition-all"
+                        className="px-4 md:px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-bold text-xs transition-all"
                     >
                         Hủy bỏ
                     </button>
+                    {onAcceptNewChapter && (
+                        <button 
+                            onClick={onAcceptNewChapter}
+                            className="px-4 md:px-6 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-purple-900/30 transition-all flex items-center gap-1.5"
+                            title="Giữ nguyên vẹn chương gốc, lưu bản dịch này thành một chương mới để tiện đối soát"
+                        >
+                            <span>📑 Lưu thành Chương Mới</span>
+                        </button>
+                    )}
                     <button 
                         onClick={onAccept}
-                        className="px-8 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs shadow-lg shadow-emerald-900/20 transition-all"
+                        className="px-5 md:px-7 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs shadow-lg shadow-emerald-900/20 transition-all flex items-center gap-1.5"
+                        title={onAcceptNewChapter ? "Ghi đè vào chương hiện tại (Có lưu bản gốc để đối soát)" : "Chấp nhận thay đổi"}
                     >
-                        Chấp nhận thay đổi
+                        <span>{onAcceptNewChapter ? '🔄 Ghi đè chương này' : 'Chấp nhận thay đổi'}</span>
                     </button>
                 </div>
             </div>
