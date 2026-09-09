@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useStory } from '../context/StoryContext.tsx';
 import { Chapter } from '../types.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
+import { TranslationSettingsModal } from './TranslationSettingsModal.tsx';
 
 interface TranslationsMenuProps {
   onOpenBilingualReview: (chapterId?: string) => void;
@@ -19,11 +20,13 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
     exportAllTranslations,
     promoteTranslationToMain,
     isAutoTranslateEnabled,
-    setIsAutoTranslateEnabled
+    setIsAutoTranslateEnabled,
+    translationOptions
   } = useStory();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'translated' | 'untranslated'>('all');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Lấy danh sách các chương nguyên tác (không tính các chương phụ tách rời)
   const chapters = useMemo(() => {
@@ -129,6 +132,23 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
             <span>Xuất toàn bộ (.TXT)</span>
           </button>
         </div>
+
+        {/* Nút tùy chỉnh phong cách dịch */}
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className="w-full mt-2.5 py-1.5 px-3 bg-gray-950/80 hover:bg-gray-800 text-gray-300 hover:text-emerald-300 border border-gray-800 hover:border-emerald-500/40 rounded-xl text-[10px] font-medium transition-all flex items-center justify-between shadow-sm"
+          title="Tùy chỉnh phong cách & đại từ xưng hô Việt hóa"
+        >
+          <span className="flex items-center gap-1.5">
+            <span>⚙️</span>
+            <span>Phong cách: <strong className="text-emerald-300 font-semibold">
+              {translationOptions?.styleMode === 'wuxia' ? 'Tiên Hiệp' :
+               translationOptions?.styleMode === 'fantasy' ? 'Tây Phương' :
+               translationOptions?.styleMode === 'modern' ? 'Hiện Đại' : 'Thuần Việt'}
+            </strong></span>
+          </span>
+          <span className="text-[9px] text-emerald-400 font-semibold">Tùy chỉnh →</span>
+        </button>
       </div>
 
       {/* THANH TÌM KIẾM & BỘ LỌC */}
@@ -293,6 +313,11 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
         )}
       </div>
 
+      {/* MODAL TÙY CHỈNH PHONG CÁCH VIỆT HÓA */}
+      <TranslationSettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 };
