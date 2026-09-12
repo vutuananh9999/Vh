@@ -1,11 +1,95 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useStory } from '../context/StoryContext.tsx';
 import { CharacterList } from './CharacterList.tsx';
 import { Chapter, ExtractionCategory } from '../types.ts';
 import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DeleteChapterModal } from './DeleteChapterModal.tsx';
 import { TranslationsMenu } from './TranslationsMenu.tsx';
-import { fastWordCount } from '../utils/wordCount.ts';
+import { MergeChapterModal } from './MergeChapterModal.tsx';
+import { getCachedWordCount } from '../utils/wordCount.ts';
+
+interface ChapterListItemProps {
+  chapter: Chapter;
+  isActive: boolean;
+  isOnlyChapter: boolean;
+  isRenaming: boolean;
+  onSelect: (id: string) => void;
+  onReorder: (id: string, dir: 'up' | 'down') => void;
+  onStartRename: (e: React.MouseEvent, id: string) => void;
+  onUpdateTitle: (id: string, title: string) => void;
+  onConfirmRename: () => void;
+  onUpdateTimeSetting: (id: string, time: string) => void;
+  onDeleteClick: (e: React.MouseEvent, chapter: Chapter) => void;
+}
+
+const ChapterListItem = React.memo<ChapterListItemProps>(({
+  chapter,
+  isActive,
+  isOnlyChapter,
+  isRenaming,
+  onSelect,
+  onReorder,
+  onStartRename,
+  onUpdateTitle,
+  onConfirmRename,
+  onUpdateTimeSetting,
+  onDeleteClick
+}) => {
+  const currentWords = getCachedWordCount(chapter.id, chapter.content, chapter.lastUpdated);
+  const progress = Math.min(100, (currentWords / (chapter.wordGoal || 2000)) * 100);
+
+  return (
+    <div className={`group relative rounded-md transition-all ${isActive ? 'bg-gray-800 border-l-2 border-primary-500 shadow-lg' : 'hover:bg-gray-800/40'}`}>
+      <div className="flex items-center">
+        <div className="flex flex-col gap-1 pr-2 pl-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onClick={() => onReorder(chapter.id, 'up')} className="p-1 text-gray-600 hover:text-primary-400" title="Chuyển lên"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M5 15l7-7 7 7" strokeWidth={3} /></svg></button>
+          <button onClick={() => onReorder(chapter.id, 'down')} className="p-1 text-gray-600 hover:text-primary-400" title="Chuyển xuống"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" strokeWidth={3} /></svg></button>
+        </div>
+        <div className="flex-1 py-3 pl-1 pr-2 overflow-hidden cursor-pointer" onClick={() => onSelect(chapter.id)}>
+          {isRenaming ? (
+            <input autoFocus className="w-full bg-gray-950 border border-primary-500/50 rounded px-1.5 py-0.5 text-sm text-white outline-none" value={chapter.title} onChange={(e) => onUpdateTitle(chapter.id, e.target.value)} onBlur={onConfirmRename} onKeyDown={(e) => e.key === 'Enter' && onConfirmRename()} onClick={(e) => e.stopPropagation()} />
+          ) : (
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="text-[10px] font-bold truncate text-gray-400 group-hover:text-gray-200 flex items-center justify-between">
+                <span className="truncate flex items-center gap-1">
+                  <span className="truncate">{chapter.title}</span>
+                  {(chapter.translatedContent || chapter.isTranslation || chapter.title.startsWith('[Việt Hóa]')) && (
+                    <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 font-semibold shrink-0" title="Đã có bản dịch">
+                      Dịch
+                    </span>
+                  )}
+                </span>
+                <span className="text-[8px] font-black text-gray-600 shrink-0 ml-2">{currentWords.toLocaleString()} / {(chapter.wordGoal || 2000).toLocaleString()}</span>
+              </div>
+              <div className="w-full h-1 bg-gray-950 rounded-full overflow-hidden border border-gray-800">
+                <div className={`h-full transition-all duration-500 ${progress >= 100 ? 'bg-emerald-500' : 'bg-primary-600'}`} style={{ width: `${progress}%` }}></div>
+              </div>
+              {isActive && (
+                <div className="mt-1 flex items-center gap-1.5">
+                  <svg className="w-3 h-3 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <input 
+                    type="text" 
+                    value={chapter.timeSetting || ""} 
+                    onChange={(e) => onUpdateTimeSetting(chapter.id, e.target.value)} 
+                    placeholder="Thiết lập thời gian (Vd: Sáng sớm)" 
+                    className="w-full bg-transparent text-[9px] text-orange-300 placeholder-gray-600 outline-none border-b border-gray-700 focus:border-orange-500 transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity pr-2 gap-1">
+          <button onClick={(e) => onStartRename(e, chapter.id)} className="p-1.5 text-gray-600 hover:text-primary-400 rounded-md hover:bg-gray-700" title="Đổi tên"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" strokeWidth={2}/></svg></button>
+          {!isOnlyChapter && (
+            <button onClick={(e) => onDeleteClick(e, chapter)} className="p-1.5 text-gray-600 hover:text-red-500 rounded-md hover:bg-red-900/20" title="Xóa"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth={2}/></svg></button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 interface Props {
     onOpenSettings: () => void;
@@ -27,13 +111,15 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
     learnFromText, isSearchingWeb, webInspiration, toggleEvolutionLog, deleteEvolutionLog,
     toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, ingestRawDocument,
     suggestNewChapter, isSuggestingChapter, suggestActiveChapterOutline, isGeneratingOutline,
-    triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, exportStory // Added
+    triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, exportStory,
+    mergeChapters
   } = useStory();
   
   const [tab, setTab] = useState<'chapters' | 'translations' | 'planning' | 'knowledge'>('chapters');
   const [planningSubTab, setPlanningSubTab] = useState<'blueprint' | 'arc'>('blueprint');
   const [knowledgeSubTab, setKnowledgeSubTab] = useState<'core' | 'characters' | 'directives' | 'ingest'>('core');
   const [viewingSummary, setViewingSummary] = useState<Chapter | null>(null);
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
   const [planInput, setPlanInput] = useState('');
   const [rawTextInput, setRawTextInput] = useState('');
   const [webTopic, setWebTopic] = useState(''); 
@@ -189,11 +275,51 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
       }
   };
 
-  const getWordCount = fastWordCount;
-
   const activeChapter = story?.chapters.find(c => c.id === activeChapterId);
   const translatedCount = story ? story.chapters.filter(c => !!c.translatedContent && c.translatedContent.trim().length > 0).length : 0;
-  const sortedChapters = story ? [...story.chapters].filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]')).sort((a, b) => a.order - b.order) : [];
+  
+  const [chapterSearch, setChapterSearch] = useState('');
+  const [chapterPage, setChapterPage] = useState(0);
+  const CHAPTERS_PER_PAGE = 50;
+
+  const sortedChapters = useMemo(() => {
+    if (!story) return [];
+    return [...story.chapters]
+      .filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]'))
+      .sort((a, b) => a.order - b.order);
+  }, [story?.chapters]);
+
+  const filteredChapters = useMemo(() => {
+    if (!chapterSearch.trim()) return sortedChapters;
+    const q = chapterSearch.toLowerCase().trim();
+    return sortedChapters.filter((c, idx) => 
+      c.title.toLowerCase().includes(q) || 
+      `chương ${idx + 1}`.includes(q) || 
+      `chuong ${idx + 1}`.includes(q) || 
+      `c${idx + 1}`.includes(q) ||
+      `c ${idx + 1}`.includes(q)
+    );
+  }, [sortedChapters, chapterSearch]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredChapters.length / CHAPTERS_PER_PAGE));
+
+  // Auto switch page to contain activeChapterId when selecting chapters
+  useEffect(() => {
+    if (!activeChapterId || chapterSearch.trim()) return;
+    const activeIdx = sortedChapters.findIndex(c => c.id === activeChapterId);
+    if (activeIdx !== -1) {
+      const targetPage = Math.floor(activeIdx / CHAPTERS_PER_PAGE);
+      setChapterPage(prev => (prev !== targetPage ? targetPage : prev));
+    }
+  }, [activeChapterId, sortedChapters, chapterSearch]);
+
+  const displayedChapters = useMemo(() => {
+    if (chapterSearch.trim()) {
+      return filteredChapters.slice(0, 100);
+    }
+    const start = chapterPage * CHAPTERS_PER_PAGE;
+    return sortedChapters.slice(start, start + CHAPTERS_PER_PAGE);
+  }, [chapterSearch, filteredChapters, sortedChapters, chapterPage]);
 
   const containerClass = `fixed inset-y-0 left-0 z-50 w-80 bg-gray-900 border-r border-gray-800 glass-panel shadow-2xl transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 flex flex-col h-[100dvh] ${isOpen ? 'translate-x-0' : '-translate-x-full'}`;
 
@@ -272,66 +398,103 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                     </button>
                 </div>
             </div>
-            {sortedChapters.map((chapter) => {
-              const currentWords = getWordCount(chapter.content);
-              const progress = Math.min(100, (currentWords / (chapter.wordGoal || 2000)) * 100);
-              const isOnlyChapter = sortedChapters.length <= 1;
-              const isActive = activeChapterId === chapter.id;
-              
-              return (
-                <div key={chapter.id} className={`group relative rounded-md transition-all ${isActive ? 'bg-gray-800 border-l-2 border-primary-500 shadow-lg' : 'hover:bg-gray-800/40'}`}>
-                  <div className="flex items-center">
-                    <div className="flex flex-col gap-1 pr-2 pl-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => reorderChapter(chapter.id, 'up')} className="p-1 text-gray-600 hover:text-primary-400"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M5 15l7-7 7 7" strokeWidth={3} /></svg></button>
-                        <button onClick={() => reorderChapter(chapter.id, 'down')} className="p-1 text-gray-600 hover:text-primary-400"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 9l-7 7-7-7" strokeWidth={3} /></svg></button>
-                    </div>
-                    <div className="flex-1 py-3 pl-1 pr-2 overflow-hidden cursor-pointer" onClick={() => selectChapter(chapter.id)}>
-                        {renamingId === chapter.id ? (
-                            <input autoFocus className="w-full bg-gray-950 border border-primary-500/50 rounded px-1.5 py-0.5 text-sm text-white outline-none" value={chapter.title} onChange={(e) => updateChapterTitle(chapter.id, e.target.value)} onBlur={handleConfirmRename} onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()} onClick={(e) => e.stopPropagation()} />
-                        ) : (
-                            <div className="flex flex-col gap-1 min-w-0">
-                                <div className="text-[10px] font-bold truncate text-gray-400 group-hover:text-gray-200 flex items-center justify-between">
-                                    <span className="truncate flex items-center gap-1">
-                                        <span className="truncate">{chapter.title}</span>
-                                        {(chapter.translatedContent || chapter.isTranslation || chapter.title.startsWith('[Việt Hóa]')) && (
-                                            <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 font-semibold shrink-0" title="Đã có bản dịch">
-                                                Dịch
-                                            </span>
-                                        )}
-                                    </span>
-                                    <span className="text-[8px] font-black text-gray-600 shrink-0 ml-2">{currentWords} / {chapter.wordGoal || 2000}</span>
-                                </div>
-                                <div className="w-full h-1 bg-gray-950 rounded-full overflow-hidden border border-gray-800">
-                                    <div className={`h-full transition-all duration-500 ${progress >= 100 ? 'bg-emerald-500' : 'bg-primary-600'}`} style={{ width: `${progress}%` }}></div>
-                                </div>
-                                {isActive && (
-                                    <div className="mt-1 flex items-center gap-1.5">
-                                        <svg className="w-3 h-3 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                        <input 
-                                            type="text" 
-                                            value={chapter.timeSetting || ""} 
-                                            onChange={(e) => updateChapterTimeSetting(chapter.id, e.target.value)} 
-                                            placeholder="Thiết lập thời gian (Vd: Sáng sớm)" 
-                                            className="w-full bg-transparent text-[9px] text-orange-300 placeholder-gray-600 outline-none border-b border-gray-700 focus:border-orange-500 transition-colors"
-                                            onClick={(e) => e.stopPropagation()}
-                                        />
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity pr-2 gap-1">
-                        <button onClick={(e) => handleStartRename(e, chapter.id)} className="p-1.5 text-gray-600 hover:text-primary-400 rounded-md hover:bg-gray-700" title="Đổi tên"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" strokeWidth={2}/></svg></button>
-                        {!isOnlyChapter && (
-                            <button onClick={(e) => handleDeleteClick(e, chapter)} className="p-1.5 text-gray-600 hover:text-red-500 rounded-md hover:bg-red-900/20" title="Xóa"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth={2}/></svg></button>
-                        )}
-                    </div>
-                  </div>
+            {/* THANH TÌM KIẾM & PHÂN TRANG KHI TRUYỆN DÀI (NHIỀU HƠN 50 CHƯƠNG) */}
+            {sortedChapters.length > 50 && (
+              <div className="px-2 mb-2 space-y-1.5">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={chapterSearch}
+                    onChange={(e) => setChapterSearch(e.target.value)}
+                    placeholder="Tìm theo số hoặc tên chương..."
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-2.5 py-1 pl-7 text-[11px] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-primary-500/60"
+                  />
+                  <svg className="w-3 h-3 text-gray-500 absolute left-2 top-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  {chapterSearch && (
+                    <button onClick={() => setChapterSearch('')} className="absolute right-2 top-1.5 text-gray-500 hover:text-gray-300 text-[10px]">✕</button>
+                  )}
                 </div>
-              );
-            })}
+
+                {!chapterSearch.trim() && totalPages > 1 && (
+                  <div className="flex items-center justify-between gap-1.5 bg-gray-950/80 p-1 rounded-lg border border-gray-800/80 text-[10px]">
+                    <button
+                      onClick={() => setChapterPage(p => Math.max(0, p - 1))}
+                      disabled={chapterPage === 0}
+                      className="px-2 py-0.5 rounded bg-gray-900 hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed text-gray-400 font-bold"
+                      title="Trang trước"
+                    >
+                      ◄
+                    </button>
+                    <select
+                      value={chapterPage}
+                      onChange={(e) => setChapterPage(Number(e.target.value))}
+                      className="bg-transparent text-gray-300 text-[10px] font-medium outline-none cursor-pointer text-center flex-1"
+                    >
+                      {Array.from({ length: totalPages }, (_, i) => {
+                        const start = i * CHAPTERS_PER_PAGE + 1;
+                        const end = Math.min((i + 1) * CHAPTERS_PER_PAGE, sortedChapters.length);
+                        return (
+                          <option key={i} value={i} className="bg-gray-900 text-gray-200">
+                            Chương {start} - {end} ({sortedChapters.length})
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <button
+                      onClick={() => setChapterPage(p => Math.min(totalPages - 1, p + 1))}
+                      disabled={chapterPage >= totalPages - 1}
+                      className="px-2 py-0.5 rounded bg-gray-900 hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed text-gray-400 font-bold"
+                      title="Trang sau"
+                    >
+                      ►
+                    </button>
+                  </div>
+                )}
+                {chapterSearch.trim() && (
+                  <div className="text-[9px] text-gray-500 px-1">
+                    Tìm thấy {filteredChapters.length} chương phù hợp
+                  </div>
+                )}
+              </div>
+            )}
+
+            {displayedChapters.length === 0 ? (
+              <div className="text-center py-6 text-xs text-gray-500">
+                Không tìm thấy chương nào
+              </div>
+            ) : (
+              displayedChapters.map((chapter) => (
+                <ChapterListItem
+                  key={chapter.id}
+                  chapter={chapter}
+                  isActive={activeChapterId === chapter.id}
+                  isOnlyChapter={sortedChapters.length <= 1}
+                  isRenaming={renamingId === chapter.id}
+                  onSelect={selectChapter}
+                  onReorder={reorderChapter}
+                  onStartRename={handleStartRename}
+                  onUpdateTitle={updateChapterTitle}
+                  onConfirmRename={handleConfirmRename}
+                  onUpdateTimeSetting={updateChapterTimeSetting}
+                  onDeleteClick={handleDeleteClick}
+                />
+              ))
+            )}
             <div className="flex gap-2 mt-2">
                 <button onClick={() => addChapter()} className="flex-1 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-primary-500 hover:text-primary-400 transition-all">+ Thêm chương mới</button>
+                <button 
+                  onClick={() => setIsMergeModalOpen(true)} 
+                  disabled={(story?.chapters.length || 0) < 2}
+                  className="px-3 py-2.5 border border-dashed border-gray-700 hover:border-indigo-500 text-gray-400 hover:text-indigo-400 rounded-xl text-[10px] font-black uppercase transition-all flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:hover:border-gray-700 disabled:hover:text-gray-400" 
+                  title="Gộp các chương hoặc nối các phần nhỏ thành 1 chương"
+                >
+                    <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                    </svg>
+                    <span>Gộp</span>
+                </button>
                 <input type="file" ref={chapterTxtInputRef} className="hidden" accept=".txt" onChange={handleChapterTxtUpload} />
                 <button onClick={() => chapterTxtInputRef.current?.click()} className="px-3 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -471,7 +634,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                     </div>
                     <div className="space-y-0 relative">
                         <div className="absolute left-[7px] top-2 bottom-2 w-0.5 bg-gray-800 z-0"></div>
-                        {sortedChapters.map((ch, i) => (
+                        {sortedChapters.slice(0, 40).map((ch) => (
                             <div key={ch.id} className={`relative pl-8 pb-8 last:pb-0 transition-all group ${activeChapterId === ch.id ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}>
                                 <div className={`absolute left-0 top-1 w-4 h-4 rounded-full border-2 z-10 transition-all flex items-center justify-center ${activeChapterId === ch.id ? 'bg-emerald-500 border-white shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-gray-900 border-gray-700 group-hover:border-emerald-500/50'}`}>
                                     {activeChapterId === ch.id && <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>}
@@ -479,12 +642,22 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                                 <div className={`p-4 rounded-2xl border transition-all cursor-pointer ${activeChapterId === ch.id ? 'bg-gray-800 border-emerald-500/30 shadow-xl' : 'bg-gray-900/40 border-gray-800 hover:border-gray-700'}`} onClick={() => selectChapter(ch.id)}>
                                     <div className="flex justify-between items-start mb-2">
                                         <h5 className={`text-[9px] font-black uppercase tracking-widest ${activeChapterId === ch.id ? 'text-emerald-400' : 'text-gray-500'}`}>{ch.title}</h5>
-                                        <span className="text-[8px] font-bold text-gray-700">{getWordCount(ch.content)} từ</span>
+                                        <span className="text-[8px] font-bold text-gray-700">{getCachedWordCount(ch.id, ch.content, ch.lastUpdated).toLocaleString()} từ</span>
                                     </div>
                                     <p className="text-[10px] text-gray-400 leading-relaxed font-serif italic line-clamp-3">{ch.summary || "Chưa phân tích."}</p>
                                 </div>
                             </div>
                         ))}
+                        {sortedChapters.length > 40 && (
+                            <div className="pt-2 pl-8">
+                                <button
+                                    onClick={() => onOpenPlotArc?.()}
+                                    className="w-full py-2 bg-gray-950 hover:bg-gray-800 text-emerald-400 border border-emerald-900/40 rounded-xl text-[10px] font-bold transition-all shadow-sm"
+                                >
+                                    Xem toàn bộ {sortedChapters.length} chương trong Mạch truyện →
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -663,6 +836,13 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
 
       <SummaryViewModal isOpen={!!viewingSummary} onClose={() => setViewingSummary(null)} title={viewingSummary?.title || ""} summary={viewingSummary?.summary || ""} chapterId={viewingSummary?.id} />
       <DeleteChapterModal isOpen={!!chapterToDelete} onClose={() => setChapterToDelete(null)} onConfirm={handleConfirmDelete} chapterTitle={chapterToDelete?.title || ""} />
+      <MergeChapterModal 
+        isOpen={isMergeModalOpen} 
+        onClose={() => setIsMergeModalOpen(false)} 
+        chapters={story?.chapters || []} 
+        activeChapterId={activeChapterId} 
+        onMerge={mergeChapters} 
+      />
     </div>
   );
 };

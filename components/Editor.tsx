@@ -4,6 +4,7 @@ import { useStory } from '../context/StoryContext.tsx';
 import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DiffReview } from './DiffReview.tsx';
 import { SplitChapterModal } from './SplitChapterModal.tsx';
+import { MergeChapterModal } from './MergeChapterModal.tsx';
 import { BilingualReviewModal } from './BilingualReviewModal.tsx';
 import { TranslationSettingsModal } from './TranslationSettingsModal.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
@@ -54,6 +55,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     remainingTokensEstimate,
     selectChapter,
     splitChapter,
+    mergeChapters,
     isAutoTranslateEnabled,
     setIsAutoTranslateEnabled,
     translationOptions,
@@ -70,6 +72,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const [isEditMode, setIsEditMode] = useState(true);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
   const [refineCommand, setRefineCommand] = useState('');
   const [isRefinePanelOpen, setIsRefinePanelOpen] = useState(false);
   const [activeAITab, setActiveAITab] = useState<EditorTab>('refine');
@@ -426,6 +429,18 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
           >
             <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+            </svg>
+          </button>
+
+          {/* Gộp chương (Merge Chapters) */}
+          <button 
+            onClick={() => setIsMergeModalOpen(true)}
+            disabled={isGenerating || (story?.chapters.length || 0) < 2}
+            className="p-2 rounded transition-all border shrink-0 flex items-center justify-center bg-indigo-950/30 text-indigo-300 border-indigo-800/40 hover:bg-indigo-900/40 hover:border-indigo-600/60 disabled:opacity-40"
+            title="Gộp chương (Nối nhiều phần nhỏ thành một chương hoàn chỉnh sau khi xử lý xong)"
+          >
+            <svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
             </svg>
           </button>
 
@@ -1060,6 +1075,13 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             await splitChapter(activeChapterId, segments);
           }
         }}
+      />
+      <MergeChapterModal 
+        isOpen={isMergeModalOpen}
+        onClose={() => setIsMergeModalOpen(false)}
+        chapters={story?.chapters || []}
+        activeChapterId={activeChapterId}
+        onMerge={mergeChapters}
       />
       <BilingualReviewModal
         isOpen={isBilingualModalOpen}

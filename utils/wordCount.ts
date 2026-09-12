@@ -20,3 +20,27 @@ export function fastWordCount(str: string | undefined | null): number {
     }
     return count;
 }
+
+// Bounded LRU cache for word counts (max 2000 entries)
+const wordCountCache = new Map<string, number>();
+const MAX_CACHE_SIZE = 2000;
+
+export function getCachedWordCount(id: string, text: string | undefined | null, versionKey?: number | string): number {
+    if (!text) return 0;
+    const len = text.length;
+    if (len === 0) return 0;
+    const cacheKey = `${id}_${versionKey ?? len}_${len}`;
+    const cached = wordCountCache.get(cacheKey);
+    if (cached !== undefined) {
+        return cached;
+    }
+
+    const count = fastWordCount(text);
+    if (wordCountCache.size >= MAX_CACHE_SIZE) {
+        // Drop oldest entries
+        const firstKeys = Array.from(wordCountCache.keys()).slice(0, 200);
+        for (const k of firstKeys) wordCountCache.delete(k);
+    }
+    wordCountCache.set(cacheKey, count);
+    return count;
+}

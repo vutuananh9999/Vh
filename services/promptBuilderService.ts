@@ -214,49 +214,78 @@ ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa c
     }
   }
 
-  // Calculate budget: reserve generous space for target chapters (up to 45,000 chars total for target chapters), then distribute remaining budget evenly across ALL other chapters
-  const maxTargetBudget = Math.floor(maxTotalChars * 0.7);
-  let targetCharsAllocated = 0;
+  // Identify neighbor indices (chapters immediately around target indices, plus start and end)
+  const neighborIndices = new Set<number>();
   targetIndices.forEach(idx => {
-    targetCharsAllocated += Math.min(30000, (chapters[idx].content?.length || 0));
+    if (idx > 0) neighborIndices.add(idx - 1);
+    if (idx < numChapters - 1) neighborIndices.add(idx + 1);
   });
+  // Include Chapter 1 and the very latest chapter
+  neighborIndices.add(0);
+  if (numChapters > 1) neighborIndices.add(numChapters - 1);
+  // Remove targets from neighbors
+  targetIndices.forEach(idx => neighborIndices.delete(idx));
 
-  const remainingBudget = Math.max(15000, maxTotalChars - targetCharsAllocated);
-  const nonTargetCount = Math.max(1, numChapters - targetIndices.size);
-  const perChapterBudget = Math.max(1000, Math.floor(remainingBudget / nonTargetCount));
+  // Determine budget distribution
+  const targetCharsAllocated = Math.min(35000, Math.floor(maxTotalChars * 0.6));
+  const perTargetBudget = Math.floor(targetCharsAllocated / Math.max(1, targetIndices.size));
+
+  // For small stories (<= 25 chapters), all chapters can have sampled manuscripts.
+  // For large stories (> 25 chapters, e.g. 500+ chapters), distant chapters only provide concise summaries to avoid multi-megabyte prompt allocations.
+  const isLargeStory = numChapters > 25;
+  const remainingBudget = Math.max(5000, maxTotalChars - targetCharsAllocated);
+  const sampleCandidateCount = isLargeStory ? Math.max(1, neighborIndices.size) : Math.max(1, numChapters - targetIndices.size);
+  const perSampleBudget = Math.min(3000, Math.max(300, Math.floor((remainingBudget * 0.7) / sampleCandidateCount)));
 
   const renderedChapters: string[] = [];
+  const distantSummaries: string[] = [];
 
   for (let i = 0; i < numChapters; i++) {
     const c = chapters[i];
     const isFocused = targetIndices.has(i);
+    const isNeighbor = neighborIndices.has(i);
     const hasContent = !!(c.content && c.content.trim().length > 0);
 
-    // If targeted/focused by user: Provide full raw text (or capped at safe 45k chars if a single chapter is colossal)
+    // 1. Target chapter: full or deep manuscript
     if (isFocused) {
       const rawText = hasContent 
-        ? (c.content.length > 45000 ? c.content.substring(0, 45000) + "\n\n[... Trích đoạn 45.000 ký tự đầu của chương ...]" : c.content)
+        ? (c.content.length > perTargetBudget ? c.content.substring(0, perTargetBudget) + `\n\n[... Trích đoạn ${perTargetBudget.toLocaleString()} ký tự đầu của chương ...]` : c.content)
         : "(Chương này chưa có bản thảo chi tiết)";
       const block = `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) [ĐANG TẬP TRUNG / ĐƯỢC CHỈ ĐỊNH] ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ 100%)]:
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ)]:
 ${rawText}`;
       renderedChapters.push(block);
       continue;
     }
 
-    // For other chapters: ALWAYS include sampled verbatim excerpt, never drop the manuscript
-    const sample = hasContent ? sampleManuscript(c.content, perChapterBudget) : "(Chương này chưa có bản thảo chi tiết)";
-    const block = `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) ===
+    // 2. Neighbor chapters or all chapters in small stories: sampled manuscript
+    if (!isLargeStory || isNeighbor) {
+      const sample = hasContent ? sampleManuscript(c.content, perSampleBudget) : "(Chương này chưa có bản thảo chi tiết)";
+      const block = `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU)]:
+[BẢN THẢO THỰC TẾ (TRÍCH ĐOẠN)]:
 ${sample}`;
-    renderedChapters.push(block);
+      renderedChapters.push(block);
+      continue;
+    }
+
+    // 3. Distant chapters in large stories (500+ chapters): compact timeline entry to save memory and tokens
+    const compactSummary = c.summary?.trim() || c.outline?.trim() || "(Chưa có tóm tắt)";
+    distantSummaries.push(`• Chương ${i + 1} (${c.title}): ${compactSummary.slice(0, 150)}`);
   }
 
-  return renderedChapters.join('\n\n----------------------------------------\n\n');
+  if (distantSummaries.length > 0) {
+    renderedChapters.push(`=== TỔNG QUAN CÁC CHƯƠNG KHÁC TRONG BỘ TRUYỆN (${distantSummaries.length} chương) ===\n${distantSummaries.join('\n')}`);
+  }
+
+  const fullResult = renderedChapters.join('\n\n----------------------------------------\n\n');
+  if (fullResult.length > maxTotalChars) {
+    return fullResult.substring(0, maxTotalChars) + "\n\n[... Đã cắt bớt để bảo toàn bộ nhớ an toàn ...]";
+  }
+  return fullResult;
 }
 
 export const promptBuilderService = {

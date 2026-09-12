@@ -38,16 +38,85 @@ const openDB = (): Promise<IDBDatabase> => {
   return dbInstance;
 };
 
-export const storageService = {
-  async saveStory(story: Story): Promise<void> {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_STORIES, 'readwrite');
-      const store = tx.objectStore(STORE_STORIES);
-      const request = store.put(story);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+// Saving queue and debounce state to prevent simultaneous massive IndexedDB transactions
+let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let queuedStoryToSave: Story | null = null;
+let isSavingInProgress = false;
+let pendingSaveResolvers: Array<() => void> = [];
+
+async function executeDirectSave(story: Story): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STORIES, 'readwrite');
+    const store = tx.objectStore(STORE_STORIES);
+    const request = store.put(story);
+    request.onsuccess = () => resolve();
+    request.onerror = () => {
+      console.error("IndexedDB save error:", request.error);
+      reject(request.error);
+    };
+  });
+}
+
+async function processSaveQueue(): Promise<void> {
+  if (isSavingInProgress || !queuedStoryToSave) return;
+  
+  isSavingInProgress = true;
+  const currentStory = queuedStoryToSave;
+  queuedStoryToSave = null;
+  const currentResolvers = pendingSaveResolvers;
+  pendingSaveResolvers = [];
+
+  try {
+    await executeDirectSave(currentStory);
+  } catch (err) {
+    console.error("Failed to save story to IndexedDB:", err);
+  } finally {
+    isSavingInProgress = false;
+    currentResolvers.forEach(res => {
+      try { res(); } catch (_) {}
     });
+
+    // If another save was queued while this one was running, process it now
+    if (queuedStoryToSave) {
+      processSaveQueue();
+    }
+  }
+}
+
+export const storageService = {
+  async saveStory(story: Story, immediate: boolean = false): Promise<void> {
+    queuedStoryToSave = story;
+
+    if (saveDebounceTimer) {
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = null;
+    }
+
+    if (immediate) {
+      return new Promise<void>((resolve) => {
+        pendingSaveResolvers.push(resolve);
+        processSaveQueue();
+      });
+    }
+
+    return new Promise<void>((resolve) => {
+      pendingSaveResolvers.push(resolve);
+      saveDebounceTimer = setTimeout(() => {
+        saveDebounceTimer = null;
+        processSaveQueue();
+      }, 400);
+    });
+  },
+
+  async flushSaves(): Promise<void> {
+    if (saveDebounceTimer) {
+      clearTimeout(saveDebounceTimer);
+      saveDebounceTimer = null;
+    }
+    if (queuedStoryToSave) {
+      await processSaveQueue();
+    }
   },
 
   async getStory(id: string): Promise<Story | undefined> {
@@ -70,6 +139,29 @@ export const storageService = {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
+  },
+
+  /**
+   * Retrieves lightweight story summaries for the library screen.
+   * Strips chapter contents to avoid loading tens of megabytes into React state.
+   */
+  async getAllStorySummaries(): Promise<Story[]> {
+    const stories = await this.getAllStories();
+    return stories.map(story => ({
+      ...story,
+      // Strip chapter text contents for the library overview
+      chapters: (story.chapters || []).map(ch => ({
+        id: ch.id,
+        title: ch.title,
+        order: ch.order,
+        lastUpdated: ch.lastUpdated,
+        content: '',
+        summary: '',
+        outline: '',
+        translatedTitle: ch.translatedTitle,
+        isTranslation: ch.isTranslation
+      }))
+    }));
   },
 
   async deleteStory(id: string): Promise<void> {

@@ -170,6 +170,7 @@ interface StoryContextType {
   autoUpdateCharacter: (charId: string) => Promise<Character | null>;
   
   splitChapter: (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => Promise<void>;
+  mergeChapters: (chapterIds: string[], options: { newTitle: string; separator?: string; mergeTranslations?: boolean }) => Promise<void>;
   
   applyPendingEdit: (mode?: 'overwrite' | 'new_chapter') => void;
   discardPendingEdit: () => void;
@@ -185,7 +186,7 @@ interface StoryContextType {
 
 const StoryContext = createContext<StoryContextType | undefined>(undefined);
 
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 15;
 const TOKEN_LIMIT_ESTIMATE = 1000000; // Giả lập giới hạn context 1M tokens
 const MAX_WORDS_PER_CHAPTER = 1200;
 
@@ -319,7 +320,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const triggerLearn = useCallback(() => setLearnTrigger(prev => prev + 1), []);
 
   const loadStories = async () => {
-    const list = await storageService.getAllStories();
+    const list = await storageService.getAllStorySummaries();
     setStoriesList(list.sort((a, b) => (b.createdAt - a.createdAt)));
     setIsStoriesLoaded(true);
   };
@@ -643,6 +644,125 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await loadStories();
   };
 
+  const mergeChapters = async (
+    chapterIds: string[],
+    options: {
+      newTitle: string;
+      separator?: string;
+      mergeTranslations?: boolean;
+    }
+  ) => {
+    const currentStory = storyRef.current;
+    if (!currentStory || !chapterIds || chapterIds.length < 2) return;
+
+    // Filter to selected chapters and keep their natural order based on selection order
+    const selectedChapters = chapterIds
+      .map(id => currentStory.chapters.find(c => c.id === id))
+      .filter((c): c is Chapter => !!c);
+
+    if (selectedChapters.length < 2) return;
+
+    const firstChapter = selectedChapters[0];
+    const separator = options.separator !== undefined ? options.separator : '\n\n';
+
+    // Combine contents
+    const mergedContent = selectedChapters
+      .map(c => (c.content || '').trim())
+      .filter(Boolean)
+      .join(separator);
+
+    // Combine originalContent if any chapter has it
+    const hasOriginal = selectedChapters.some(c => !!c.originalContent);
+    const mergedOriginalContent = hasOriginal
+      ? selectedChapters
+          .map(c => (c.originalContent || c.content || '').trim())
+          .filter(Boolean)
+          .join(separator)
+      : undefined;
+
+    // Combine translatedContent if requested
+    const hasTranslation = selectedChapters.some(
+      c => !!c.translatedContent && c.translatedContent.trim().length > 0
+    );
+    const mergedTranslatedContent =
+      options.mergeTranslations !== false && hasTranslation
+        ? selectedChapters
+            .map(c => (c.translatedContent || '').trim())
+            .filter(Boolean)
+            .join(separator)
+        : undefined;
+
+    // Combine translatedTitle if applicable
+    const mergedTranslatedTitle =
+      options.mergeTranslations !== false && selectedChapters.some(c => !!c.translatedTitle)
+        ? options.newTitle
+        : undefined;
+
+    // Combine summaries
+    const mergedSummary = selectedChapters
+      .map(c => (c.summary || '').trim())
+      .filter(Boolean)
+      .join('\n---\n');
+
+    // Combine outlines
+    const mergedOutline = selectedChapters
+      .map(c => (c.outline || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+
+    // Sum wordGoal
+    const totalWordGoal = selectedChapters.reduce(
+      (sum, c) => sum + (c.wordGoal || 2000),
+      0
+    );
+
+    const mergedChapter: Chapter = {
+      ...firstChapter,
+      title: options.newTitle.trim() || firstChapter.title,
+      content: mergedContent,
+      originalContent: mergedOriginalContent,
+      translatedContent: mergedTranslatedContent,
+      translatedTitle: mergedTranslatedTitle,
+      summary: mergedSummary,
+      outline: mergedOutline,
+      wordGoal: totalWordGoal,
+      lastUpdated: Date.now(),
+      translationLastUpdated: mergedTranslatedContent ? Date.now() : undefined,
+    };
+
+    // Replace the first selected chapter with mergedChapter, and drop the other selected chapters
+    const remainingChapters: Chapter[] = [];
+    let inserted = false;
+
+    for (const c of currentStory.chapters) {
+      if (chapterIds.includes(c.id)) {
+        if (!inserted) {
+          remainingChapters.push(mergedChapter);
+          inserted = true;
+        }
+        // Other merged chapters are excluded
+      } else {
+        remainingChapters.push(c);
+      }
+    }
+
+    // Re-index order
+    const reIndexedChapters = remainingChapters.map((c, idx) => ({
+      ...c,
+      order: idx + 1,
+    }));
+
+    const updatedStory = {
+      ...currentStory,
+      chapters: reIndexedChapters,
+    };
+
+    setStory(updatedStory);
+    await storageService.saveStory(updatedStory);
+    setActiveChapterId(mergedChapter.id);
+    await loadStories();
+  };
+
   const updateChapterContent = useCallback((id: string, content: string, pushToHistory = true) => {
     setStory(prev => {
         if (!prev) return null;
@@ -943,24 +1063,29 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       let accumulated = "";
       let finalMetadata = null;
+      let lastStreamingUpdate = 0;
 
       for await (const chunk of stream) {
         if (chunk.text) {
           accumulated += chunk.text;
-          // Cập nhật real-time vào translatedContent trong Menu Bản Dịch
-          setStory(prev => {
-            if (!prev) return null;
-            return {
-              ...prev,
-              chapters: prev.chapters.map(c => c.id === id ? {
-                ...c,
-                originalContent: c.originalContent || c.content,
-                translatedContent: accumulated,
-                translationStyle: activeOptions.styleMode,
-                translationLastUpdated: Date.now()
-              } : c)
-            };
-          });
+          const now = Date.now();
+          // Throttle state updates to ~3 times per second during heavy streaming to prevent memory spikes
+          if (now - lastStreamingUpdate > 300) {
+            lastStreamingUpdate = now;
+            setStory(prev => {
+              if (!prev) return null;
+              return {
+                ...prev,
+                chapters: prev.chapters.map(c => c.id === id ? {
+                  ...c,
+                  originalContent: c.originalContent || c.content,
+                  translatedContent: accumulated,
+                  translationStyle: activeOptions.styleMode,
+                  translationLastUpdated: now
+                } : c)
+              };
+            });
+          }
         }
         if (chunk.usageMetadata) finalMetadata = chunk.usageMetadata;
       }
@@ -1942,7 +2067,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
       canUndo, canRedo, undo, redo,
       loadStories, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
-      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, deleteChapter, splitChapter, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
+      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
       generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,

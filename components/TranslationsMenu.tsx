@@ -1,12 +1,144 @@
 import React, { useState, useMemo } from 'react';
 import { useStory } from '../context/StoryContext.tsx';
 import { Chapter } from '../types.ts';
-import { fastWordCount } from '../utils/wordCount.ts';
+import { getCachedWordCount } from '../utils/wordCount.ts';
 import { TranslationSettingsModal } from './TranslationSettingsModal.tsx';
 
 interface TranslationsMenuProps {
   onOpenBilingualReview: (chapterId?: string) => void;
 }
+
+interface TranslationCardProps {
+  chapter: Chapter;
+  isActive: boolean;
+  isViewingThisTranslation: boolean;
+  onSelect: (chapter: Chapter) => void;
+  onReview: (chapterId: string) => void;
+  onTranslate: (chapterId: string) => void;
+  onPromote: (chapter: Chapter) => void;
+  isGenerating: boolean;
+}
+
+const TranslationCard = React.memo<TranslationCardProps>(({
+  chapter,
+  isActive,
+  isViewingThisTranslation,
+  onSelect,
+  onReview,
+  onTranslate,
+  onPromote,
+  isGenerating
+}) => {
+  const hasTranslation = !!chapter.translatedContent && chapter.translatedContent.trim().length > 0;
+  const transWords = hasTranslation ? getCachedWordCount(chapter.id + '_trans', chapter.translatedContent, chapter.translationLastUpdated) : 0;
+  const origWords = getCachedWordCount(chapter.id, chapter.originalContent || chapter.content || '', chapter.lastUpdated);
+
+  return (
+    <div
+      className={`p-2.5 rounded-xl border transition-all ${
+        isViewingThisTranslation
+          ? 'bg-emerald-950/40 border-emerald-500/60 shadow-md ring-1 ring-emerald-500/30'
+          : isActive
+          ? 'bg-gray-800/60 border-gray-700'
+          : 'bg-gray-900/40 border-gray-800/80 hover:bg-gray-800/40 hover:border-gray-700'
+      }`}
+    >
+      {/* Dòng tiêu đề & Badge */}
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-bold truncate text-gray-200" title={chapter.title}>
+              {chapter.title}
+            </span>
+          </div>
+
+          {/* Tiêu đề bản dịch nếu có */}
+          {chapter.translatedTitle && (
+            <div className="text-[10px] text-emerald-400 font-medium truncate mt-0.5">
+              ↳ {chapter.translatedTitle}
+            </div>
+          )}
+        </div>
+
+        {/* Badge trạng thái */}
+        {hasTranslation ? (
+          <span className="shrink-0 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-600/50 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            <span>Đã dịch</span>
+          </span>
+        ) : (
+          <span className="shrink-0 text-[8px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-950 text-gray-500 border border-gray-800">
+            Chưa dịch
+          </span>
+        )}
+      </div>
+
+      {/* Thống kê số từ */}
+      <div className="flex items-center justify-between text-[9px] text-gray-500 mb-2">
+        {hasTranslation ? (
+          <>
+            <span>Bản dịch: <strong className="text-emerald-300 font-semibold">{transWords.toLocaleString()}</strong> từ</span>
+            <span>Gốc: {origWords.toLocaleString()} từ</span>
+          </>
+        ) : (
+          <span>Nguyên tác: {origWords.toLocaleString()} từ</span>
+        )}
+      </div>
+
+      {/* Hàng nút chức năng */}
+      <div className="flex items-center gap-1 pt-1 border-t border-gray-800/60">
+        {hasTranslation ? (
+          <>
+            <button
+              onClick={() => onSelect(chapter)}
+              className={`flex-1 py-1 px-2 rounded-lg text-[10px] font-semibold transition-all flex items-center justify-center gap-1 ${
+                isViewingThisTranslation
+                  ? 'bg-emerald-600 text-white font-bold shadow'
+                  : 'bg-emerald-950/50 hover:bg-emerald-900/50 text-emerald-300 border border-emerald-800/50'
+              }`}
+              title="Mở xem và chỉnh sửa bản dịch trong Editor"
+            >
+              <span>{isViewingThisTranslation ? '✓ Đang xem' : '👁️ Xem bản dịch'}</span>
+            </button>
+
+            <button
+              onClick={() => onReview(chapter.id)}
+              className="py-1 px-2 bg-blue-950/50 hover:bg-blue-900/50 text-blue-300 border border-blue-800/50 rounded-lg text-[10px] font-semibold transition-all flex items-center gap-1"
+              title="Mở đối soát song ngữ hai cột đối chiếu"
+            >
+              <span>⚖️ Đối soát</span>
+            </button>
+
+            <button
+              onClick={() => onTranslate(chapter.id)}
+              disabled={isGenerating}
+              className="py-1 px-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-[10px] transition-all disabled:opacity-40"
+              title="Dịch lại chương này"
+            >
+              🔄
+            </button>
+
+            <button
+              onClick={() => onPromote(chapter)}
+              className="py-1 px-2 bg-purple-950/50 hover:bg-purple-900/50 text-purple-300 border border-purple-800/50 rounded-lg text-[10px] transition-all"
+              title="Thay thế nội dung chính bằng bản dịch này"
+            >
+              ⭐
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => onTranslate(chapter.id)}
+            disabled={isGenerating}
+            className="w-full py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+          >
+            <span>⚡ Dịch ngay</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});
 
 export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBilingualReview }) => {
   const {
@@ -27,6 +159,7 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'translated' | 'untranslated'>('all');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [displayCount, setDisplayCount] = useState(50);
 
   // Lấy danh sách các chương nguyên tác (không tính các chương phụ tách rời)
   const chapters = useMemo(() => {
@@ -36,13 +169,22 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
       .sort((a, b) => a.order - b.order);
   }, [story]);
 
-  // Thống kê tiến độ dịch
+  // Thống kê tiến độ dịch sử dụng LRU cached word count
   const stats = useMemo(() => {
     const total = chapters.length;
-    const translatedList = chapters.filter(c => !!c.translatedContent && c.translatedContent.trim().length > 0);
-    const translatedCount = translatedList.length;
-    const totalTranslatedWords = translatedList.reduce((acc, c) => acc + fastWordCount(c.translatedContent || ''), 0);
-    const totalOriginalWords = chapters.reduce((acc, c) => acc + fastWordCount(c.originalContent || c.content || ''), 0);
+    let translatedCount = 0;
+    let totalTranslatedWords = 0;
+    let totalOriginalWords = 0;
+
+    for (let i = 0; i < chapters.length; i++) {
+      const c = chapters[i];
+      const hasTrans = !!c.translatedContent && c.translatedContent.trim().length > 0;
+      if (hasTrans) {
+        translatedCount++;
+        totalTranslatedWords += getCachedWordCount(c.id + '_trans', c.translatedContent, c.translationLastUpdated);
+      }
+      totalOriginalWords += getCachedWordCount(c.id, c.originalContent || c.content || '', c.lastUpdated);
+    }
     const percent = total > 0 ? Math.round((translatedCount / total) * 100) : 0;
     return { total, translatedCount, totalTranslatedWords, totalOriginalWords, percent };
   }, [chapters]);
@@ -62,6 +204,10 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
       return true;
     });
   }, [chapters, filterMode, searchQuery]);
+
+  const displayedChapters = useMemo(() => {
+    return filteredChapters.slice(0, displayCount);
+  }, [filteredChapters, displayCount]);
 
   const handleSelectChapterTranslation = (chapter: Chapter) => {
     selectChapter(chapter.id);
@@ -195,121 +341,34 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
             Không tìm thấy chương nào phù hợp
           </div>
         ) : (
-          filteredChapters.map((chapter) => {
-            const hasTranslation = !!chapter.translatedContent && chapter.translatedContent.trim().length > 0;
-            const transWords = hasTranslation ? fastWordCount(chapter.translatedContent!) : 0;
-            const origWords = fastWordCount(chapter.originalContent || chapter.content || '');
-            const isActive = activeChapterId === chapter.id;
-            const isViewingThisTranslation = isActive && editorVersion === 'translation';
-
-            return (
-              <div
+          <>
+            {displayedChapters.map((chapter) => (
+              <TranslationCard
                 key={chapter.id}
-                className={`p-2.5 rounded-xl border transition-all ${
-                  isViewingThisTranslation
-                    ? 'bg-emerald-950/40 border-emerald-500/60 shadow-md ring-1 ring-emerald-500/30'
-                    : isActive
-                    ? 'bg-gray-800/60 border-gray-700'
-                    : 'bg-gray-900/40 border-gray-800/80 hover:bg-gray-800/40 hover:border-gray-700'
-                }`}
+                chapter={chapter}
+                isActive={activeChapterId === chapter.id}
+                isViewingThisTranslation={activeChapterId === chapter.id && editorVersion === 'translation'}
+                onSelect={handleSelectChapterTranslation}
+                onReview={(id) => onOpenBilingualReview(id)}
+                onTranslate={(id) => {
+                  selectChapter(id);
+                  translateChapter(id);
+                }}
+                onPromote={promoteTranslationToMain}
+                isGenerating={isGenerating}
+              />
+            ))}
+
+            {filteredChapters.length > displayCount && (
+              <button
+                onClick={() => setDisplayCount(prev => prev + 50)}
+                className="w-full py-2 bg-gray-950 hover:bg-gray-800 text-emerald-400 border border-emerald-900/40 rounded-xl text-[10px] font-bold transition-all shadow-sm flex items-center justify-center gap-1.5"
               >
-                {/* Dòng tiêu đề & Badge */}
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-bold truncate text-gray-200" title={chapter.title}>
-                        {chapter.title}
-                      </span>
-                    </div>
-
-                    {/* Tiêu đề bản dịch nếu có */}
-                    {chapter.translatedTitle && (
-                      <div className="text-[10px] text-emerald-400 font-medium truncate mt-0.5">
-                        ↳ {chapter.translatedTitle}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Badge trạng thái */}
-                  {hasTranslation ? (
-                    <span className="shrink-0 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-600/50 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                      <span>Đã dịch</span>
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-[8px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-950 text-gray-500 border border-gray-800">
-                      Chưa dịch
-                    </span>
-                  )}
-                </div>
-
-                {/* Thống kê số từ */}
-                <div className="flex items-center justify-between text-[9px] text-gray-500 mb-2">
-                  {hasTranslation ? (
-                    <>
-                      <span>Bản dịch: <strong className="text-emerald-300 font-semibold">{transWords.toLocaleString()}</strong> từ</span>
-                      <span>Gốc: {origWords.toLocaleString()} từ</span>
-                    </>
-                  ) : (
-                    <span>Nguyên tác: {origWords.toLocaleString()} từ</span>
-                  )}
-                </div>
-
-                {/* Hàng nút chức năng */}
-                <div className="flex items-center gap-1 pt-1 border-t border-gray-800/60">
-                  {hasTranslation ? (
-                    <>
-                      <button
-                        onClick={() => handleSelectChapterTranslation(chapter)}
-                        className={`flex-1 py-1 px-2 rounded-lg text-[10px] font-semibold transition-all flex items-center justify-center gap-1 ${
-                          isViewingThisTranslation
-                            ? 'bg-emerald-600 text-white font-bold shadow'
-                            : 'bg-emerald-950/50 hover:bg-emerald-900/50 text-emerald-300 border border-emerald-800/50'
-                        }`}
-                        title="Mở xem và chỉnh sửa bản dịch trong Editor"
-                      >
-                        <span>{isViewingThisTranslation ? '✓ Đang xem' : '👁️ Xem bản dịch'}</span>
-                      </button>
-
-                      <button
-                        onClick={() => onOpenBilingualReview(chapter.id)}
-                        className="py-1 px-2 bg-blue-950/50 hover:bg-blue-900/50 text-blue-300 border border-blue-800/50 rounded-lg text-[10px] font-semibold transition-all flex items-center gap-1"
-                        title="Mở đối soát song ngữ hai cột đối chiếu"
-                      >
-                        <span>⚖️ Đối soát</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          selectChapter(chapter.id);
-                          translateChapter(chapter.id);
-                        }}
-                        disabled={isGenerating}
-                        className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-emerald-950/40 rounded-md transition-all"
-                        title="Dịch lại chương này"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        selectChapter(chapter.id);
-                        translateChapter(chapter.id);
-                      }}
-                      disabled={isGenerating}
-                      className="w-full py-1.5 px-3 bg-emerald-600/30 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/50 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
-                    >
-                      <span>⚡</span>
-                      <span>Việt Hóa Ngay Chương Này</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })
+                <span>Xem thêm 50 chương nữa (còn {filteredChapters.length - displayCount} chương)</span>
+                <span>↓</span>
+              </button>
+            )}
+          </>
         )}
       </div>
 

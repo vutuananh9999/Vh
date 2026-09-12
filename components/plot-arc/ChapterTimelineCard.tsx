@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { Chapter } from '../../types.ts';
-import { fastWordCount } from '../../utils/wordCount.ts';
+import { getCachedWordCount, fastWordCount } from '../../utils/wordCount.ts';
 
 interface ChapterTimelineCardProps {
     chapter: Chapter;
@@ -39,7 +39,7 @@ export const ChapterTimelineCard: React.FC<ChapterTimelineCardProps> = React.mem
     onSummarize,
     onGenerateContent
 }) => {
-    const wordCount = useMemo(() => fastWordCount(chapter.content), [chapter.content]);
+    const wordCount = useMemo(() => getCachedWordCount(chapter.id, chapter.content, chapter.lastUpdated), [chapter.id, chapter.content, chapter.lastUpdated]);
     const editingWordCount = useMemo(() => isEditing ? fastWordCount(editingValue) : 0, [isEditing, editingValue]);
 
     const displayContent = isEditing
