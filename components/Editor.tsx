@@ -216,8 +216,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     const isExternalSync = prevSyncTokenRef.current !== editorSyncToken;
 
     if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalSync) {
-      // If switching chapter, flush pending save for previous chapter first
-      if (isChapterSwitch && loadedChapterIdRef.current && saveTimeoutRef.current) {
+      // If switching chapter OR switching version, flush pending save for previous state first
+      if ((isChapterSwitch || isVersionSwitch) && loadedChapterIdRef.current && saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = null;
         if (loadedVersionRef.current === 'translation') {
@@ -242,6 +242,17 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
       loadedChapterIdRef.current = activeChapterId;
       loadedVersionRef.current = editorVersion;
       prevSyncTokenRef.current = editorSyncToken;
+    }
+
+    // Keep localContent synchronized with live streaming translatedContent during generation
+    if (isGenerating && editorVersion === 'translation' && activeChapter) {
+      const streamingContent = activeChapter.translatedContent || '';
+      if (streamingContent && streamingContent !== localContentRef.current) {
+        setLocalContent(streamingContent);
+        localContentRef.current = streamingContent;
+        initialContentRef.current = streamingContent;
+        lastSentContentRef.current = streamingContent;
+      }
     }
 
     prevIsGeneratingRef.current = isGenerating;

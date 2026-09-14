@@ -5,6 +5,7 @@ import { storageService } from '../services/storage.ts';
 import { geminiService } from '../services/geminiService.ts';
 import { ragService, getMagnitude } from '../services/ragService.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
+import { cleanAndDeduplicateTranslation } from '../utils/textDeduplication.ts';
 
 const generateId = () => {
     try {
@@ -1030,6 +1031,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const translateChapter = async (id: string, options?: TranslationOptions) => {
+    if (isGenerating) {
+      console.warn("Đang có tiến trình xử lý AI đang chạy, bỏ qua yêu cầu trùng lặp.");
+      return;
+    }
     const currentStory = storyRef.current;
     const targetChapter = currentStory?.chapters.find(c => c.id === id);
     if (!targetChapter || !targetChapter.content || targetChapter.content.length < 10) return;
@@ -1045,16 +1050,20 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const sourceText = targetChapter.originalContent || targetChapter.content;
 
     try {
-      // Đảm bảo originalContent luôn được lưu trữ nếu chưa có
-      if (!targetChapter.originalContent) {
-        setStory(prev => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            chapters: prev.chapters.map(c => c.id === id ? { ...c, originalContent: c.content } : c)
-          };
-        });
-      }
+      // Đảm bảo originalContent luôn được lưu trữ nếu chưa có, đồng thời khởi tạo sạch translatedContent
+      setStory(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          chapters: prev.chapters.map(c => c.id === id ? { 
+            ...c, 
+            originalContent: c.originalContent || c.content,
+            translatedContent: '',
+            translationStyle: activeOptions.styleMode,
+            translationLastUpdated: Date.now()
+          } : c)
+        };
+      });
 
       const stream = geminiService.translateToVietnameseStream(
         sourceText,
@@ -1098,6 +1107,9 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       if (finalMetadata) recordUsage(finalMetadata);
 
+      // Làm sạch, khử trùng lặp và triệt tiêu mọi prompt leak / stream restart lặp lại
+      const cleanedTranslation = cleanAndDeduplicateTranslation(accumulated, sourceText);
+
       // Lưu bền vững vào storage
       if (storyRef.current) {
         const finalUpdated = {
@@ -1105,7 +1117,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           chapters: storyRef.current.chapters.map(c => c.id === id ? {
             ...c,
             originalContent: c.originalContent || c.content,
-            translatedContent: accumulated,
+            translatedContent: cleanedTranslation,
             translationStyle: activeOptions.styleMode,
             translationLastUpdated: Date.now()
           } : c)
@@ -1113,6 +1125,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setStory(finalUpdated);
         storyRef.current = finalUpdated;
         await storageService.saveStory(finalUpdated);
+        bumpEditorSyncToken();
       }
 
       // Xử lý dịch tự động liên tục nếu bật Auto Next
@@ -1143,11 +1156,12 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateChapterTranslation = async (chapterId: string, translatedContent: string, translatedTitle?: string) => {
     if (!storyRef.current) return;
+    const cleaned = cleanAndDeduplicateTranslation(translatedContent);
     const updatedChapters = storyRef.current.chapters.map(c => {
       if (c.id === chapterId) {
         return {
           ...c,
-          translatedContent,
+          translatedContent: cleaned,
           translatedTitle: translatedTitle !== undefined ? translatedTitle : c.translatedTitle,
           translationLastUpdated: Date.now()
         };
@@ -1158,6 +1172,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory(updatedStory);
     storyRef.current = updatedStory;
     await storageService.saveStory(updatedStory);
+    bumpEditorSyncToken();
   };
 
   const promoteTranslationToMain = async (chapterId: string) => {

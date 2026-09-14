@@ -849,6 +849,8 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
+  let hasYieldedAnyChunk = false;
+
   for (const modelToTry of fallbackModels) {
     try {
       const config = cleanConfigForModel(params.config, modelToTry);
@@ -858,12 +860,20 @@ async function* safeGenerateContentStream(params: { model: string, contents: any
         config
       });
       for await (const chunk of stream) {
+        hasYieldedAnyChunk = true;
         yield chunk as GenerateContentResponse;
       }
       return; // Streamed successfully
     } catch (error: any) {
       lastError = error;
-      console.warn(`safeGenerateContentStream failed on model ${modelToTry}, trying next fallback...`, error);
+      console.warn(`safeGenerateContentStream failed on model ${modelToTry}, error:`, error);
+      // CRITICAL FIX: If any chunks have already been yielded downstream to the caller,
+      // switching to a new fallback model would start generation from token 0, resulting in
+      // duplicated / repeated story content in the chapter!
+      // Once data has started flowing, we must throw the error directly rather than concating another stream.
+      if (hasYieldedAnyChunk) {
+        throw error;
+      }
     }
   }
   throw lastError;

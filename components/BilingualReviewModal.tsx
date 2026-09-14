@@ -9,7 +9,7 @@ interface Props {
 }
 
 export const BilingualReviewModal: React.FC<Props> = ({ isOpen, onClose, defaultChapterId }) => {
-  const { story, activeChapterId, updateChapterContent, selectChapter, bumpEditorSyncToken } = useStory();
+  const { story, activeChapterId, updateChapterContent, updateChapterTranslation, selectChapter, bumpEditorSyncToken } = useStory();
 
   const [leftChapterId, setLeftChapterId] = useState<string>('');
   const [rightChapterId, setRightChapterId] = useState<string>('');
@@ -48,13 +48,13 @@ export const BilingualReviewModal: React.FC<Props> = ({ isOpen, onClose, default
       }
     }
 
-    // Check if current chapter has embedded originalContent
-    if (currentChapter.originalContent && currentChapter.originalContent.trim().length > 0) {
+    // Check if current chapter has embedded originalContent or translatedContent
+    if ((currentChapter.originalContent && currentChapter.originalContent.trim().length > 0) || currentChapter.translatedContent) {
       setLeftChapterId(currentChapter.id);
       setIsUsingCustomRaw(true);
-      setCustomRawText(currentChapter.originalContent);
+      setCustomRawText(currentChapter.originalContent || currentChapter.content);
       setRightChapterId(currentChapter.id);
-      setRightContent(currentChapter.content);
+      setRightContent(currentChapter.translatedContent || currentChapter.content);
       setIsSaved(true);
       return;
     }
@@ -119,7 +119,12 @@ export const BilingualReviewModal: React.FC<Props> = ({ isOpen, onClose, default
   // Save changes to right chapter
   const handleSaveChanges = () => {
     if (rightChapterId && story) {
-      updateChapterContent(rightChapterId, rightContent, true);
+      const targetCh = story.chapters.find(c => c.id === rightChapterId);
+      if (targetCh && targetCh.translatedContent && isUsingCustomRaw) {
+        updateChapterTranslation(rightChapterId, rightContent);
+      } else {
+        updateChapterContent(rightChapterId, rightContent, true);
+      }
       bumpEditorSyncToken();
       setIsSaved(true);
     }

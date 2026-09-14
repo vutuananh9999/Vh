@@ -779,11 +779,20 @@ TRẢ VỀ JSON:
         story.characters.slice(0, 20).map(c => `- ${c.name} (${c.role}): ${c.description || ''}; Xưng hô/tính cách: ${c.traits?.join(', ') || 'Bình thường'}`).join('\n')
       : '';
 
-    return `[NHIỆM VỤ: ĐẠI BIÊN TẬP & VIỆT HÓA VĂN HỌC ĐỈNH CAO - ERADICATE ROUGHNESS PROTOCOL]
+    return `[NHIỆM VỤ: ĐẠI BIÊN TẬP & VIỆT HÓA VĂN HỌC ĐỈNH CAO - ERADICATE ROUGHNESS & ZERO DUPLICATION]
 Bạn là một Đại dịch giả văn học và Trưởng ban biên tập tiểu thuyết kỳ cựu.
 Nhiệm vụ của bạn là VIỆT HÓA VÀ BIÊN TẬP LẠI TOÀN BỘ VĂN BẢN dưới đây thành tiếng Việt văn học đỉnh cao, mượt mà, sâu sắc, xóa bỏ triệt để mọi dấu vết "thô cứng", "sượng sùng" hay "văn phong convert/dịch máy".
 
-${ORIGINAL_FIDELITY_PROTOCOL}
+[GIAO THỨC TỐI THƯỢNG: TRUNG THỰC NGUYÊN TÁC & CHỐNG TRÙNG LẶP (ZERO DUPLICATION MANDATE)]:
+1. 🛡️ BẢO TỒN 100% CỐT TRUYỆN & TÌNH TIẾT:
+   - Dịch đầy đủ, chính xác từng câu thoại, hành động, diễn biến tâm lý, chi tiết đạo cụ và bối cảnh.
+   - TUYỆT ĐỐI KHÔNG TỰ BỊA THÊM tình tiết lạ ngoài nguyên tác, không xuyên tạc nội dung.
+   - TUYỆT ĐỐI KHÔNG LƯỢC BỎ HAY TÓM TẮT bất kỳ phân đoạn nào.
+2. 🚫 TUYỆT ĐỐI CHỐNG TRÙNG LẶP NỘI DUNG (STRICT NO-DUPLICATION):
+   - TUYỆT ĐỐI KHÔNG lặp lại bất kỳ câu, đoạn văn hay phân cảnh nào đã dịch.
+   - TUYỆT ĐỐI KHÔNG in lại văn bản gốc, KHÔNG xuất bản song ngữ (gốc - dịch xen kẽ).
+   - TUYỆT ĐỐI KHÔNG xuất lặp lại 2 lần cùng một đoạn văn hay cả chương truyện.
+   - Mỗi câu, mỗi phân cảnh chỉ được xuất hiện DUY NHẤT một lần theo đúng mạch diễn biến thời gian.
 
 [THIẾT LẬP TÁC PHẨM]:
 - Tiêu đề chương: ${chapterName}
@@ -821,15 +830,13 @@ ${customInst ? `\n- CHỈ THỊ RIÊNG CỦA TÁC GIẢ: "${customInst}"` : ''}
    * Câu văn phải có nhịp thở: Cảnh hành động dùng câu ngắn, dứt khoát; cảnh nội tâm, phong cảnh dùng câu phức giàu nhạc tính, từ láy, từ gợi hình, gợi cảm.
    * Chấm câu thanh thoát, không viết câu lê thê dài dòng với quá nhiều liên từ thừa thãi.
 
-4. 🛡️ BẢO TỒN NGUYÊN TÁC 100% (ZERO FABRICATION / ZERO OMISSION):
-   * Phải Việt hóa ĐẦY ĐỦ 100% từng câu thoại, từng cử chỉ, từng sự kiện, từng hành động, từng đạo cụ từ đầu đến cuối bản thảo.
-   * TUYỆT ĐỐI KHÔNG TỰ BỊA THÊM tình tiết ngoài nguyên tác.
-   * TUYỆT ĐỐI KHÔNG LƯỢC BỎ HAY TÓM TẮT bất kỳ phân đoạn nào. Độ dài bản dịch phải tương đương hoặc dài hơn bản gốc nhờ việc trau chuốt lời văn.
+4. 🛡️ BẢO TỒN NGUYÊN TÁC 100%:
    * Giữ nguyên các danh từ riêng, tên nhân vật, địa danh, tên chiêu thức, bảo vật, cảnh giới tu luyện đã định hình.
 
-5. 📜 ĐỊNH DẠNG ĐẦU RA:
-   * Chỉ xuất DUY NHẤT toàn văn nội dung chương truyện đã được Việt hóa và trau chuốt hoàn chỉnh từ dòng đầu đến dòng cuối.
+5. 📜 ĐỊNH DẠNG ĐẦU RA BẮT BUỘC:
+   * Chỉ xuất DUY NHẤT toàn văn bản dịch tiếng Việt hoàn chỉnh từ dòng đầu đến dòng cuối.
    * CẤM thêm bất kỳ lời mào đầu, lời chào, lời giải thích hay ký hiệu ngoài lề nào của AI.
+   * TUYỆT ĐỐI KHÔNG lặp lại bất kỳ đoạn văn nào.
 
 ${nsfwRating}
 
