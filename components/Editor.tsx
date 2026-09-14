@@ -117,6 +117,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   }, []);
 
   const localContentRef = useRef(localContent);
+  const localTitleRef = useRef(localTitle);
   const lastSentContentRef = useRef('');
   const lastSentTitleRef = useRef('');
   const initialContentRef = useRef<string>('');
@@ -170,10 +171,11 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     touchStartX.current = null;
     touchStartY.current = null;
 
-    const minSwipeDistance = 50; // Minimum horizontal distance in px
-    const maxVerticalRatio = 1.0; // Vertical distance can be up to 100% of horizontal distance (diagonal swipe)
+    // Strict requirements for chapter swipe: horizontal intent only, so vertical reading scrolling never triggers accidental chapter switches
+    const minSwipeDistance = 90; // At least 90px horizontal
+    const maxVerticalDelta = 45; // Drift vertically at most 45px
 
-    if (Math.abs(deltaX) > minSwipeDistance && Math.abs(deltaY) / Math.abs(deltaX) < maxVerticalRatio) {
+    if (Math.abs(deltaX) >= minSwipeDistance && Math.abs(deltaY) <= maxVerticalDelta) {
       if (deltaX < 0) {
         // Swipe Left -> Next Chapter
         if (nextChapter && !isGenerating) {
@@ -193,6 +195,11 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   }, [localContent]);
 
   useEffect(() => {
+    localTitleRef.current = localTitle;
+  }, [localTitle]);
+
+  // Sync title and content from external / chapter / version changes safely without cross-overwriting
+  useEffect(() => {
     if (activeChapter) {
         const isTranslation = editorVersion === 'translation';
         const targetContent = isTranslation ? (activeChapter.translatedContent || '') : activeChapter.content;
@@ -201,14 +208,21 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
         const isChapterSwitch = prevActiveChapterIdRef.current !== activeChapterId;
         const isVersionSwitch = prevEditorVersionRef.current !== editorVersion;
         const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
-        const isExternalContentUpdate = targetContent !== localContent && targetContent !== lastSentContentRef.current;
-        const isExternalTitleUpdate = targetTitle !== localTitle && targetTitle !== lastSentTitleRef.current;
+        const isExternalContentUpdate = targetContent !== localContentRef.current && targetContent !== lastSentContentRef.current;
+        const isExternalTitleUpdate = targetTitle !== localTitleRef.current && targetTitle !== lastSentTitleRef.current;
 
-        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalContentUpdate || isExternalTitleUpdate) {
-            setLocalTitle(targetTitle);
+        // Sync content when chapter/version switches, generation finishes, or external content changes
+        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalContentUpdate) {
             setLocalContent(targetContent);
+            localContentRef.current = targetContent;
             initialContentRef.current = targetContent;
             lastSentContentRef.current = targetContent;
+        }
+
+        // Sync title independently so editing the title NEVER wipes out content edits
+        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalTitleUpdate) {
+            setLocalTitle(targetTitle);
+            localTitleRef.current = targetTitle;
             lastSentTitleRef.current = targetTitle;
         }
     }
@@ -217,13 +231,29 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     prevIsGeneratingRef.current = isGenerating;
   }, [activeChapterId, activeChapter?.content, activeChapter?.translatedContent, activeChapter?.title, activeChapter?.translatedTitle, isGenerating, editorVersion]);
 
-  useLayoutEffect(() => {
+  const adjustTextareaHeight = useCallback(() => {
     if (textareaRef.current && isEditMode) {
         const textarea = textareaRef.current;
         textarea.style.height = 'auto'; 
-        textarea.style.height = `${textarea.scrollHeight}px`;
+        textarea.style.height = `${Math.max(350, textarea.scrollHeight)}px`;
     }
-  }, [localContent, isEditMode, activeChapterId]);
+  }, [isEditMode]);
+
+  useLayoutEffect(() => {
+    if (isEditMode) {
+      adjustTextareaHeight();
+    }
+  }, [localContent, isEditMode, activeChapterId, adjustTextareaHeight]);
+
+  // Ensure textarea height is properly recalculated when switching into Edit mode
+  useEffect(() => {
+    if (isEditMode) {
+      const timer = setTimeout(() => {
+        adjustTextareaHeight();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isEditMode, adjustTextareaHeight]);
 
   // Scroll to top when switching chapters
   useEffect(() => {
@@ -247,6 +277,30 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
         }
     }
   }, [activeChapterId, editorVersion, updateChapterContent, updateChapterTitle, updateChapterTranslation]);
+
+  // Flush any pending save immediately
+  const flushSave = useCallback(() => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+    performSave(localContentRef.current, localTitleRef.current);
+  }, [performSave]);
+
+  const handleModeChange = useCallback((newEditMode: boolean) => {
+    if (isEditMode && !newEditMode) {
+      // Flush save immediately when switching from Edit to View
+      flushSave();
+    }
+    setIsEditMode(newEditMode);
+  }, [isEditMode, flushSave]);
+
+  const handleVersionChange = useCallback((newVersion: 'original' | 'translation') => {
+    if (newVersion === editorVersion) return;
+    // Flush save before changing version
+    flushSave();
+    setEditorVersion(newVersion);
+  }, [editorVersion, flushSave]);
 
   const handleManualSave = () => {
     setIsSavingManual(true);
@@ -358,6 +412,20 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     }
   };
 
+  const handleReaderSelection = () => {
+    const selection = window.getSelection();
+    const text = selection ? selection.toString().trim() : '';
+    if (text) {
+      setSelectedText(text);
+      const startIdx = localContent.indexOf(text);
+      if (startIdx !== -1) {
+        setSelectionRange({ start: startIdx, end: startIdx + text.length });
+      } else {
+        setSelectionRange(null);
+      }
+    }
+  };
+
   const togglePreset = (preset: string) => {
     setSelectedPresets(prev => {
         const next = new Set(prev);
@@ -435,32 +503,39 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
               <button onClick={redo} disabled={!canRedo || isGenerating} className={`p-1.5 rounded-md transition-colors ${canRedo ? 'text-gray-300 hover:bg-gray-800' : 'text-gray-700'}`} title="Làm lại (Ctrl+Y)"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" strokeWidth={2}/></svg></button>
           </div>
 
-          {/* Chế độ Viết / Đọc */}
-          <button 
-            onClick={() => setIsEditMode(!isEditMode)} 
-            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-all border shrink-0 flex items-center gap-1.5 text-xs font-semibold ${
-              isEditMode 
-                ? 'bg-primary-950/40 text-primary-300 border-primary-800/60 hover:bg-primary-900/50' 
-                : 'bg-gray-800/50 text-gray-300 border-gray-700 hover:text-white hover:bg-gray-800'
-            }`}
-            title={isEditMode ? "Chuyển sang Chế độ Đọc" : "Chuyển sang Chế độ Viết"}
-          >
-            {isEditMode ? (
-              <>
-                <svg className="w-3.5 h-3.5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                <span className="hidden sm:inline">Viết</span>
-              </>
-            ) : (
-              <>
-                <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                </svg>
-                <span className="hidden sm:inline">Đọc</span>
-              </>
-            )}
-          </button>
+          {/* Chế độ Sửa / Xem */}
+          <div className="flex items-center bg-gray-950 p-0.5 rounded-lg border border-gray-800 shrink-0" role="group" aria-label="Chế độ làm việc">
+            <button 
+              type="button"
+              onClick={() => handleModeChange(true)} 
+              className={`px-2 py-1 rounded-md transition-all flex items-center gap-1.5 text-xs font-semibold ${
+                isEditMode 
+                  ? 'bg-primary-600 text-white shadow-sm' 
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+              title="Chế độ Sửa (Cho phép soạn thảo văn bản và tiêu đề)"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              <span>Sửa</span>
+            </button>
+            <button 
+              type="button"
+              onClick={() => handleModeChange(false)} 
+              className={`px-2 py-1 rounded-md transition-all flex items-center gap-1.5 text-xs font-semibold ${
+                !isEditMode 
+                  ? 'bg-emerald-600 text-white shadow-sm' 
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+              title="Chế độ Xem (Giao diện đọc sách trang nhã, không hiện bàn phím, tránh gõ nhầm)"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+              <span>Xem</span>
+            </button>
+          </div>
 
           <div className="h-4 w-px bg-gray-800 mx-0.5 shrink-0"></div>
 
@@ -704,7 +779,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             <div className="flex items-center gap-1.5 p-1 bg-gray-950 rounded-xl border border-gray-800/80">
               <button
                 type="button"
-                onClick={() => setEditorVersion('original')}
+                onClick={() => handleVersionChange('original')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
                   editorVersion === 'original'
                     ? 'bg-primary-600 text-white shadow'
@@ -717,7 +792,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
 
               <button
                 type="button"
-                onClick={() => setEditorVersion('translation')}
+                onClick={() => handleVersionChange('translation')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
                   editorVersion === 'translation'
                     ? 'bg-emerald-600 text-white shadow'
@@ -815,8 +890,114 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             </div>
           )}
 
-          <input type="text" value={localTitle} onChange={handleTitleChange} className="w-full bg-transparent text-2xl md:text-4xl font-serif font-bold text-gray-100 mb-6 md:mb-8 outline-none border-b border-transparent focus:border-primary-500/20 pb-2" placeholder="Tiêu đề chương..." />
-          <div className="relative text-base md:text-lg leading-relaxed font-serif"><textarea ref={textareaRef} value={localContent} onChange={handleContentChange} onKeyDown={handleKeyDown} onSelect={handleSelection} placeholder="Hành trình bắt đầu từ đây..." className={`w-full bg-transparent text-gray-300 focus:outline-none resize-none overflow-hidden p-0 border-none m-0 leading-[1.8] ${!isEditMode ? 'hidden' : 'block'}`} spellCheck={false} readOnly={isGenerating} />{!isEditMode && <div className="whitespace-pre-wrap text-gray-300 leading-[1.8]">{localContent}</div>}</div>
+          {/* Title Presentation */}
+          {isEditMode ? (
+            <input 
+              type="text" 
+              value={localTitle} 
+              onChange={handleTitleChange} 
+              className="w-full bg-transparent text-2xl md:text-4xl font-serif font-bold text-gray-100 mb-6 md:mb-8 outline-none border-b border-transparent focus:border-primary-500/40 pb-2 transition-colors placeholder:text-gray-600" 
+              placeholder="Tiêu đề chương..." 
+            />
+          ) : (
+            <div className="mb-6 md:mb-8 pb-3 border-b border-gray-800/80 flex items-baseline justify-between gap-4">
+              <h1 className="text-2xl md:text-4xl font-serif font-bold text-gray-100 tracking-tight select-text">
+                {localTitle || 'Chưa đặt tiêu đề'}
+              </h1>
+              <button
+                type="button"
+                onClick={() => handleModeChange(true)}
+                className="shrink-0 text-xs text-gray-400 hover:text-primary-400 flex items-center gap-1 transition-colors px-2 py-1 rounded bg-gray-900 border border-gray-800 hover:border-primary-800/60"
+                title="Chuyển sang Chế độ Sửa để đổi tiêu đề"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                <span>Sửa</span>
+              </button>
+            </div>
+          )}
+
+          {/* Content Presentation */}
+          {isEditMode ? (
+            <div className="relative text-base md:text-lg leading-relaxed font-serif">
+              <textarea 
+                ref={textareaRef} 
+                value={localContent} 
+                onChange={handleContentChange} 
+                onKeyDown={handleKeyDown} 
+                onSelect={handleSelection} 
+                placeholder="Hành trình bắt đầu từ đây... (Nhập hoặc dán nội dung chương)" 
+                className="w-full min-h-[400px] bg-transparent text-gray-200 focus:outline-none resize-none overflow-hidden p-0 border-none m-0 leading-[1.8] placeholder:text-gray-600" 
+                spellCheck={false} 
+                readOnly={isGenerating} 
+              />
+            </div>
+          ) : (
+            <div 
+              className="relative text-base md:text-lg leading-relaxed font-serif select-text"
+              onMouseUp={handleReaderSelection}
+              onTouchEnd={handleReaderSelection}
+            >
+              {localContent ? (
+                <div 
+                  className="text-gray-200 leading-[1.9] space-y-4 cursor-text"
+                  onDoubleClick={() => handleModeChange(true)}
+                  title="Nhấp đúp chuột để chuyển nhanh sang Chế độ Sửa"
+                >
+                  {localContent.split('\n').map((paragraph, index) => {
+                    const trimmed = paragraph.trim();
+                    if (!trimmed) {
+                      return <div key={index} className="h-4" />;
+                    }
+                    return (
+                      <p key={index} className="indent-6 md:indent-8">
+                        {paragraph}
+                      </p>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-16 text-center border border-dashed border-gray-800 rounded-2xl p-6 bg-gray-900/30 space-y-3">
+                  <div className="text-3xl">📝</div>
+                  <p className="text-sm font-semibold text-gray-300">Chương này hiện chưa có nội dung</p>
+                  <p className="text-xs text-gray-500 max-w-sm mx-auto">
+                    {editorVersion === 'translation' 
+                      ? 'Bản dịch cho chương này chưa được tạo. Bạn có thể bấm Việt Hóa hoặc chuyển sang Chế độ Sửa để tự viết.'
+                      : 'Chuyển sang Chế độ Sửa để nhập hoặc dán nội dung bản thảo vào chương này.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleModeChange(true)}
+                    className="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg inline-flex items-center gap-1.5"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    <span>Chuyển sang Chế độ Sửa</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Reader footer indicator */}
+              {localContent && (
+                <div className="mt-12 pt-6 border-t border-gray-800/60 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-500">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    Đang xem ở Chế độ Đọc sách
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleModeChange(true)}
+                    className="text-primary-400 hover:text-primary-300 transition-colors flex items-center gap-1 underline"
+                  >
+                    <span>Chuyển sang Chế độ Sửa</span>
+                    <span>→</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
       {isRefinePanelOpen && (
@@ -1147,8 +1328,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                   </svg>
                 </div>
                 <div>
-                  <h4 className="font-bold text-primary-400 text-[13px]">Chế độ Viết / Đọc</h4>
-                  <p className="text-gray-400">Chuyển đổi giữa chế độ <span className="text-white font-medium">Viết</span> (soạn thảo trực tiếp) và <span className="text-white font-medium">Đọc</span> (không làm xuất hiện bàn phím ảo, tránh gõ nhầm khi đang thưởng thức).</p>
+                  <h4 className="font-bold text-primary-400 text-[13px]">Chế độ Sửa / Xem</h4>
+                  <p className="text-gray-400">Chuyển đổi giữa chế độ <span className="text-white font-medium">Sửa</span> (soạn thảo trực tiếp nội dung và tiêu đề) và chế độ <span className="text-white font-medium">Xem</span> (trình bày sách với thụt lề trang nhã, không hiện bàn phím ảo, tránh gõ nhầm khi đang đọc; nhấp đúp để sửa ngay, hỗ trợ bôi đen câu chữ để gọi trợ lý AI).</p>
                 </div>
               </div>
 
