@@ -9,7 +9,7 @@ interface Props {
 }
 
 export const BilingualReviewModal: React.FC<Props> = ({ isOpen, onClose, defaultChapterId }) => {
-  const { story, activeChapterId, updateChapterContent, selectChapter } = useStory();
+  const { story, activeChapterId, updateChapterContent, selectChapter, bumpEditorSyncToken } = useStory();
 
   const [leftChapterId, setLeftChapterId] = useState<string>('');
   const [rightChapterId, setRightChapterId] = useState<string>('');
@@ -120,6 +120,7 @@ export const BilingualReviewModal: React.FC<Props> = ({ isOpen, onClose, default
   const handleSaveChanges = () => {
     if (rightChapterId && story) {
       updateChapterContent(rightChapterId, rightContent, true);
+      bumpEditorSyncToken();
       setIsSaved(true);
     }
   };

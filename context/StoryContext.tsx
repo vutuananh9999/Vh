@@ -174,6 +174,8 @@ interface StoryContextType {
   
   applyPendingEdit: (mode?: 'overwrite' | 'new_chapter') => void;
   discardPendingEdit: () => void;
+  editorSyncToken: number;
+  bumpEditorSyncToken: () => void;
   isAutoTranslateEnabled: boolean;
   setIsAutoTranslateEnabled: (v: boolean) => void;
   editorVersion: 'original' | 'translation';
@@ -257,6 +259,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isSavingManual, setIsSavingManual] = useState(false);
   const [saveTrigger, setSaveTrigger] = useState(0);
   const [learnTrigger, setLearnTrigger] = useState(0);
+  const [editorSyncToken, setEditorSyncToken] = useState(0);
+  const bumpEditorSyncToken = useCallback(() => setEditorSyncToken(prev => prev + 1), []);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [videoGenerationStatus, setVideoGenerationStatus] = useState("");
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
@@ -793,7 +797,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const newFuture = [currentContent, ...chHistory.future].slice(0, MAX_HISTORY);
     setHistory(prev => ({ ...prev, [id]: { past: newPast, future: newFuture } }));
     updateChapterContent(id, previousContent, false);
-  }, [history, updateChapterContent]);
+    bumpEditorSyncToken();
+  }, [history, updateChapterContent, bumpEditorSyncToken]);
 
   const redo = useCallback(() => {
     const id = activeChapterIdRef.current;
@@ -806,7 +811,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const newPast = [...chHistory.past, currentContent].slice(-MAX_HISTORY);
     setHistory(prev => ({ ...prev, [id]: { past: newPast, future: newFuture } }));
     updateChapterContent(id, nextContent, false);
-  }, [history, updateChapterContent]);
+    bumpEditorSyncToken();
+  }, [history, updateChapterContent, bumpEditorSyncToken]);
 
   const canUndo = activeChapterId ? (history[activeChapterId]?.past.length || 0) > 0 : false;
   const canRedo = activeChapterId ? (history[activeChapterId]?.future.length || 0) > 0 : false;
@@ -1174,6 +1180,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory(updatedStory);
     storyRef.current = updatedStory;
     await storageService.saveStory(updatedStory);
+    bumpEditorSyncToken();
     setEditorVersion('original');
   };
 
@@ -1196,6 +1203,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory(updatedStory);
     storyRef.current = updatedStory;
     await storageService.saveStory(updatedStory);
+    bumpEditorSyncToken();
     setEditorVersion('original');
   };
 
@@ -1461,6 +1469,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setStory(updatedStory);
         storyRef.current = updatedStory;
         storageService.saveStory(updatedStory);
+        bumpEditorSyncToken();
       }
       setPendingEdit(null);
     }
@@ -2073,6 +2082,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,
       exportStory, exportAllStories, importStory, importStoryFromTxt, importChaptersFromTxt, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
       applyPendingEdit, discardPendingEdit,
+      editorSyncToken, bumpEditorSyncToken,
       isAutoTranslateEnabled, setIsAutoTranslateEnabled,
       translationOptions, setTranslationOptions,
       editorVersion, setEditorVersion,

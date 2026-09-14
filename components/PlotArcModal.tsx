@@ -40,7 +40,8 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         updateChapterOutline,
         updateChapterSummary,
         activeChapterId,
-        updateChapterContent
+        updateChapterContent,
+        bumpEditorSyncToken
     } = useStory();
 
     const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'debug'>('timeline');
@@ -139,6 +140,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                 await updateChapterOutline(editingChapterId, editingValue);
             } else if (editingField === 'content') {
                 await updateChapterContent(editingChapterId, editingValue);
+                bumpEditorSyncToken();
             }
             setToast("🎉 Đã cập nhật nội dung thành công!");
             setEditingChapterId(null);
@@ -398,6 +400,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                 setToast(`🎉 Đã áp dụng đề xuất Tóm tắt mới cho "${proposal.chapterTitle}"!`);
             } else if (proposal.type === 'content' && proposal.chapterId) {
                 await updateChapterContent(proposal.chapterId, proposal.content);
+                bumpEditorSyncToken();
                 setToast(`🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
             }
         } catch (e) {

@@ -64,7 +64,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     setEditorVersion,
     updateChapterTranslation,
     promoteTranslationToMain,
-    revertChapterToOriginal
+    revertChapterToOriginal,
+    editorSyncToken
   } = useStory();
 
   const [showTranslateSettings, setShowTranslateSettings] = useState(false);
@@ -121,8 +122,9 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const lastSentContentRef = useRef('');
   const lastSentTitleRef = useRef('');
   const initialContentRef = useRef<string>('');
-  const prevActiveChapterIdRef = useRef<string | null>(null);
-  const prevEditorVersionRef = useRef<'original' | 'translation'>('original');
+  const loadedChapterIdRef = useRef<string | null>(null);
+  const loadedVersionRef = useRef<'original' | 'translation'>(editorVersion);
+  const prevSyncTokenRef = useRef<number>(editorSyncToken);
   const prevIsGeneratingRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -179,11 +181,13 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
       if (deltaX < 0) {
         // Swipe Left -> Next Chapter
         if (nextChapter && !isGenerating) {
+          flushSave();
           selectChapter(nextChapter.id);
         }
       } else {
         // Swipe Right -> Previous Chapter
         if (prevChapter && !isGenerating) {
+          flushSave();
           selectChapter(prevChapter.id);
         }
       }
@@ -198,52 +202,71 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     localTitleRef.current = localTitle;
   }, [localTitle]);
 
-  // Sync title and content from external / chapter / version changes safely without cross-overwriting
+  // Sync title and content ONLY on chapter change, version change, AI generation completion, or explicit external syncToken
   useEffect(() => {
-    if (activeChapter) {
-        const isTranslation = editorVersion === 'translation';
-        const targetContent = isTranslation ? (activeChapter.translatedContent || '') : activeChapter.content;
-        const targetTitle = isTranslation ? (activeChapter.translatedTitle || activeChapter.title) : activeChapter.title;
+    if (!activeChapter) return;
 
-        const isChapterSwitch = prevActiveChapterIdRef.current !== activeChapterId;
-        const isVersionSwitch = prevEditorVersionRef.current !== editorVersion;
-        const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
-        const isExternalContentUpdate = targetContent !== localContentRef.current && targetContent !== lastSentContentRef.current;
-        const isExternalTitleUpdate = targetTitle !== localTitleRef.current && targetTitle !== lastSentTitleRef.current;
+    const isTranslation = editorVersion === 'translation';
+    const targetContent = isTranslation ? (activeChapter.translatedContent || '') : (activeChapter.content || '');
+    const targetTitle = isTranslation ? (activeChapter.translatedTitle || activeChapter.title || '') : (activeChapter.title || '');
 
-        // Sync content when chapter/version switches, generation finishes, or external content changes
-        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalContentUpdate) {
-            setLocalContent(targetContent);
-            localContentRef.current = targetContent;
-            initialContentRef.current = targetContent;
-            lastSentContentRef.current = targetContent;
+    const isChapterSwitch = loadedChapterIdRef.current !== activeChapterId;
+    const isVersionSwitch = loadedVersionRef.current !== editorVersion;
+    const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
+    const isExternalSync = prevSyncTokenRef.current !== editorSyncToken;
+
+    if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalSync) {
+      // If switching chapter, flush pending save for previous chapter first
+      if (isChapterSwitch && loadedChapterIdRef.current && saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+        if (loadedVersionRef.current === 'translation') {
+          updateChapterTranslation(loadedChapterIdRef.current, localContentRef.current, localTitleRef.current);
+        } else {
+          updateChapterContent(loadedChapterIdRef.current, localContentRef.current);
+          if (localTitleRef.current !== undefined) {
+            updateChapterTitle(loadedChapterIdRef.current, localTitleRef.current);
+          }
         }
+      }
 
-        // Sync title independently so editing the title NEVER wipes out content edits
-        if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalTitleUpdate) {
-            setLocalTitle(targetTitle);
-            localTitleRef.current = targetTitle;
-            lastSentTitleRef.current = targetTitle;
-        }
+      setLocalContent(targetContent);
+      localContentRef.current = targetContent;
+      initialContentRef.current = targetContent;
+      lastSentContentRef.current = targetContent;
+
+      setLocalTitle(targetTitle);
+      localTitleRef.current = targetTitle;
+      lastSentTitleRef.current = targetTitle;
+
+      loadedChapterIdRef.current = activeChapterId;
+      loadedVersionRef.current = editorVersion;
+      prevSyncTokenRef.current = editorSyncToken;
     }
-    prevActiveChapterIdRef.current = activeChapterId;
-    prevEditorVersionRef.current = editorVersion;
+
     prevIsGeneratingRef.current = isGenerating;
-  }, [activeChapterId, activeChapter?.content, activeChapter?.translatedContent, activeChapter?.title, activeChapter?.translatedTitle, isGenerating, editorVersion]);
+  }, [activeChapterId, editorVersion, isGenerating, editorSyncToken, activeChapter, updateChapterContent, updateChapterTitle, updateChapterTranslation]);
 
   const adjustTextareaHeight = useCallback(() => {
-    if (textareaRef.current && isEditMode) {
-        const textarea = textareaRef.current;
-        textarea.style.height = 'auto'; 
-        textarea.style.height = `${Math.max(350, textarea.scrollHeight)}px`;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const container = scrollContainerRef.current;
+    const prevScrollTop = container ? container.scrollTop : 0;
+    
+    textarea.style.height = 'auto';
+    const newHeight = Math.max(450, textarea.scrollHeight);
+    textarea.style.height = `${newHeight}px`;
+
+    if (container && container.scrollTop !== prevScrollTop) {
+      container.scrollTop = prevScrollTop;
     }
-  }, [isEditMode]);
+  }, []);
 
   useLayoutEffect(() => {
     if (isEditMode) {
       adjustTextareaHeight();
     }
-  }, [localContent, isEditMode, activeChapterId, adjustTextareaHeight]);
+  }, [isEditMode, activeChapterId, editorVersion, adjustTextareaHeight]);
 
   // Ensure textarea height is properly recalculated when switching into Edit mode
   useEffect(() => {
@@ -269,6 +292,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const performSave = useCallback((content: string, title?: string) => {
     if (activeChapterId) {
         lastSentContentRef.current = content;
+        if (title !== undefined) lastSentTitleRef.current = title;
         if (editorVersion === 'translation') {
           updateChapterTranslation(activeChapterId, content, title);
         } else {
@@ -293,7 +317,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
       flushSave();
     }
     setIsEditMode(newEditMode);
-  }, [isEditMode, flushSave]);
+    if (newEditMode) {
+      // Focus textarea and adjust height smoothly upon entering Edit mode
+      setTimeout(() => {
+        if (textareaRef.current) {
+          adjustTextareaHeight();
+          textareaRef.current.focus();
+        }
+      }, 50);
+    }
+  }, [isEditMode, flushSave, adjustTextareaHeight]);
 
   const handleVersionChange = useCallback((newVersion: 'original' | 'translation') => {
     if (newVersion === editorVersion) return;
@@ -304,7 +337,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
 
   const handleManualSave = () => {
     setIsSavingManual(true);
-    performSave(localContent);
+    flushSave();
     setTimeout(() => setIsSavingManual(false), 1000);
   };
 
@@ -324,7 +357,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
-        performSave(localContentRef.current);
+        saveTimeoutRef.current = null;
+        performSave(localContentRef.current, localTitleRef.current);
       }
     };
   }, [activeChapterId, performSave]);
@@ -332,10 +366,17 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newVal = e.target.value;
     setLocalContent(newVal);
+    localContentRef.current = newVal;
+
+    const textarea = e.target;
+    if (textarea.scrollHeight > textarea.clientHeight) {
+      textarea.style.height = `${Math.max(450, textarea.scrollHeight)}px`;
+    }
+
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
-        performSave(newVal);
-    }, 1500);
+        performSave(newVal, localTitleRef.current);
+    }, 1200);
   };
 
   const handleManualLearn = () => {
@@ -351,13 +392,12 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
     setLocalTitle(newTitle);
+    localTitleRef.current = newTitle;
     if (activeChapterId) {
-        lastSentTitleRef.current = newTitle;
-        if (editorVersion === 'translation') {
-          updateChapterTranslation(activeChapterId, localContent, newTitle);
-        } else {
-          updateChapterTitle(activeChapterId, newTitle);
-        }
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        performSave(localContentRef.current, newTitle);
+      }, 800);
     }
   };
 
@@ -365,7 +405,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     const handleKeys = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        performSave(localContent);
+        flushSave();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -471,13 +511,15 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
           isTranslation={pendingEdit.isTranslation}
         />
       )}
-      <div className="z-40 flex items-center px-3 py-1.5 bg-gray-900 border-b border-gray-800 shrink-0 gap-1.5 sm:gap-2">
+      <div className="z-40 flex items-center justify-between px-2 sm:px-3 py-1.5 bg-gray-900 border-b border-gray-800 shrink-0 gap-1 sm:gap-2">
+        {/* Cụm công cụ chính: Tối ưu kích thước vừa vặn hoàn hảo trên iPhone 13 Pro Max (428px), cuộn mượt mà nếu màn hình nhỏ hơn */}
+        <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto scrollbar-none min-w-0 pr-1 touch-pan-x">
           {/* Mobile Sidebar toggle */}
           {onOpenSidebar && (
             <button 
               onClick={onOpenSidebar}
-              className="md:hidden p-1.5 rounded-lg bg-gray-800/60 text-gray-400 hover:text-white hover:bg-gray-700 transition-all border border-gray-700 flex items-center shrink-0"
-              title="Mở Menu"
+              className="md:hidden p-1.5 rounded-lg bg-gray-800/60 text-gray-400 hover:text-white hover:bg-gray-700 transition-all border border-gray-700 flex items-center justify-center shrink-0 w-8 h-8"
+              title="Mở Menu chương"
               aria-label="Mở Sidebar"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -490,7 +532,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
           <button 
             onClick={closeStory} 
             title="Về thư viện (Lưu trữ)" 
-            className="p-1.5 rounded-lg bg-gray-800/60 text-gray-400 hover:text-white hover:bg-gray-700 transition-all border border-gray-700 flex items-center shrink-0 shadow-sm"
+            className="p-1.5 rounded-lg bg-gray-800/60 text-gray-400 hover:text-white hover:bg-gray-700 transition-all border border-gray-700 flex items-center justify-center shrink-0 w-8 h-8 shadow-sm"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -508,14 +550,14 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             <button 
               type="button"
               onClick={() => handleModeChange(true)} 
-              className={`px-2 py-1 rounded-md transition-all flex items-center gap-1.5 text-xs font-semibold ${
+              className={`px-1.5 sm:px-2 py-1 rounded-md transition-all flex items-center gap-1 text-[11px] sm:text-xs font-semibold ${
                 isEditMode 
                   ? 'bg-primary-600 text-white shadow-sm' 
                   : 'text-gray-400 hover:text-gray-200'
               }`}
               title="Chế độ Sửa (Cho phép soạn thảo văn bản và tiêu đề)"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
               </svg>
               <span>Sửa</span>
@@ -523,21 +565,21 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             <button 
               type="button"
               onClick={() => handleModeChange(false)} 
-              className={`px-2 py-1 rounded-md transition-all flex items-center gap-1.5 text-xs font-semibold ${
+              className={`px-1.5 sm:px-2 py-1 rounded-md transition-all flex items-center gap-1 text-[11px] sm:text-xs font-semibold ${
                 !isEditMode 
                   ? 'bg-emerald-600 text-white shadow-sm' 
                   : 'text-gray-400 hover:text-gray-200'
               }`}
               title="Chế độ Xem (Giao diện đọc sách trang nhã, không hiện bàn phím, tránh gõ nhầm)"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
               <span>Xem</span>
             </button>
           </div>
 
-          <div className="h-4 w-px bg-gray-800 mx-0.5 shrink-0"></div>
+          <div className="h-4 w-px bg-gray-800 mx-0.5 shrink-0 hidden sm:block"></div>
 
           {/* Cụm Dịch / Việt hoá */}
           <div className="relative inline-flex items-center shrink-0 shadow-sm">
@@ -547,16 +589,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                 translateChapter(activeChapterId!);
               }} 
               disabled={isGenerating} 
-              className={`p-1.5 sm:px-3 sm:py-1 rounded-l-lg transition-all border shrink-0 flex items-center gap-1.5 text-xs font-semibold ${
+              className={`px-2 py-1 rounded-lg sm:rounded-r-none transition-all border shrink-0 flex items-center gap-1 text-[11px] sm:text-xs font-semibold ${
                 isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-900/40 hover:border-emerald-500/60'
               } bg-emerald-950/40 text-emerald-300 border-emerald-800/60`} 
               title="Đại Biên Tập & Việt Hóa Văn Học Đỉnh Cao"
             >
-              <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
               </svg>
               <span className="text-emerald-300">Việt Hóa</span>
-              <span className="hidden md:inline px-1.5 py-0.2 rounded bg-emerald-900/60 text-[10px] text-emerald-400 font-normal">
+              <span className="hidden lg:inline px-1.5 py-0.2 rounded bg-emerald-900/60 text-[10px] text-emerald-400 font-normal">
                 {translationOptions?.styleMode === 'wuxia' ? 'Tiên Hiệp' :
                  translationOptions?.styleMode === 'fantasy' ? 'Tây Phương' :
                  translationOptions?.styleMode === 'modern' ? 'Hiện Đại' : 'Thuần Việt'}
@@ -565,7 +607,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
             <button
               type="button"
               onClick={() => setShowTranslateSettings(true)}
-              className="p-1.5 sm:py-1 -ml-px rounded-r-lg transition-all border border-l-0 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-400 hover:text-emerald-200 border-emerald-800/60"
+              className="hidden sm:flex p-1 sm:py-1 -ml-px rounded-r-lg transition-all border border-l-0 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-400 hover:text-emerald-200 border-emerald-800/60"
               title="Tùy chỉnh phong cách & Xưng hô Việt hóa"
               aria-label="Tùy chọn Việt hóa"
             >
@@ -579,192 +621,210 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
           {/* Auto Next (Dịch tự động) */}
           <button 
             onClick={() => setIsAutoTranslateEnabled(!isAutoTranslateEnabled)} 
-            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-all border shrink-0 flex items-center gap-1.5 text-xs font-semibold relative ${
+            className={`p-1.5 sm:px-2 sm:py-1 rounded-lg transition-all border shrink-0 flex items-center gap-1 text-[11px] sm:text-xs font-semibold relative ${
               isAutoTranslateEnabled 
                 ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/50' 
                 : 'bg-gray-800/40 text-gray-400 border-gray-700/70 hover:text-gray-200 hover:border-gray-600'
             }`}
             title="Dịch tự động hàng loạt & Chuyển chương tiếp theo (Auto Next)"
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
             </svg>
-            <span className="hidden sm:inline">Auto</span>
-            <div className={`w-1.5 h-1.5 rounded-full ${isAutoTranslateEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-gray-600'}`}></div>
+            <span className="hidden md:inline">Auto</span>
+            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isAutoTranslateEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-gray-600'}`}></div>
           </button>
 
           {/* Trợ lý tinh chỉnh AI */}
           <button 
             onClick={() => setIsRefinePanelOpen(!isRefinePanelOpen)} 
-            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-all border shrink-0 flex items-center gap-1.5 text-xs font-semibold ${
+            className={`p-1.5 sm:px-2 sm:py-1 rounded-lg transition-all border shrink-0 flex items-center gap-1 text-[11px] sm:text-xs font-semibold ${
               isRefinePanelOpen 
                 ? 'bg-purple-600 text-white border-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.3)]' 
                 : 'bg-purple-950/30 text-purple-300 border-purple-900/50 hover:border-purple-600/60'
             }`}
             title="Trợ lý tinh chỉnh AI (Văn phong, Đối thoại, Giác quan)"
           >
-            <span className="text-xs">✨</span>
-            <span className="hidden sm:inline">Trợ lý AI</span>
+            <span className="text-xs shrink-0">✨</span>
+            <span className="hidden md:inline">Trợ lý AI</span>
+          </button>
+        </div>
+
+        {/* Menu Công cụ (Được cố định bên phải, không bao giờ bị cắt ngoài màn hình) */}
+        <div className="relative shrink-0 pl-1" ref={toolsMenuRef}>
+          <button 
+            type="button"
+            onClick={() => setIsToolsMenuOpen(!isToolsMenuOpen)} 
+            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 ${
+              isToolsMenuOpen 
+                ? 'bg-gray-800 text-white border-primary-500 shadow-md ring-1 ring-primary-500/30' 
+                : 'bg-gray-800/60 text-gray-300 border-gray-700 hover:text-white hover:bg-gray-800 hover:border-gray-600'
+            }`}
+            title="Mở menu công cụ chương & tiện ích"
+            aria-expanded={isToolsMenuOpen}
+          >
+            <svg className="w-3.5 h-3.5 text-primary-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+            <span className="hidden sm:inline">Công cụ</span>
+            {isSummarizing && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Đang tóm tắt..."></span>
+            )}
+            <svg className={`w-3 h-3 text-gray-400 transition-transform duration-200 hidden sm:block ${isToolsMenuOpen ? 'rotate-180 text-white' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
           </button>
 
-          <div className="h-4 w-px bg-gray-800 mx-0.5 shrink-0"></div>
+          {isToolsMenuOpen && (
+            <div className="absolute right-0 top-full mt-1.5 w-64 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-800 rounded-xl shadow-2xl p-1.5 z-50 text-xs backdrop-blur-md">
+              <div className="px-2.5 py-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                Xử lý chương
+              </div>
 
-          {/* Menu Công cụ (Gộp tất cả công cụ chương, phân tích, đối chiếu vào 1 dropdown tinh gọn) */}
-          <div className="relative shrink-0 ml-auto sm:ml-0" ref={toolsMenuRef}>
-            <button 
-              type="button"
-              onClick={() => setIsToolsMenuOpen(!isToolsMenuOpen)} 
-              className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1.5 ${
-                isToolsMenuOpen 
-                  ? 'bg-gray-800 text-white border-primary-500 shadow-md ring-1 ring-primary-500/30' 
-                  : 'bg-gray-800/60 text-gray-300 border-gray-700 hover:text-white hover:bg-gray-800 hover:border-gray-600'
-              }`}
-              title="Mở menu công cụ chương & tiện ích"
-              aria-expanded={isToolsMenuOpen}
-            >
-              <svg className="w-3.5 h-3.5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-              </svg>
-              <span className="hidden sm:inline">Công cụ</span>
-              {isSummarizing && (
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Đang tóm tắt..."></span>
-              )}
-              <svg className={`w-3 h-3 text-gray-400 transition-transform duration-200 ${isToolsMenuOpen ? 'rotate-180 text-white' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-
-            {isToolsMenuOpen && (
-              <div className="absolute right-0 top-full mt-1.5 w-64 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl p-1.5 z-50 text-xs backdrop-blur-md">
-                <div className="px-2.5 py-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                  Xử lý chương
+              {/* Tóm tắt chương */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  handleSummarize();
+                }}
+                disabled={isSummarizing}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
+              >
+                <svg className={`w-4 h-4 text-emerald-400 shrink-0 ${isSummarizing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">Tóm tắt chương</div>
+                  <div className="text-[10px] text-gray-500 truncate">AI đúc kết diễn biến cốt truyện</div>
                 </div>
+              </button>
 
-                {/* Tóm tắt chương */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsMenuOpen(false);
-                    handleSummarize();
-                  }}
-                  disabled={isSummarizing}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
-                >
-                  <svg className={`w-4 h-4 text-emerald-400 shrink-0 ${isSummarizing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-semibold truncate">Tóm tắt chương</div>
-                    <div className="text-[10px] text-gray-500 truncate">AI đúc kết diễn biến cốt truyện</div>
-                  </div>
-                </button>
-
-                {/* Chia nhỏ chương */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsMenuOpen(false);
-                    setIsSplitModalOpen(true);
-                  }}
-                  disabled={isGenerating || !activeChapter?.content?.trim()}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
-                >
-                  <svg className="w-4 h-4 text-purple-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
-                  </svg>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-semibold truncate">Chia nhỏ chương</div>
-                    <div className="text-[10px] text-gray-500 truncate">Tách thành các phân đoạn nhỏ</div>
-                  </div>
-                </button>
-
-                {/* Gộp chương */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsMenuOpen(false);
-                    setIsMergeModalOpen(true);
-                  }}
-                  disabled={isGenerating || (story?.chapters.length || 0) < 2}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
-                >
-                  <svg className="w-4 h-4 text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                  </svg>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-semibold truncate">Gộp chương</div>
-                    <div className="text-[10px] text-gray-500 truncate">Nối các phần đã xử lý thành 1 chương</div>
-                  </div>
-                </button>
-
-                <div className="my-1.5 border-t border-gray-800" />
-                <div className="px-2.5 py-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                  Sáng tác & Đối chiếu
+              {/* Chia nhỏ chương */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  setIsSplitModalOpen(true);
+                }}
+                disabled={isGenerating || !activeChapter?.content?.trim()}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
+              >
+                <svg className="w-4 h-4 text-purple-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">Chia nhỏ chương</div>
+                  <div className="text-[10px] text-gray-500 truncate">Tách thành các phân đoạn nhỏ</div>
                 </div>
+              </button>
 
-                {/* Đối Soát Song Ngữ */}
+              {/* Gộp chương */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  setIsMergeModalOpen(true);
+                }}
+                disabled={isGenerating || (story?.chapters.length || 0) < 2}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors disabled:opacity-40"
+              >
+                <svg className="w-4 h-4 text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">Gộp chương</div>
+                  <div className="text-[10px] text-gray-500 truncate">Nối các phần đã xử lý thành 1 chương</div>
+                </div>
+              </button>
+
+              <div className="my-1.5 border-t border-gray-800" />
+              <div className="px-2.5 py-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                Sáng tác & Đối chiếu
+              </div>
+
+              {/* Cài đặt Việt hóa */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  setShowTranslateSettings(true);
+                }}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-emerald-300 hover:text-white hover:bg-emerald-950/50 flex items-center gap-2.5 transition-colors"
+              >
+                <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">Cài đặt phong cách Việt hóa</div>
+                  <div className="text-[10px] text-gray-500 truncate">Văn phong, đại từ xưng hô, văn cảnh</div>
+                </div>
+              </button>
+
+              {/* Đối Soát Song Ngữ */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  if (onOpenBilingualReview) {
+                    onOpenBilingualReview(activeChapterId || undefined);
+                  } else {
+                    setIsBilingualModalOpen(true);
+                  }
+                }}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors"
+              >
+                <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate">Đối soát song ngữ</div>
+                  <div className="text-[10px] text-gray-500 truncate">So sánh song song nguyên tác và dịch</div>
+                </div>
+              </button>
+
+              {/* Mạch truyện */}
+              {onOpenPlotArc && (
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     setIsToolsMenuOpen(false);
-                    if (onOpenBilingualReview) {
-                      onOpenBilingualReview(activeChapterId || undefined);
-                    } else {
-                      setIsBilingualModalOpen(true);
-                    }
+                    onOpenPlotArc();
                   }}
                   className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors"
                 >
-                  <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                  <svg className="w-4 h-4 text-rose-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                   </svg>
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold truncate">Đối soát song ngữ</div>
-                    <div className="text-[10px] text-gray-500 truncate">So sánh song song nguyên tác và dịch</div>
+                    <div className="font-semibold truncate">Mạch truyện (Plot Arc)</div>
+                    <div className="text-[10px] text-gray-500 truncate">Phân tích nhịp điệu & đồng sáng tạo</div>
                   </div>
                 </button>
+              )}
 
-                {/* Mạch truyện */}
-                {onOpenPlotArc && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setIsToolsMenuOpen(false);
-                      onOpenPlotArc();
-                    }}
-                    className="w-full text-left px-2.5 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors"
-                  >
-                    <svg className="w-4 h-4 text-rose-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold truncate">Mạch truyện (Plot Arc)</div>
-                      <div className="text-[10px] text-gray-500 truncate">Phân tích nhịp điệu & đồng sáng tạo</div>
-                    </div>
-                  </button>
-                )}
+              <div className="my-1.5 border-t border-gray-800" />
 
-                <div className="my-1.5 border-t border-gray-800" />
-
-                {/* Chú giải */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsToolsMenuOpen(false);
-                    setShowLegendModal(true);
-                  }}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors"
-                >
-                  <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span className="font-medium">Xem chú giải các nút</span>
-                </button>
-              </div>
-            )}
-          </div>
+              {/* Chú giải */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsToolsMenuOpen(false);
+                  setShowLegendModal(true);
+                }}
+                className="w-full text-left px-2.5 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800/80 flex items-center gap-2.5 transition-colors"
+              >
+                <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="font-medium">Xem chú giải các nút</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div 
         ref={scrollContainerRef} 
@@ -1066,7 +1126,12 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
               
               <div className="flex items-center gap-1 px-2 border-l border-gray-800 ml-1">
                   <button 
-                    onClick={() => prevChapter && selectChapter(prevChapter.id)} 
+                    onClick={() => {
+                      if (prevChapter && !isGenerating) {
+                        flushSave();
+                        selectChapter(prevChapter.id);
+                      }
+                    }} 
                     disabled={!prevChapter || isGenerating}
                     title="Chương trước"
                     className={`p-1.5 rounded transition-colors ${prevChapter && !isGenerating ? 'text-gray-400 hover:text-white hover:bg-gray-800' : 'text-gray-700 cursor-not-allowed'}`}
@@ -1076,7 +1141,12 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                     </svg>
                   </button>
                   <button 
-                    onClick={() => nextChapter && selectChapter(nextChapter.id)} 
+                    onClick={() => {
+                      if (nextChapter && !isGenerating) {
+                        flushSave();
+                        selectChapter(nextChapter.id);
+                      }
+                    }} 
                     disabled={!nextChapter || isGenerating}
                     title="Chương tiếp theo"
                     className={`p-1.5 rounded transition-colors ${nextChapter && !isGenerating ? 'text-gray-400 hover:text-white hover:bg-gray-800' : 'text-gray-700 cursor-not-allowed'}`}
@@ -1090,7 +1160,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
           <div className="flex items-center gap-2 relative">
               {/* Tooltip detail panel */}
               {showTokenDetails && (
-                  <div className="absolute bottom-12 right-0 bg-gray-900 border border-gray-700 rounded-2xl p-4 w-80 shadow-2xl z-50 text-xs animate-fadeIn space-y-3">
+                  <div className="absolute bottom-12 right-0 bg-gray-900 border border-gray-700 rounded-2xl p-4 w-80 max-w-[calc(100vw-2rem)] shadow-2xl z-50 text-xs animate-fadeIn space-y-3">
                       <h4 className="font-bold text-white border-b border-gray-800 pb-1.5 flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
                             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
