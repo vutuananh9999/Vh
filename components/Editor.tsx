@@ -130,10 +130,14 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const touchStartX = useRef<number | null>(null);
-  const touchStartY = useRef<number | null>(null);
-
   const activeChapter = story?.chapters.find(c => c.id === activeChapterId);
+
+  // Auto-recover activeChapterId if it becomes invalid or desynced
+  useEffect(() => {
+    if (story && story.chapters.length > 0 && !story.chapters.some(c => c.id === activeChapterId)) {
+      selectChapter(story.chapters[0].id);
+    }
+  }, [story, activeChapterId, selectChapter]);
 
   const sortedChapters = useMemo(() => {
     return story?.chapters ? [...story.chapters].sort((a, b) => a.order - b.order) : [];
@@ -142,57 +146,6 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const currentIndex = sortedChapters.findIndex(c => c.id === activeChapterId);
   const prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
   const nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    const target = e.target as HTMLElement;
-    // Do not initiate swipe if touching interactive buttons, inputs, fixed menus, or textarea when editing
-    if (
-      target.tagName === 'BUTTON' || 
-      target.closest('button') || 
-      target.tagName === 'INPUT' || 
-      target.closest('input') ||
-      target.closest('.fixed') ||
-      (isEditMode && (target.tagName === 'TEXTAREA' || target.closest('textarea')))
-    ) {
-      return;
-    }
-    touchStartX.current = e.touches[0].clientX;
-    touchStartY.current = e.touches[0].clientY;
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (touchStartX.current === null || touchStartY.current === null) return;
-
-    const touchEndX = e.changedTouches[0].clientX;
-    const touchEndY = e.changedTouches[0].clientY;
-
-    const deltaX = touchEndX - touchStartX.current;
-    const deltaY = touchEndY - touchStartY.current;
-
-    // Reset touch coordinates
-    touchStartX.current = null;
-    touchStartY.current = null;
-
-    // Strict requirements for chapter swipe: horizontal intent only, so vertical reading scrolling never triggers accidental chapter switches
-    const minSwipeDistance = 90; // At least 90px horizontal
-    const maxVerticalDelta = 45; // Drift vertically at most 45px
-
-    if (Math.abs(deltaX) >= minSwipeDistance && Math.abs(deltaY) <= maxVerticalDelta) {
-      if (deltaX < 0) {
-        // Swipe Left -> Next Chapter
-        if (nextChapter && !isGenerating) {
-          flushSave();
-          selectChapter(nextChapter.id);
-        }
-      } else {
-        // Swipe Right -> Previous Chapter
-        if (prevChapter && !isGenerating) {
-          flushSave();
-          selectChapter(prevChapter.id);
-        }
-      }
-    }
-  };
 
   useEffect(() => {
     localContentRef.current = localContent;
@@ -214,8 +167,9 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     const isVersionSwitch = loadedVersionRef.current !== editorVersion;
     const isGenerationFinish = prevIsGeneratingRef.current && !isGenerating;
     const isExternalSync = prevSyncTokenRef.current !== editorSyncToken;
+    const isContentDesynced = !localContentRef.current && !!targetContent && loadedChapterIdRef.current === activeChapterId;
 
-    if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalSync) {
+    if (isChapterSwitch || isVersionSwitch || isGenerationFinish || isExternalSync || isContentDesynced) {
       // If switching chapter OR switching version, flush pending save for previous state first
       if ((isChapterSwitch || isVersionSwitch) && loadedChapterIdRef.current && saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -507,7 +461,28 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
 
   const handleSummarize = () => { if (activeChapterId) summarizeChapter(activeChapterId); };
 
-  if (!activeChapter) return null;
+  if (!activeChapter) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-gray-950 p-6 text-center">
+        <div className="text-4xl mb-3">📖</div>
+        <div className="text-base font-semibold text-gray-300 mb-1">Đang mở bản thảo...</div>
+        <div className="text-xs text-gray-500 mb-4">Nhấn vào bên dưới để tải chương truyện.</div>
+        <button
+          type="button"
+          onClick={() => {
+            if (story && story.chapters.length > 0) {
+              selectChapter(story.chapters[0].id);
+            } else if (onOpenSidebar) {
+              onOpenSidebar();
+            }
+          }}
+          className="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg"
+        >
+          {story && story.chapters.length > 0 ? `Mở ${story.chapters[0].title || 'Chương 1'}` : 'Mở Menu chương'}
+        </button>
+      </div>
+    );
+  }
   const progressPercent = Math.min(100, (wordCount / (activeChapter.wordGoal || 2000)) * 100);
 
   return (
@@ -839,9 +814,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
       </div>
       <div 
         ref={scrollContainerRef} 
-        className="flex-1 overflow-y-auto relative custom-scrollbar bg-gray-950 pb-20"
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
+        className="flex-1 overflow-y-auto relative custom-scrollbar bg-gray-950 pb-20 overscroll-y-contain"
       >
         {isGenerating && <div className="sticky top-0 left-0 right-0 z-[60] h-1 w-full bg-gray-900 overflow-hidden"><div className="absolute top-0 bottom-0 bg-primary-500 transition-all duration-300" style={{ width: `${generationProgress}%` }}></div></div>}
         <div className="max-w-3xl mx-auto py-6 px-4 md:py-16 md:px-8 min-h-screen">
