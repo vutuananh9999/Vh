@@ -150,6 +150,7 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
     editorVersion,
     setEditorVersion,
     exportAllTranslations,
+    exportAllTranslationsEpub,
     promoteTranslationToMain,
     isAutoTranslateEnabled,
     setIsAutoTranslateEnabled,
@@ -257,26 +258,38 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
         </div>
 
         {/* Nút tác vụ nhanh */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-2">
           <button
             onClick={handleTranslateAllUntranslated}
             disabled={isGenerating}
-            className="py-2 px-2.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-xl text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+            className="w-full py-2 px-2.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-xl text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
             title="Tự động dịch lần lượt tất cả các chương chưa dịch"
           >
             <span>⚡</span>
-            <span>Dịch tự động loạt</span>
+            <span>Dịch tự động loạt chương</span>
           </button>
 
-          <button
-            onClick={exportAllTranslations}
-            disabled={stats.translatedCount === 0}
-            className="py-2 px-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 rounded-xl text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
-            title="Tải về file TXT gộp toàn bộ các chương đã Việt hóa"
-          >
-            <span>📥</span>
-            <span>Xuất toàn bộ (.TXT)</span>
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={exportAllTranslationsEpub}
+              disabled={stats.translatedCount === 0}
+              className="py-2 px-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 rounded-xl text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+              title="Xuất sách điện tử EPUB (đọc trên điện thoại, máy đọc sách Kindle, Apple Books, Kobo)"
+            >
+              <span>📖</span>
+              <span>Xuất EPUB</span>
+            </button>
+
+            <button
+              onClick={exportAllTranslations}
+              disabled={stats.translatedCount === 0}
+              className="py-2 px-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 rounded-xl text-[10px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+              title="Tải về file TXT gộp toàn bộ các chương đã Việt hóa"
+            >
+              <span>📥</span>
+              <span>Xuất TXT</span>
+            </button>
+          </div>
         </div>
 
         {/* Nút tùy chỉnh phong cách dịch */}

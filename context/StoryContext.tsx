@@ -6,6 +6,7 @@ import { geminiService } from '../services/geminiService.ts';
 import { ragService, getMagnitude } from '../services/ragService.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { cleanAndDeduplicateTranslation } from '../utils/textDeduplication.ts';
+import { parseEpubFile, downloadEpubFile } from '../utils/epubHelper.ts';
 
 const generateId = () => {
     try {
@@ -159,10 +160,13 @@ interface StoryContextType {
   suggestMainCharacter: (title: string, genre: string, synopsis: string) => Promise<any>;
   
   exportStory: (id?: string) => void;
+  exportStoryEpub: (id?: string) => Promise<void>;
   exportAllStories: () => Promise<void>;
   importStory: (file: File) => Promise<void>;
   importStoryFromTxt: (file: File) => Promise<void>;
+  importStoryFromEpub: (file: File) => Promise<void>;
   importChaptersFromTxt: (file: File) => Promise<void>;
+  importChaptersFromEpub: (file: File) => Promise<void>;
   ingestRawDocument: (file: File, categories?: ExtractionCategory[]) => Promise<void>;
 
   addCharacterManual: (char: Partial<Character>) => Promise<void>;
@@ -185,6 +189,7 @@ interface StoryContextType {
   promoteTranslationToMain: (chapterId: string) => Promise<void>;
   revertChapterToOriginal: (chapterId: string) => Promise<void>;
   exportAllTranslations: () => void;
+  exportAllTranslationsEpub: () => Promise<void>;
 }
 
 const StoryContext = createContext<StoryContextType | undefined>(undefined);
@@ -1156,12 +1161,11 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateChapterTranslation = async (chapterId: string, translatedContent: string, translatedTitle?: string) => {
     if (!storyRef.current) return;
-    const cleaned = cleanAndDeduplicateTranslation(translatedContent);
     const updatedChapters = storyRef.current.chapters.map(c => {
       if (c.id === chapterId) {
         return {
           ...c,
-          translatedContent: cleaned,
+          translatedContent: translatedContent,
           translatedTitle: translatedTitle !== undefined ? translatedTitle : c.translatedTitle,
           translationLastUpdated: Date.now()
         };
@@ -1172,7 +1176,6 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory(updatedStory);
     storyRef.current = updatedStory;
     await storageService.saveStory(updatedStory);
-    bumpEditorSyncToken();
   };
 
   const promoteTranslationToMain = async (chapterId: string) => {
@@ -1253,6 +1256,31 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     a.download = `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.txt`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportAllTranslationsEpub = async () => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+    const translatedChapters = currentStory.chapters
+      .filter(c => !!c.translatedContent && c.translatedContent.trim().length > 0)
+      .sort((a, b) => a.order - b.order);
+
+    if (translatedChapters.length === 0) {
+      alert("Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!");
+      return;
+    }
+
+    const safeTitle = `${currentStory.title} (Bản Việt Hóa)`;
+    await downloadEpubFile({
+      title: safeTitle,
+      author: 'Aetheria Studio / Dịch Thuật AI',
+      genre: currentStory.genre || 'Tiểu thuyết dịch',
+      description: currentStory.synopsis || `Bản dịch Việt hóa hoàn chỉnh gồm ${translatedChapters.length} chương.`,
+      chapters: translatedChapters.map((ch, idx) => ({
+        title: ch.translatedTitle || ch.title || `Chương ${idx + 1}`,
+        content: ch.translatedContent || ''
+      }))
+    }, `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.epub`);
   };
 
   const suggestNewChapter = async () => {
@@ -1759,6 +1787,25 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
   };
 
+  const exportStoryEpub = async (id?: string) => {
+      const targetId = id || storyRef.current?.id;
+      if (!targetId) return;
+      const s = await storageService.getStory(targetId);
+      if (!s) return;
+
+      const sortedChapters = [...s.chapters].sort((a, b) => a.order - b.order);
+      await downloadEpubFile({
+          title: s.title,
+          author: 'Aetheria Studio',
+          genre: s.genre || 'Tiểu thuyết',
+          description: s.synopsis || '',
+          chapters: sortedChapters.map((ch, idx) => ({
+              title: ch.title || `Chương ${idx + 1}`,
+              content: ch.content || ''
+          }))
+      });
+  };
+
   const exportAllStories = async () => {
       const allStories = await storageService.getAllStories();
       if (allStories.length === 0) {
@@ -1817,7 +1864,92 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       reader.readAsText(file);
   };
 
+  const importStoryFromEpub = async (file: File) => {
+      try {
+          const parsed = await parseEpubFile(file);
+          if (!parsed.chapters || parsed.chapters.length === 0) {
+              alert("Không tìm thấy nội dung chương trong file EPUB này.");
+              return;
+          }
+
+          const finalChapters: Chapter[] = [];
+          for (const raw of parsed.chapters) {
+              const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+              if (chunks.length <= 1) {
+                  finalChapters.push({
+                      id: generateId(),
+                      title: raw.title,
+                      content: raw.content,
+                      summary: '',
+                      outline: '',
+                      order: finalChapters.length + 1,
+                      wordGoal: 2000,
+                      lastUpdated: Date.now()
+                  });
+              } else {
+                  chunks.forEach((chunk, idx) => {
+                      finalChapters.push({
+                          id: generateId(),
+                          title: `${raw.title} (Phần ${idx + 1})`,
+                          content: chunk,
+                          summary: '',
+                          outline: '',
+                          order: finalChapters.length + 1,
+                          wordGoal: 2000,
+                          lastUpdated: Date.now()
+                      });
+                  });
+              }
+          }
+
+          const newStory: Story = {
+              id: generateId(),
+              title: parsed.title || file.name.replace(/\.epub$/i, ''),
+              synopsis: parsed.description || '',
+              genre: parsed.genre || 'Chưa xác định',
+              planning: '',
+              persistentDirectives: '',
+              setting: '',
+              currentTimeline: '',
+              mechanics: '',
+              interactionRules: '',
+              logistics: '',
+              trade: '',
+              economy: '',
+              maps: '',
+              officials: '',
+              writingStyle: '',
+              pov: 'Ngôi thứ 3 (Toàn tri)',
+              pronounStyle: '',
+              negativePrompt: '',
+              nsfw: false,
+              hasSystem: false,
+              isFanfiction: false,
+              referenceDocs: [],
+              evolutionLogs: [],
+              knowledgeLogs: [],
+              styleReference: '',
+              pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
+              planningChatHistory: [],
+              plotChatHistory: [],
+              characters: [],
+              createdAt: Date.now(),
+              chapters: finalChapters
+          };
+
+          await storageService.saveStory(newStory);
+          await loadStories();
+          alert(`Đã tải lên truyện thành công từ file EPUB với ${finalChapters.length} chương!`);
+      } catch (err: any) {
+          console.error("Lỗi khi đọc file EPUB:", err);
+          alert(`Lỗi khi xử lý file EPUB: ${err?.message || 'Tệp không đúng định dạng chuẩn'}`);
+      }
+  };
+
   const importStoryFromTxt = async (file: File) => {
+      if (file.name.toLowerCase().endsWith('.epub')) {
+          return importStoryFromEpub(file);
+      }
       const reader = new FileReader();
       reader.onload = async (e) => {
           try {
@@ -1932,7 +2064,70 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       reader.readAsText(file);
   };
 
+  const importChaptersFromEpub = async (file: File) => {
+      if (!storyRef.current) return;
+      try {
+          const parsed = await parseEpubFile(file);
+          if (!parsed.chapters || parsed.chapters.length === 0) {
+              alert("Không tìm thấy nội dung chương trong file EPUB này.");
+              return;
+          }
+
+          const currentChapters = [...storyRef.current.chapters];
+          let orderCounter = currentChapters.length;
+          const newChapters: Chapter[] = [];
+
+          for (const raw of parsed.chapters) {
+              const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+              if (chunks.length <= 1) {
+                  orderCounter++;
+                  newChapters.push({
+                      id: generateId(),
+                      title: raw.title,
+                      content: raw.content,
+                      summary: '',
+                      outline: '',
+                      order: orderCounter,
+                      wordGoal: 2000,
+                      lastUpdated: Date.now()
+                  });
+              } else {
+                  chunks.forEach((chunk, idx) => {
+                      orderCounter++;
+                      newChapters.push({
+                          id: generateId(),
+                          title: `${raw.title} (Phần ${idx + 1})`,
+                          content: chunk,
+                          summary: '',
+                          outline: '',
+                          order: orderCounter,
+                          wordGoal: 2000,
+                          lastUpdated: Date.now()
+                      });
+                  });
+              }
+          }
+
+          const updatedStory = {
+              ...storyRef.current,
+              chapters: [...currentChapters, ...newChapters]
+          };
+
+          setStory(updatedStory);
+          storyRef.current = updatedStory;
+          await storageService.saveStory(updatedStory);
+          bumpEditorSyncToken();
+          alert(`Đã thêm thành công ${newChapters.length} chương mới từ file EPUB!`);
+      } catch (err: any) {
+          console.error("Lỗi nạp chương từ EPUB:", err);
+          alert(`Lỗi khi nạp chương từ file EPUB: ${err?.message || 'Tệp không đúng định dạng'}`);
+      }
+  };
+
   const importChaptersFromTxt = async (file: File) => {
+      if (file.name.toLowerCase().endsWith('.epub')) {
+          return importChaptersFromEpub(file);
+      }
       if (!storyRef.current) return;
       const reader = new FileReader();
       reader.onload = async (e) => {
@@ -2020,6 +2215,19 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const ingestRawDocument = async (file: File, categories: ExtractionCategory[]) => {
       if (!storyRef.current) return;
+      if (file.name.toLowerCase().endsWith('.epub')) {
+          try {
+              const parsed = await parseEpubFile(file);
+              const fullText = parsed.chapters.map(c => `${c.title}\n${c.content}`).join('\n\n');
+              if (fullText) {
+                  await learnFromText(fullText, categories);
+              }
+          } catch (e) {
+              console.error("Lỗi đọc EPUB tài liệu:", e);
+              alert("Không thể giải nén tài liệu từ file EPUB.");
+          }
+          return;
+      }
       const reader = new FileReader();
       reader.onload = async (e) => {
           const text = e.target?.result as string;
@@ -2095,14 +2303,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,
-      exportStory, exportAllStories, importStory, importStoryFromTxt, importChaptersFromTxt, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
+      exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub, importChaptersFromTxt, importChaptersFromEpub, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
       applyPendingEdit, discardPendingEdit,
       editorSyncToken, bumpEditorSyncToken,
       isAutoTranslateEnabled, setIsAutoTranslateEnabled,
       translationOptions, setTranslationOptions,
       editorVersion, setEditorVersion,
       updateChapterTranslation, promoteTranslationToMain, revertChapterToOriginal,
-      exportAllTranslations
+      exportAllTranslations, exportAllTranslationsEpub
     }}>
       {children}
     </StoryContext.Provider>

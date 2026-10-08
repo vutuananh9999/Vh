@@ -184,10 +184,45 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
         }
       }
 
-      setLocalContent(targetContent);
-      localContentRef.current = targetContent;
-      initialContentRef.current = targetContent;
-      lastSentContentRef.current = targetContent;
+      // Check if user is actively editing in the textarea
+      const textarea = textareaRef.current;
+      const isFocused = document.activeElement === textarea;
+      const isSameChapterAndVersion = loadedChapterIdRef.current === activeChapterId && loadedVersionRef.current === editorVersion;
+
+      // If user is focused on textarea and hasn't changed chapters/versions, protect their active input
+      if (!isChapterSwitch && !isVersionSwitch && isFocused && isSameChapterAndVersion) {
+        // If content in textarea already matches, or if user is mid-typing (has dirty un-flushed content)
+        if (localContentRef.current === targetContent || saveTimeoutRef.current !== null) {
+          prevSyncTokenRef.current = editorSyncToken;
+          return;
+        }
+      }
+
+      // Capture cursor position if textarea is focused
+      const prevCursorStart = (isFocused && textarea) ? textarea.selectionStart : null;
+      const prevCursorEnd = (isFocused && textarea) ? textarea.selectionEnd : null;
+
+      if (localContentRef.current !== targetContent || isChapterSwitch || isVersionSwitch) {
+        setLocalContent(targetContent);
+        localContentRef.current = targetContent;
+        initialContentRef.current = targetContent;
+        lastSentContentRef.current = targetContent;
+
+        // Restore cursor position on next frame to prevent cursor jumping to the end/bottom
+        if (isFocused && textarea && prevCursorStart !== null && prevCursorEnd !== null) {
+          requestAnimationFrame(() => {
+            if (textareaRef.current && document.activeElement === textareaRef.current) {
+              try {
+                const safeStart = Math.min(prevCursorStart, targetContent.length);
+                const safeEnd = Math.min(prevCursorEnd, targetContent.length);
+                textareaRef.current.setSelectionRange(safeStart, safeEnd);
+              } catch {
+                // ignore
+              }
+            }
+          });
+        }
+      }
 
       setLocalTitle(targetTitle);
       localTitleRef.current = targetTitle;
@@ -217,13 +252,31 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     if (!textarea) return;
     const container = scrollContainerRef.current;
     const prevScrollTop = container ? container.scrollTop : 0;
-    
-    textarea.style.height = 'auto';
-    const newHeight = Math.max(450, textarea.scrollHeight);
-    textarea.style.height = `${newHeight}px`;
+    const isFocused = document.activeElement === textarea;
+    const prevStart = isFocused ? textarea.selectionStart : null;
+    const prevEnd = isFocused ? textarea.selectionEnd : null;
+
+    const currentHeight = textarea.offsetHeight;
+    if (textarea.scrollHeight > currentHeight) {
+      // Content expanded: grow directly without collapsing to 'auto' first to prevent cursor jumping
+      textarea.style.height = `${Math.max(450, textarea.scrollHeight)}px`;
+    } else {
+      // Content shrunk or needs recalculation: measure safely
+      textarea.style.height = 'auto';
+      const newHeight = Math.max(450, textarea.scrollHeight);
+      textarea.style.height = `${newHeight}px`;
+    }
 
     if (container && container.scrollTop !== prevScrollTop) {
       container.scrollTop = prevScrollTop;
+    }
+
+    if (isFocused && prevStart !== null && prevEnd !== null && textarea) {
+      try {
+        textarea.setSelectionRange(prevStart, prevEnd);
+      } catch {
+        // ignore
+      }
     }
   }, []);
 

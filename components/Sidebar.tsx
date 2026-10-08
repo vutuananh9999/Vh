@@ -111,7 +111,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
     learnFromText, isSearchingWeb, webInspiration, toggleEvolutionLog, deleteEvolutionLog,
     toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, ingestRawDocument,
     suggestNewChapter, isSuggestingChapter, suggestActiveChapterOutline, isGeneratingOutline,
-    triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, exportStory,
+    triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, importChaptersFromEpub, exportStory, exportStoryEpub,
     mergeChapters
   } = useStory();
   
@@ -247,7 +247,11 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
   const handleChapterTxtUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-        await importChaptersFromTxt(file);
+        if (file.name.toLowerCase().endsWith('.epub')) {
+            await importChaptersFromEpub(file);
+        } else {
+            await importChaptersFromTxt(file);
+        }
         e.target.value = '';
     }
   };
@@ -379,14 +383,20 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                       Gợi ý chương
                     </button>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-1.5">
                     <button onClick={triggerSave} disabled={isSavingManual} className={`w-full py-2 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1 border ${isSavingManual ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'}`}>
                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                       </svg>
                       {isSavingManual ? 'Đã lưu' : 'Lưu tay'}
                     </button>
-                    <button onClick={() => exportStory(story.id)} className="w-full py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1">
+                    <button onClick={() => exportStoryEpub(story.id)} className="w-full py-2 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 border border-purple-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1" title="Xuất sách điện tử EPUB (chuẩn Kindle, Apple Books, Kobo)">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                      </svg>
+                      EPUB
+                    </button>
+                    <button onClick={() => exportStory(story.id)} className="w-full py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl text-[9px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-1" title="Xuất file sao lưu JSON">
                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                       </svg>
@@ -495,8 +505,8 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                     </svg>
                     <span>Gộp</span>
                 </button>
-                <input type="file" ref={chapterTxtInputRef} className="hidden" accept=".txt" onChange={handleChapterTxtUpload} />
-                <button onClick={() => chapterTxtInputRef.current?.click()} className="px-3 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT">
+                <input type="file" ref={chapterTxtInputRef} className="hidden" accept=".txt,.epub,application/epub+zip" onChange={handleChapterTxtUpload} />
+                <button onClick={() => chapterTxtInputRef.current?.click()} className="px-3 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT hoặc EPUB">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
@@ -756,9 +766,9 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                                         <div className="flex flex-col items-center justify-center pt-5 pb-6">
                                             <svg className="w-8 h-8 mb-3 text-gray-500 group-hover:text-blue-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
                                             <p className="mb-2 text-[10px] text-gray-500"><span className="font-bold text-blue-400">Click để tải lên</span> hoặc kéo thả</p>
-                                            <p className="text-[8px] text-gray-600">TXT, MD, JSON (Max 5MB)</p>
+                                            <p className="text-[8px] text-gray-600">TXT, EPUB, MD, JSON (Max 15MB)</p>
                                         </div>
-                                        <input type="file" className="hidden" ref={docInputRef} onChange={handleDocUpload} accept=".txt,.md,.json" />
+                                        <input type="file" className="hidden" ref={docInputRef} onChange={handleDocUpload} accept=".txt,.epub,.md,.json,application/epub+zip" />
                                     </label>
                                 </div>
                             </div>

@@ -5,6 +5,7 @@ import { PRONOUN_STYLES, compilePronounStyle } from '../constants';
 import { Character, EntityType } from '../types';
 import { TokenUsageMeter } from './TokenUsageMeter';
 import { calculateWizardMetrics } from '../services/tokenEstimator';
+import { parseEpubFile } from '../utils/epubHelper';
 
 const SUGGESTED_GENRES = [
     "Tiên Hiệp", "Huyền Huyễn", "Kiếm Hiệp", "Đô Thị", 
@@ -37,9 +38,26 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
   const [fandomName, setFandomName] = useState("");
   const [fanfictionFile, setFanfictionFile] = useState<{ name: string; content: string } | null>(null);
 
-  const handleFandomScriptUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFandomScriptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+
+      if (file.name.toLowerCase().endsWith('.epub')) {
+          try {
+              const parsed = await parseEpubFile(file);
+              const combinedText = parsed.chapters.map(c => `${c.title}\n\n${c.content}`).join('\n\n---\n\n');
+              setFanfictionFile({
+                  name: file.name,
+                  content: combinedText
+              });
+              setFandomName(prev => prev || parsed.title || file.name.replace(/\.epub$/i, ""));
+          } catch (err) {
+              console.error("Lỗi đọc EPUB fanfiction:", err);
+              alert("Không thể đọc tệp EPUB này. Vui lòng thử tệp khác.");
+          }
+          return;
+      }
+
       const reader = new FileReader();
       reader.onload = (event) => {
           const content = event.target?.result as string;
@@ -458,16 +476,16 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-[10px] font-black text-primary-400 uppercase mb-2 ml-1">Tải lên file TXT truyện gốc / Tài liệu bối cảnh (không bắt buộc)</label>
+                                        <label className="block text-[10px] font-black text-primary-400 uppercase mb-2 ml-1">Tải lên file TXT / EPUB truyện gốc / Tài liệu bối cảnh (không bắt buộc)</label>
                                         <div className="flex items-center gap-3">
                                             <label className="bg-gray-850 hover:bg-gray-800 border border-gray-700 text-white font-bold py-2 px-4 rounded-xl cursor-pointer text-xs transition-colors flex items-center gap-2">
                                                 <svg className="w-4 h-4 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                                                 </svg>
-                                                Chọn File TXT
+                                                Chọn File TXT / EPUB
                                                 <input 
                                                     type="file" 
-                                                    accept=".txt" 
+                                                    accept=".txt,.epub,application/epub+zip" 
                                                     onChange={handleFandomScriptUpload} 
                                                     className="hidden" 
                                                 />

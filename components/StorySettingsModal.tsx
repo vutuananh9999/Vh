@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useStory } from '../context/StoryContext.tsx';
 import { PRONOUN_STYLES, compilePronounStyle } from '../constants.ts';
 import { ReferenceDocument } from '../types.ts';
+import { parseEpubFile } from '../utils/epubHelper.ts';
 
 type SettingsTab = 'general' | 'style' | 'dialogue' | 'world' | 'mechanics' | 'prohibitions';
 
@@ -308,45 +309,62 @@ export const StorySettingsModal: React.FC<{ isOpen: boolean; onClose: () => void
                                                     </div>
                                                 )}
                                                 <div className="flex items-center gap-3">
-                                                    <label className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white font-bold py-1.5 px-3 rounded-lg cursor-pointer text-[11px] transition-colors flex items-center gap-1.5">
+                                                    <label className="bg-gray-850 hover:bg-gray-750 border border-gray-700 text-white font-bold py-1.5 px-3 rounded-lg cursor-pointer text-[11px] transition-colors flex items-center gap-1.5">
                                                         <svg className="w-3.5 h-3.5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                                                         </svg>
-                                                        Tải lên thêm File TXT
+                                                        Tải lên thêm File TXT / EPUB
                                                         <input 
                                                             type="file" 
-                                                            accept=".txt" 
-                                                            onChange={(e) => {
+                                                            accept=".txt,.epub,application/epub+zip" 
+                                                            onChange={async (e) => {
                                                                 const file = e.target.files?.[0];
                                                                 if (!file) return;
-                                                                const reader = new FileReader();
-                                                                reader.onload = (event) => {
-                                                                    const content = event.target?.result as string;
-                                                                    setFandomFiles(prev => [
-                                                                        ...prev,
-                                                                        {
-                                                                            id: Math.random().toString(36).substring(2, 11),
-                                                                            name: file.name,
-                                                                            content: content,
-                                                                            createdAt: Date.now(),
-                                                                            analysis: {
-                                                                                summary: "Dữ liệu truyện gốc tải lên tại cài đặt.",
-                                                                                characterAnalysis: "Các nhân vật.",
-                                                                                styleAnalysis: "Hồn văn gốc.",
-                                                                                pacingAnalysis: "Nhịp điệu.",
-                                                                                writingDNA: {
-                                                                                    narrativeVoice: "Đồng nhân",
-                                                                                    vocabularyPalette: ["nguyên tác"],
-                                                                                    sentenceStructure: "Chuẩn",
-                                                                                    thematicElements: ["nguyên tác"],
-                                                                                    emotionalTone: "Trung lập",
-                                                                                    rhythm: "Vừa"
-                                                                                }
+
+                                                                let content = '';
+                                                                if (file.name.toLowerCase().endsWith('.epub')) {
+                                                                    try {
+                                                                        const parsed = await parseEpubFile(file);
+                                                                        content = parsed.chapters.map(c => `${c.title}\n\n${c.content}`).join('\n\n---\n\n');
+                                                                    } catch (err) {
+                                                                        console.error("Lỗi đọc EPUB tài liệu:", err);
+                                                                        alert("Không thể đọc file EPUB này.");
+                                                                        return;
+                                                                    }
+                                                                } else {
+                                                                    content = await new Promise((resolve) => {
+                                                                        const reader = new FileReader();
+                                                                        reader.onload = (event) => resolve((event.target?.result as string) || '');
+                                                                        reader.readAsText(file);
+                                                                    });
+                                                                }
+
+                                                                if (!content) return;
+
+                                                                setFandomFiles(prev => [
+                                                                    ...prev,
+                                                                    {
+                                                                        id: Math.random().toString(36).substring(2, 11),
+                                                                        name: file.name,
+                                                                        content: content,
+                                                                        createdAt: Date.now(),
+                                                                        analysis: {
+                                                                            summary: "Dữ liệu truyện gốc tải lên tại cài đặt.",
+                                                                            characterAnalysis: "Các nhân vật.",
+                                                                            styleAnalysis: "Hồn văn gốc.",
+                                                                            pacingAnalysis: "Nhịp điệu.",
+                                                                            writingDNA: {
+                                                                                narrativeVoice: "Đồng nhân",
+                                                                                vocabularyPalette: ["nguyên tác"],
+                                                                                sentenceStructure: "Chuẩn",
+                                                                                thematicElements: ["nguyên tác"],
+                                                                                emotionalTone: "Trung lập",
+                                                                                rhythm: "Vừa"
                                                                             }
                                                                         }
-                                                                    ]);
-                                                                };
-                                                                reader.readAsText(file);
+                                                                    }
+                                                                ]);
+                                                                e.target.value = '';
                                                             }} 
                                                             className="hidden" 
                                                         />

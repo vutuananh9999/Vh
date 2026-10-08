@@ -5,9 +5,10 @@ import { GlobalSettingsModal } from './GlobalSettingsModal.tsx';
 import { SteamOSInstallModal } from './SteamOSInstallModal.tsx';
 
 export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNew }) => {
-    const { storiesList, openStory, deleteStory, exportStory, exportAllStories, importStory, importStoryFromTxt } = useStory();
+    const { storiesList, openStory, deleteStory, exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub } = useStory();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const txtInputRef = useRef<HTMLInputElement>(null);
+    const epubInputRef = useRef<HTMLInputElement>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
     const [isSteamOSPluginOpen, setIsSteamOSPluginOpen] = useState(false);
@@ -30,6 +31,17 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
                 await importStoryFromTxt(e.target.files[0]);
             } catch (error) {
                 console.error("TXT Import failed:", error);
+            }
+        }
+        e.target.value = '';
+    };
+
+    const handleImportEpub = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            try {
+                await importStoryFromEpub(e.target.files[0]);
+            } catch (error) {
+                console.error("EPUB Import failed:", error);
             }
         }
         e.target.value = '';
@@ -111,13 +123,31 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
                             type="file" 
                             ref={txtInputRef} 
                             className="hidden" 
-                            accept=".txt" 
+                            accept=".txt,.epub,application/epub+zip" 
                             onChange={handleImportTxt} 
+                        />
+                        <input 
+                            type="file" 
+                            ref={epubInputRef} 
+                            className="hidden" 
+                            accept=".epub,application/epub+zip" 
+                            onChange={handleImportEpub} 
                         />
 
                         <button 
+                            onClick={() => epubInputRef.current?.click()}
+                            className="bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 hover:text-white font-bold py-2 px-3.5 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-purple-700/50 text-xs sm:text-sm"
+                            title="Tải lên truyện từ tệp sách điện tử EPUB"
+                        >
+                            <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                            </svg>
+                            Tải lên EPUB
+                        </button>
+                        <button 
                             onClick={() => txtInputRef.current?.click()}
-                            className="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold py-2 px-4 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-gray-700 text-xs sm:text-sm"
+                            className="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold py-2 px-3.5 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-gray-700 text-xs sm:text-sm"
+                            title="Tải lên truyện từ tệp văn bản TXT"
                         >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -126,12 +156,13 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
                         </button>
                         <button 
                             onClick={() => fileInputRef.current?.click()}
-                            className="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold py-2 px-4 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-gray-700 text-xs sm:text-sm"
+                            className="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold py-2 px-3.5 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-gray-700 text-xs sm:text-sm"
+                            title="Nhập dữ liệu sao lưu truyện định dạng JSON"
                         >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                             </svg>
-                            Nhập (Import)
+                            Nhập (JSON)
                         </button>
                         <button 
                             onClick={onCreateNew}
@@ -214,6 +245,16 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
                                                 <span className="text-gray-650">&rarr;</span>
                                             </button>
                                             
+                                            <div className="w-px bg-gray-800/60"></div>
+                                            
+                                            <button 
+                                                onClick={() => exportStoryEpub(story.id)}
+                                                className="px-2 py-1.5 text-[9px] font-black text-gray-500 hover:text-purple-400 hover:bg-gray-800/40 transition-colors flex items-center justify-center"
+                                                title="Xuất sách điện tử (EPUB)"
+                                            >
+                                                EPUB
+                                            </button>
+
                                             <div className="w-px bg-gray-800/60"></div>
                                             
                                             <button 
