@@ -406,7 +406,22 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           ...c,
           wordGoal: c.wordGoal || 2000
         }));
-        const fixedStory = { ...found, chapters: fixedChapters };
+        const cleanHistory = (historyList: ChatMessage[] | undefined) => {
+          if (!historyList) return [];
+          return historyList.map(msg => ({
+            ...msg,
+            parts: (msg.parts || []).map(p => ({
+              ...p,
+              text: (p.text || '').replace(/(?:undefined)+$/i, '').trim()
+            }))
+          }));
+        };
+        const fixedStory = { 
+          ...found, 
+          chapters: fixedChapters,
+          planningChatHistory: cleanHistory(found.planningChatHistory),
+          plotChatHistory: cleanHistory(found.plotChatHistory)
+        };
         setStory(fixedStory);
         if (fixedStory.chapters.length > 0) {
             const sorted = [...fixedStory.chapters].sort((a, b) => a.order - b.order);
@@ -496,23 +511,38 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.chatPlanningStream(history, message, currentStory);
         let fullResponse = "";
         for await (const chunk of stream) {
-            fullResponse += chunk.text;
+            if (chunk.text) {
+                fullResponse += chunk.text;
+            }
             // Record usage from last chunk
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
             
+            const cleanDisplay = fullResponse.replace(/(?:undefined)+$/i, '');
             setStory(prev => {
                 if (!prev) return null;
                 const currentHist = prev.planningChatHistory || [];
                 const newHist = [...currentHist];
                 if (newHist.length > 0 && newHist[newHist.length - 1].role === 'model') {
-                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: fullResponse }] };
+                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: cleanDisplay }] };
                 } else {
-                    newHist.push({ role: 'model', parts: [{ text: fullResponse }] });
+                    newHist.push({ role: 'model', parts: [{ text: cleanDisplay }] });
                 }
                 return { ...prev, planningChatHistory: newHist };
             });
         }
-        if (storyRef.current) await storageService.saveStory(storyRef.current);
+        if (storyRef.current) {
+            const finalClean = fullResponse.replace(/(?:undefined)+$/i, '').trim();
+            const updatedStory = {
+                ...storyRef.current,
+                planningChatHistory: (storyRef.current.planningChatHistory || []).map((m, idx, arr) => 
+                    idx === arr.length - 1 && m.role === 'model'
+                        ? { ...m, parts: [{ text: finalClean }] }
+                        : m
+                )
+            };
+            setStory(updatedStory);
+            await storageService.saveStory(updatedStory);
+        }
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
@@ -540,22 +570,37 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.chatPlotStream(history, message, currentStory, focusChapterId || activeChapterIdRef.current || undefined);
         let fullResponse = "";
         for await (const chunk of stream) {
-            fullResponse += chunk.text;
+            if (chunk.text) {
+                fullResponse += chunk.text;
+            }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
             
+            const cleanDisplay = fullResponse.replace(/(?:undefined)+$/i, '');
             setStory(prev => {
                 if (!prev) return null;
                 const currentHist = prev.plotChatHistory || [];
                 const newHist = [...currentHist];
                 if (newHist.length > 0 && newHist[newHist.length - 1].role === 'model') {
-                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: fullResponse }] };
+                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: cleanDisplay }] };
                 } else {
-                    newHist.push({ role: 'model', parts: [{ text: fullResponse }] });
+                    newHist.push({ role: 'model', parts: [{ text: cleanDisplay }] });
                 }
                 return { ...prev, plotChatHistory: newHist };
             });
         }
-        if (storyRef.current) await storageService.saveStory(storyRef.current);
+        if (storyRef.current) {
+            const finalClean = fullResponse.replace(/(?:undefined)+$/i, '').trim();
+            const updatedStory = {
+                ...storyRef.current,
+                plotChatHistory: (storyRef.current.plotChatHistory || []).map((m, idx, arr) => 
+                    idx === arr.length - 1 && m.role === 'model'
+                        ? { ...m, parts: [{ text: finalClean }] }
+                        : m
+                )
+            };
+            setStory(updatedStory);
+            await storageService.saveStory(updatedStory);
+        }
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
@@ -1427,10 +1472,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.refineChapterStream(chapter.content, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
         let accumulated = "";
         for await (const chunk of stream) { 
-            accumulated += chunk.text; 
+            if (chunk.text) {
+                accumulated += chunk.text; 
+            }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: accumulated });
+        const cleanedAccumulated = accumulated.replace(/(?:undefined)+$/i, '').trim();
+        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: cleanedAccumulated });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh văn bản.");
@@ -1452,10 +1500,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.refineSelectionStream(selection, prefix, suffix, currentStory, customInstruction);
         let accumulated = "";
         for await (const chunk of stream) { 
-            accumulated += chunk.text; 
+            if (chunk.text) {
+                accumulated += chunk.text; 
+            }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + accumulated + suffix });
+        const cleanedAccumulated = accumulated.replace(/(?:undefined)+$/i, '').trim();
+        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + cleanedAccumulated + suffix });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh phân đoạn.");

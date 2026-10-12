@@ -233,6 +233,8 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
     // Helper to strip proposed revision tags from rendering in Chat Bubble safely without RegExp backtracking
     const cleanMessageText = (text: string): string => {
+        if (!text) return "";
+        const raw = text.replace(/(?:undefined)+$/i, '').trim();
         let result = "";
         let index = 0;
         const tagPrefixes = [
@@ -242,27 +244,27 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
             '[PROPOSAL_CONTENT_CHAPTER_'
         ];
         
-        while (index < text.length) {
-            const startIdx = text.indexOf('[', index);
+        while (index < raw.length) {
+            const startIdx = raw.indexOf('[', index);
             if (startIdx === -1) {
-                result += text.substring(index);
+                result += raw.substring(index);
                 break;
             }
             
-            result += text.substring(index, startIdx);
+            result += raw.substring(index, startIdx);
             
             let foundTag = false;
             for (const prefix of tagPrefixes) {
-                if (text.startsWith(prefix, startIdx)) {
+                if (raw.startsWith(prefix, startIdx)) {
                     foundTag = true;
                     break;
                 }
             }
             
             if (foundTag) {
-                const endIdx = text.indexOf(']', startIdx);
+                const endIdx = raw.indexOf(']', startIdx);
                 if (endIdx === -1) {
-                    result += text.substring(startIdx);
+                    // Tag is not closed yet (mid-stream or truncated) - do not leak raw tag syntax into chat bubble
                     break;
                 }
                 index = endIdx + 1;
@@ -271,7 +273,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                 index = startIdx + 1;
             }
         }
-        return result.trim();
+        return result.replace(/(?:undefined)+$/i, '').trim();
     };
 
     // Helper to extract active proposals from chat logs safely without RegExp backtracking

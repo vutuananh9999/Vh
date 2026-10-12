@@ -1308,19 +1308,40 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
   },
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
-    let chat;
-    try {
-      chat = ai.chats.create({
-        model: getFlash(),
-        config: { 
-          systemInstruction: `Bạn là Kiến trúc sư Cốt truyện. Hãy tư vấn dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives}.` 
-        },
-        history: history.map(h => ({ role: h.role, parts: h.parts }))
-      });
-      const response = await chat.sendMessageStream({ message });
-      for await (const chunk of response) yield chunk as GenerateContentResponse;
-    } catch (e) {
-      console.warn("chatPlanningStream failed:", e);
+    const sanitizedHistory = (history || []).slice(-10).map(h => ({
+      role: h.role,
+      parts: (h.parts || []).map(p => ({
+        text: (p.text || "").replace(/(?:undefined)+$/i, "").trim()
+      }))
+    }));
+
+    const stream = requestThrottleService.enqueueStream(async function* () {
+      let chat;
+      try {
+        chat = ai.chats.create({
+          model: getFlash(),
+          config: { 
+            systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu. Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhiệt tình. Dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives || "Không có"}.`,
+            maxOutputTokens: 8192,
+            temperature: 0.7
+          },
+          history: sanitizedHistory
+        });
+        const response = await chat.sendMessageStream({ message });
+        for await (const chunk of response) {
+          yield chunk as GenerateContentResponse;
+        }
+      } catch (e) {
+        console.warn("chatPlanningStream failed:", e);
+      }
+    }, {
+      name: `Planning Chat: ${message.substring(0, 30)}`,
+      type: 'content_gen',
+      priority: 'high'
+    });
+
+    for await (const chunk of stream) {
+      yield chunk;
     }
   },
 
@@ -1389,7 +1410,7 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
     // Retain recent message history with generous length (up to 35,000 chars per turn)
     const sanitizedHistory = (history || []).slice(-6).map(h => {
       const parts = (h.parts || []).map(p => {
-        let text = p.text || "";
+        let text = (p.text || "").replace(/(?:undefined)+$/i, "").trim();
         if (text.length > 35000) {
           text = text.substring(0, 35000) + "... [Đã giữ 35k ký tự]";
         }
@@ -1424,7 +1445,8 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
           config: { 
             systemInstruction,
             temperature: 0.7,
-            thinkingConfig: { thinkingBudget: 2048 }
+            maxOutputTokens: 16384,
+            thinkingConfig: { thinkingBudget: 1024 }
           },
           history: sanitizedHistory
         });
@@ -1468,7 +1490,8 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
             config: { 
               systemInstruction,
               temperature: 0.7,
-              thinkingConfig: { thinkingBudget: 2048 }
+              maxOutputTokens: 16384,
+              thinkingConfig: { thinkingBudget: 1024 }
             },
             history: []
           });
