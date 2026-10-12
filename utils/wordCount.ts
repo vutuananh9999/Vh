@@ -8,8 +8,24 @@ export function fastWordCount(str: string | undefined | null): number {
     let count = 0;
     let inWord = false;
     for (let i = 0; i < str.length; i++) {
-        // Character codes > 32 represent non-whitespace characters (ASCII and all Unicode/Vietnamese characters)
-        if (str.charCodeAt(i) > 32) {
+        const code = str.charCodeAt(i);
+        // CJK characters (Chinese, Japanese, Korean) do not use whitespace between words.
+        // Each ideograph / Hanzi represents a distinct word/character unit.
+        const isCJK = (
+            (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified Ideographs
+            (code >= 0x3400 && code <= 0x4dbf) || // CJK Unified Ideographs Extension A
+            (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility Ideographs
+            (code >= 0x3040 && code <= 0x30ff) || // Hiragana & Katakana
+            (code >= 0xac00 && code <= 0xd7af)    // Hangul Syllables
+        );
+
+        if (isCJK) {
+            if (inWord) {
+                inWord = false;
+            }
+            count++;
+        } else if (code > 32) {
+            // Character codes > 32 represent non-whitespace characters (ASCII and all Unicode/Vietnamese characters)
             if (!inWord) {
                 count++;
                 inWord = true;

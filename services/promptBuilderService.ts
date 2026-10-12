@@ -788,7 +788,12 @@ Nhiệm vụ của bạn là VIỆT HÓA VÀ BIÊN TẬP LẠI TOÀN BỘ VĂN B
    - Dịch đầy đủ, chính xác từng câu thoại, hành động, diễn biến tâm lý, chi tiết đạo cụ và bối cảnh.
    - TUYỆT ĐỐI KHÔNG TỰ BỊA THÊM tình tiết lạ ngoài nguyên tác, không xuyên tạc nội dung.
    - TUYỆT ĐỐI KHÔNG LƯỢC BỎ HAY TÓM TẮT bất kỳ phân đoạn nào.
-2. 🚫 TUYỆT ĐỐI CHỐNG TRÙNG LẶP NỘI DUNG (STRICT NO-DUPLICATION):
+2. ⚡ ĐẶC TRỊ VĂN BẢN GỐC NGẮN / PHÂN ĐOẠN 300 - 500 KÝ TỰ (TUYỆT ĐỐI KHÔNG BỎ QUA):
+   - Cho dù văn bản gốc rất ngắn (khoảng 300 - 500 ký tự hay thậm chí chỉ vài dòng), TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ ĐỘNG BỎ QUA, KHÔNG ĐƯỢC COI LÀ LỖI VÀ KHÔNG ĐƯỢC TỪ CHỐI DỊCH.
+   - BẮT BUỘC dịch và trau chuốt 100% từng câu chữ từ đầu đến cuối sang tiếng Việt mượt mà.
+   - Kể cả nếu văn bản gốc là lời tựa, lời bạt, thơ từ thi ca, trích đoạn ngắn, bảng trạng thái nhân vật / hệ thống (LitRPG), hay lời nhắn của tác giả: VẪN PHẢI DỊCH ĐẦY ĐỦ 100%, TUYỆT ĐỐI KHÔNG ĐƯỢC LƯỢC BỎ.
+   - TUYỆT ĐỐI KHÔNG xuất ra văn bản trống, không xuất ra câu từ chối hay lời thông báo "Bỏ qua do văn bản quá ngắn".
+3. 🚫 TUYỆT ĐỐI CHỐNG TRÙNG LẶP NỘI DUNG (STRICT NO-DUPLICATION):
    - TUYỆT ĐỐI KHÔNG lặp lại bất kỳ câu, đoạn văn hay phân cảnh nào đã dịch.
    - TUYỆT ĐỐI KHÔNG in lại văn bản gốc, KHÔNG xuất bản song ngữ (gốc - dịch xen kẽ).
    - TUYỆT ĐỐI KHÔNG xuất lặp lại 2 lần cùng một đoạn văn hay cả chương truyện.

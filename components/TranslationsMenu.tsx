@@ -216,9 +216,13 @@ export const TranslationsMenu: React.FC<TranslationsMenuProps> = ({ onOpenBiling
   };
 
   const handleTranslateAllUntranslated = async () => {
-    const untranslated = chapters.filter(c => !c.translatedContent || c.translatedContent.trim().length === 0);
+    const untranslated = chapters.filter(c => {
+      const src = (c.originalContent || c.content || '').trim();
+      const hasTranslation = !!c.translatedContent && c.translatedContent.trim().length > 0;
+      return src.length >= 5 && !hasTranslation;
+    });
     if (untranslated.length === 0) {
-      alert("Tất cả các chương đã có bản dịch!");
+      alert("Tất cả các chương đã có bản dịch hoặc chưa có nội dung nguyên tác!");
       return;
     }
     const first = untranslated[0];

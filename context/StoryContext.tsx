@@ -1042,7 +1042,25 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     const currentStory = storyRef.current;
     const targetChapter = currentStory?.chapters.find(c => c.id === id);
-    if (!targetChapter || !targetChapter.content || targetChapter.content.length < 10) return;
+    const sourceText = (targetChapter?.originalContent || targetChapter?.content || "").trim();
+
+    // Hỗ trợ dịch mọi độ dài văn bản gốc (kể cả văn bản ngắn 300 - 500 ký tự hay trích đoạn)
+    if (!targetChapter || sourceText.length < 5) {
+      if (isAutoTranslateEnabled) {
+        const sorted = [...(storyRef.current || currentStory || { chapters: [] }).chapters]
+          .filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]'))
+          .sort((a, b) => a.order - b.order);
+        const currentIndex = sorted.findIndex(c => c.id === id);
+        if (currentIndex !== -1 && currentIndex < sorted.length - 1) {
+          const nextChapter = sorted[currentIndex + 1];
+          setTimeout(() => {
+            setActiveChapterId(nextChapter.id);
+            translateChapter(nextChapter.id, options);
+          }, 500);
+        }
+      }
+      return;
+    }
     
     const activeOptions = options || translationOptions;
     setIsGenerating(true);
@@ -1051,8 +1069,6 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     // Tự động chuyển view sang tab 'translation' để người dùng theo dõi nội dung được sinh trực tiếp
     setActiveChapterId(id);
     setEditorVersion('translation');
-
-    const sourceText = targetChapter.originalContent || targetChapter.content;
 
     try {
       // Đảm bảo originalContent luôn được lưu trữ nếu chưa có, đồng thời khởi tạo sạch translatedContent
@@ -1112,8 +1128,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       if (finalMetadata) recordUsage(finalMetadata);
 
-      // Làm sạch, khử trùng lặp và triệt tiêu mọi prompt leak / stream restart lặp lại
-      const cleanedTranslation = cleanAndDeduplicateTranslation(accumulated, sourceText);
+      // Làm sạch, khử trùng lặp; nếu bản lọc trả về rỗng thì bảo toàn bản tích lũy thô để không bao giờ bị mất bài
+      const cleanedTranslation = cleanAndDeduplicateTranslation(accumulated, sourceText) || accumulated.trim();
 
       // Lưu bền vững vào storage
       if (storyRef.current) {
@@ -1959,7 +1975,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               const lines = text.split('\n');
               const title = lines[0].trim() || file.name.replace('.txt', '');
               
-              const chapterRegex = /^(Chương|Chapter)\s+\d+/i;
+              // Hỗ trợ nhận diện tiêu đề chương tiếng Việt (Chương, Tiết, Hồi), tiếng Anh (Chapter) và tiếng Trung (第X章, 第X回, 第一章...)
+              const chapterRegex = /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
               const rawChapters: { title: string, content: string }[] = [];
               let currentTitle = 'Chương 1';
               let currentContent: string[] = [];
@@ -2136,7 +2153,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               if (!text) return;
 
               const lines = text.split('\n');
-              const chapterRegex = /^(Chương|Chapter)\s+\d+/i;
+              // Hỗ trợ nhận diện tiêu đề chương tiếng Việt (Chương, Tiết, Hồi), tiếng Anh (Chapter) và tiếng Trung (第X章, 第X回, 第一章...)
+              const chapterRegex = /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
               const rawChapters: { title: string, content: string }[] = [];
               let currentTitle = `Chương ${storyRef.current!.chapters.length + 1}`;
               let currentContent: string[] = [];

@@ -20,8 +20,11 @@ export function cleanAndDeduplicateTranslation(rawText: string, originalContent?
     /^\[BẢN DỊCH VIỆT HÓA\]:?\s*/i,
     /^\[BẢN DỊCH HOÀN CHỈNH\]:?\s*/i,
     /^\[VĂN BẢN ĐÃ VIỆT HÓA\]:?\s*/i,
-    /^Dưới đây là bản dịch.*?:\s*\n+/i,
-    /^Dưới đây là bản Việt hóa.*?:\s*\n+/i,
+    /^\[BẢN DỊCH TIẾNG VIỆT\]:?\s*/i,
+    /^\[BẢN DỊCH\]:?\s*/i,
+    /^Dưới đây là bản dịch.*?:\s*/i,
+    /^Dưới đây là bản Việt hóa.*?:\s*/i,
+    /^Sau đây là bản dịch.*?:\s*/i,
   ];
 
   for (const pattern of preamblePatterns) {
@@ -57,62 +60,69 @@ export function cleanAndDeduplicateTranslation(rawText: string, originalContent?
   }
 
   // 5. Detect and remove Stream-Restart / Generation-Restart Duplications
-  // E.g., when a generation restarted midway and emitted:
-  // [Partial chapter starting with text A] + [Full chapter starting with text A]
-  // Or [Full chapter] + [Full chapter duplicate]
+  // Only applies to longer documents where a genuine stream abort restarted the chapter
   cleaned = removeStreamRestartDuplicates(cleaned);
 
   // 6. Detect and deduplicate adjacent identical or near-identical paragraphs
   cleaned = deduplicateConsecutiveParagraphs(cleaned);
 
-  return cleaned.trim();
+  // Fallback: If deduplication somehow wiped the entire text, preserve the trimmed raw text
+  const finalResult = cleaned.trim();
+  return finalResult || rawText.trim();
 }
 
 /**
- * Detects if the beginning of the text repeats later in the text due to stream/model fallback restarts
+ * Detects if the beginning of the text repeats later in the text due to stream/model fallback restarts.
+ * Strictly limited to large texts (> 500 characters) to protect short texts (300-500 characters)
+ * and poems/dialogues from being accidentally truncated.
  */
 function removeStreamRestartDuplicates(text: string): string {
-  if (text.length < 150) return text;
+  // Never truncate short texts (like 300-500 character chapters or poems)
+  if (text.length < 500) return text;
 
   // Extract a signature prefix from the start (first 60 to 120 characters, or first sentence/paragraph)
   const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
-  if (paragraphs.length === 0) return text;
+  if (paragraphs.length < 2) return text;
 
   const firstPara = paragraphs[0];
   // Determine sample size
-  const sampleLength = Math.min(80, Math.max(35, Math.floor(firstPara.length * 0.8)));
+  const sampleLength = Math.min(80, Math.max(45, Math.floor(firstPara.length * 0.8)));
   const sample = firstPara.slice(0, sampleLength);
 
-  if (sample.length >= 30) {
-    // Search for the sample in the remainder of text (starting after sampleLength)
-    let searchPos = sampleLength;
-    while (searchPos < text.length) {
+  if (sample.length >= 40) {
+    // Search for the sample starting well into the text (at least 200 characters)
+    let searchPos = Math.max(200, sampleLength);
+    while (searchPos < text.length - 100) {
       const foundIdx = text.indexOf(sample, searchPos);
       if (foundIdx === -1) break;
 
-      // Found the signature sample repeating at foundIdx!
-      // Check if this looks like a restart of the chapter:
-      // Compare the next 60 characters from 0 and foundIdx
-      const compareLen = Math.min(60, text.length - foundIdx);
-      const prefixMatch = text.slice(0, compareLen) === text.slice(foundIdx, foundIdx + compareLen);
+      // Must be at the start of a paragraph/line to avoid mid-sentence false positives
+      const prevChar = text.charAt(foundIdx - 1);
+      const isLineBoundary = prevChar === '\n' || prevChar === '\r' || prevChar === ' ';
 
-      if (prefixMatch) {
-        const partBefore = text.slice(0, foundIdx).trim();
-        const partAfter = text.slice(foundIdx).trim();
+      if (isLineBoundary) {
+        // Compare the next 60 characters from 0 and foundIdx
+        const compareLen = Math.min(60, text.length - foundIdx);
+        const prefixMatch = text.slice(0, compareLen) === text.slice(foundIdx, foundIdx + compareLen);
 
-        // Case A: Part before is shorter (aborted stream) and part after is longer (full stream)
-        // -> Discard the aborted partial prefix and keep the complete stream!
-        if (partAfter.length >= partBefore.length * 0.7) {
-          text = partAfter;
-          // Recursively re-check in case it repeated more than once
-          return removeStreamRestartDuplicates(text);
-        }
+        if (prefixMatch) {
+          const partBefore = text.slice(0, foundIdx).trim();
+          const partAfter = text.slice(foundIdx).trim();
 
-        // Case B: Part after is an identical duplicate of part before (or truncated duplicate appended)
-        // -> Keep part before!
-        if (partBefore.startsWith(partAfter) || partBefore.length >= partAfter.length) {
-          text = partBefore;
-          return removeStreamRestartDuplicates(text);
+          // Case A: Part before is shorter (aborted stream) and part after is longer (full stream)
+          // -> Discard the aborted partial prefix and keep the complete stream!
+          if (partAfter.length >= partBefore.length * 0.8 && partAfter.length > 200) {
+            text = partAfter;
+            // Recursively re-check in case it repeated more than once
+            return removeStreamRestartDuplicates(text);
+          }
+
+          // Case B: Part after is an identical duplicate of part before (or truncated duplicate appended)
+          // -> Keep part before!
+          if (partBefore.startsWith(partAfter) || (partBefore.length >= partAfter.length && partBefore.length > 200)) {
+            text = partBefore;
+            return removeStreamRestartDuplicates(text);
+          }
         }
       }
 
@@ -124,7 +134,7 @@ function removeStreamRestartDuplicates(text: string): string {
   const halfLen = Math.floor(text.length / 2);
   for (let delta = -20; delta <= 20; delta++) {
     const mid = halfLen + delta;
-    if (mid > 50 && mid < text.length - 50) {
+    if (mid > 200 && mid < text.length - 200) {
       const firstHalf = text.slice(0, mid).trim();
       const secondHalf = text.slice(mid).trim();
       if (firstHalf === secondHalf) {
