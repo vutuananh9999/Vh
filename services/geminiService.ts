@@ -1323,8 +1323,9 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
           model: getFlash(),
           config: { 
             systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu. Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhiệt tình. Dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives || "Không có"}.`,
-            maxOutputTokens: 32768,
-            temperature: 0.7
+            maxOutputTokens: 65536,
+            temperature: 0.7,
+            thinkingConfig: { thinkingBudget: 0 }
           },
           history: sanitizedHistory
         });
@@ -1403,8 +1404,9 @@ Bạn hãy trao đổi nhiệt tình, mang tính phân tích sắc bén và th�
 - Để đề xuất cập nhật Tóm tắt một chương cụ thể (thay <chapterId> bằng ID của chương đó):
 [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <nội dung tóm tắt mới>]
 
-- Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID của chương đó, ví dụ [PROPOSAL_CONTENT_CHAPTER_12345: toàn bộ nội dung bản thảo hoàn chỉnh]):
-[PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh, đầy đủ 100% từ đầu đến cuối>]
+- Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID hoặc số thứ tự của chương, ví dụ [PROPOSAL_CONTENT_CHAPTER_2: toàn bộ nội dung bản thảo hoàn chỉnh]):
+[PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh, đầy đủ 100% từ đầu đến cuối không tóm tắt>]
+- Nếu đang VIẾT TIẾP phần còn lại của một chương dở dang: Hãy viết tiếp tục toàn văn liền mạch và bọc trong thẻ [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <nội dung viết tiếp hoàn chỉnh>].
 
 Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi tiết, phản hồi bằng tiếng Việt.`;
 
@@ -1446,7 +1448,8 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
           config: { 
             systemInstruction,
             temperature: 0.7,
-            maxOutputTokens: 65536
+            maxOutputTokens: 65536,
+            thinkingConfig: { thinkingBudget: 0 }
           },
           history: sanitizedHistory
         });
@@ -1491,7 +1494,8 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
             config: { 
               systemInstruction,
               temperature: 0.7,
-              maxOutputTokens: 65536
+              maxOutputTokens: 65536,
+              thinkingConfig: { thinkingBudget: 0 }
             },
             history: []
           });

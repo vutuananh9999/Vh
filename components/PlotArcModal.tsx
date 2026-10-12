@@ -74,6 +74,11 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     const [generatingContentChapterId, setGeneratingContentChapterId] = useState<string | null>(null);
 
     const [expandedChapters, setExpandedChapters] = useState<Record<string, boolean>>({});
+    const [expandedProposals, setExpandedProposals] = useState<Record<string, boolean>>({});
+
+    const toggleExpandProposal = useCallback((key: string) => {
+        setExpandedProposals(prev => ({ ...prev, [key]: !prev[key] }));
+    }, []);
 
     const toggleChapterExpand = useCallback((chapterId: string) => {
         setExpandedChapters(prev => ({
@@ -231,10 +236,10 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         await sendPlotChatMessage(textToSend, focusedId);
     };
 
-    // Helper to resolve chapter flexibly by ID, order number ("2", "Chương 2"), or title
+    // Helper to resolve chapter flexibly by ID, order number ("2", "Chương 2", "c2"), or title
     const resolveChapter = useCallback((identifier: string | undefined): Chapter | undefined => {
         if (!chapters || chapters.length === 0) return undefined;
-        if (!identifier) {
+        if (!identifier || !identifier.trim()) {
             return (activeChapterId ? chapters.find(c => c.id === activeChapterId) : undefined) || chapters[0];
         }
 
@@ -243,12 +248,15 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         let match = chapters.find(c => c.id === cleanId);
         if (match) return match;
 
-        // 2. Numeric order match (e.g. "2" or "Chương 2" or "chuong 2")
+        // 2. Numeric order match (e.g. "2" or "Chương 2" or "chuong 2" or "c2")
         const numMatch = cleanId.match(/\d+/);
         if (numMatch) {
             const orderNum = parseInt(numMatch[0], 10);
             match = chapters.find(c => c.order === orderNum);
             if (match) return match;
+            if (orderNum >= 1 && orderNum <= chapters.length) {
+                return chapters[orderNum - 1];
+            }
         }
 
         // 3. Title match (case-insensitive substring)
@@ -264,6 +272,8 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     }, [chapters, activeChapterId]);
 
     // Parse message into conversational text and interactive proposal blocks safely
+    // CRITICAL: A proposal can ONLY be ended by the next [PROPOSAL_ tag or end of text.
+    // Internal markdown brackets like [1], [Hệ thống], [Keng!] must NEVER prematurely cut off the chapter manuscript!
     const parseMessageData = useCallback((text: string): { cleanText: string; proposals: Proposal[] } => {
         if (!text) return { cleanText: "", proposals: [] };
         const raw = text.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
@@ -272,103 +282,110 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         let cleanText = "";
         let index = 0;
 
-        const tagPrefixes = [
-            { prefix: '[PROPOSAL_PLANNING:', type: 'planning' as const },
-            { prefix: '[PROPOSAL_OUTLINE_CHAPTER_', type: 'outline' as const },
-            { prefix: '[PROPOSAL_SUMMARY_CHAPTER_', type: 'summary' as const },
-            { prefix: '[PROPOSAL_CONTENT_CHAPTER_', type: 'content' as const }
-        ];
-
         while (index < raw.length) {
-            const startIdx = raw.indexOf('[', index);
-            if (startIdx === -1) {
+            // Match the beginning of any proposal tag
+            const match = raw.slice(index).match(/\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)/i);
+            if (!match || match.index === undefined) {
                 cleanText += raw.substring(index);
                 break;
             }
 
+            const startIdx = index + match.index;
+            // Any text prior to this proposal belongs to conversational cleanText
             cleanText += raw.substring(index, startIdx);
 
-            let matchedTag: typeof tagPrefixes[0] | null = null;
-            for (const tag of tagPrefixes) {
-                if (raw.startsWith(tag.prefix, startIdx)) {
-                    matchedTag = tag;
-                    break;
-                }
-            }
+            const tagTypeRaw = match[1].toUpperCase();
+            const prefixStr = match[0];
+            const afterPrefixStart = startIdx + prefixStr.length;
 
-            if (matchedTag) {
-                // Find closing tag delimiter without cutting off internal markdown/brackets like [1] or [Hệ thống]
-                let endIdx = -1;
-                // Check \n] first
-                const newlineBracket = raw.indexOf('\n]', startIdx + matchedTag.prefix.length);
-                if (newlineBracket !== -1) {
-                    endIdx = newlineBracket + 1;
-                } else {
-                    // Check bracket followed by newline or next tag or end-of-string
-                    let searchPos = startIdx + matchedTag.prefix.length;
-                    while (searchPos < raw.length) {
-                        const nextBracket = raw.indexOf(']', searchPos);
-                        if (nextBracket === -1) break;
-                        const charAfter = raw.charAt(nextBracket + 1);
-                        if (charAfter === '' || charAfter === '\n' || charAfter === '\r' || charAfter === ' ' || raw.startsWith('[PROPOSAL_', nextBracket + 1)) {
-                            endIdx = nextBracket;
-                            break;
-                        }
-                        searchPos = nextBracket + 1;
-                    }
-                }
+            // Find where this proposal ends:
+            // 1. Next proposal tag: [PROPOSAL_
+            // 2. A closing bracket on its own line: \n\]\s*(?:\n|$)
+            // 3. A closing bracket at the very end of the raw text: \]\s*$
+            // 4. Or the end of the text (preserving streaming and unclosed outputs completely)
+            const remainingFromTag = raw.slice(afterPrefixStart);
+            const nextTagMatch = remainingFromTag.match(/\[PROPOSAL_(?:PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)/i);
+            
+            let proposalEndIdx = -1;
+            let nextIndex = raw.length;
 
-                // If not closed yet (streaming or truncated), preserve all remaining text as proposal content
-                const isTruncated = endIdx === -1;
-                const tagContent = isTruncated 
-                    ? raw.substring(startIdx) 
-                    : raw.substring(startIdx, endIdx + 1);
-
-                if (matchedTag.type === 'planning') {
-                    const content = tagContent.substring(
-                        matchedTag.prefix.length, 
-                        isTruncated ? undefined : tagContent.length - 1
-                    ).trim();
-                    if (content) {
-                        proposals.push({
-                            type: 'planning',
-                            content,
-                            originalContent: story?.planning || ""
-                        });
-                    }
-                } else {
-                    const colonIdx = tagContent.indexOf(':', matchedTag.prefix.length - 1);
-                    if (colonIdx !== -1) {
-                        const rawId = tagContent.substring(matchedTag.prefix.length, colonIdx).trim();
-                        const content = tagContent.substring(
-                            colonIdx + 1, 
-                            isTruncated ? undefined : tagContent.length - 1
-                        ).trim();
-                        const ch = resolveChapter(rawId);
-                        if (content && ch) {
-                            proposals.push({
-                                type: matchedTag.type,
-                                chapterId: ch.id,
-                                chapterTitle: ch.title,
-                                content,
-                                originalContent: matchedTag.type === 'content' ? (ch.content || "") : matchedTag.type === 'outline' ? (ch.outline || "") : (ch.summary || "")
-                            });
-                        }
-                    }
-                }
-
-                index = isTruncated ? raw.length : endIdx + 1;
+            if (nextTagMatch && nextTagMatch.index !== undefined) {
+                const endOfCurrentProposal = afterPrefixStart + nextTagMatch.index;
+                proposalEndIdx = endOfCurrentProposal;
+                nextIndex = endOfCurrentProposal;
             } else {
-                cleanText += '[';
-                index = startIdx + 1;
+                const isolatedClosingBracket = remainingFromTag.search(/\n\]\s*$/);
+                if (isolatedClosingBracket !== -1) {
+                    proposalEndIdx = afterPrefixStart + isolatedClosingBracket;
+                    nextIndex = raw.length;
+                } else if (remainingFromTag.endsWith(']')) {
+                    proposalEndIdx = raw.length - 1;
+                    nextIndex = raw.length;
+                } else {
+                    proposalEndIdx = raw.length;
+                    nextIndex = raw.length;
+                }
             }
+
+            const rawTagBody = raw.substring(afterPrefixStart, proposalEndIdx);
+
+            if (tagTypeRaw === 'PLANNING') {
+                const cleanBody = rawTagBody
+                    .replace(/^[:\]\s]+/, '')
+                    .replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '')
+                    .trim();
+                if (cleanBody) {
+                    proposals.push({
+                        type: 'planning',
+                        content: cleanBody,
+                        originalContent: story?.planning || ""
+                    });
+                }
+            } else {
+                const type: 'outline' | 'summary' | 'content' = 
+                    tagTypeRaw.startsWith('OUTLINE') ? 'outline' :
+                    tagTypeRaw.startsWith('SUMMARY') ? 'summary' : 'content';
+
+                // Look for delimiter separating chapter ID from content: e.g. "2: ...", "2]: ...", "2]\n...", "2\n..."
+                const headerMatch = rawTagBody.match(/^([^:\n\]]+)(?:\]\s*:?|:\s*|\n\s*)([\s\S]*)$/);
+                let rawId = "";
+                let bodyContent = "";
+
+                if (headerMatch) {
+                    rawId = headerMatch[1].trim();
+                    bodyContent = headerMatch[2].trim();
+                } else {
+                    rawId = rawTagBody.split('\n')[0].replace(/[\]:]/g, '').trim();
+                    bodyContent = rawTagBody.slice(rawId.length).replace(/^[:\]\s]+/, '').trim();
+                }
+
+                bodyContent = bodyContent.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
+
+                const resolvedCh = resolveChapter(rawId);
+                const fallbackCh = resolvedCh || (activeChapterId ? chapters?.find(c => c.id === activeChapterId) : undefined) || (chapters && chapters[0]);
+                
+                const chapterId = fallbackCh?.id || rawId || 'ch_target';
+                const chapterTitle = fallbackCh?.title || (rawId ? `Chương ${rawId}` : 'Chương được chọn');
+
+                if (bodyContent) {
+                    proposals.push({
+                        type,
+                        chapterId,
+                        chapterTitle,
+                        content: bodyContent,
+                        originalContent: type === 'content' ? (fallbackCh?.content || "") : type === 'outline' ? (fallbackCh?.outline || "") : (fallbackCh?.summary || "")
+                    });
+                }
+            }
+
+            index = nextIndex;
         }
 
         return {
             cleanText: cleanText.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim(),
             proposals
         };
-    }, [story?.planning, resolveChapter]);
+    }, [story?.planning, resolveChapter, activeChapterId, chapters]);
 
     // Helper to extract active proposals from chat logs
     const parseProposals = useCallback((messages: ChatMessage[]): Proposal[] => {
@@ -391,26 +408,53 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         return Object.values(latestMap);
     }, [parseMessageData]);
 
-    const applyProposal = async (proposal: Proposal) => {
+    const applyProposal = async (proposal: Proposal, mode: 'replace' | 'append' = 'replace') => {
         try {
             if (proposal.type === 'planning') {
-                await updateStorySettings({ planning: proposal.content });
+                const newPlanning = mode === 'append' && story?.planning 
+                    ? `${story.planning}\n\n${proposal.content}` 
+                    : proposal.content;
+                await updateStorySettings({ planning: newPlanning });
                 setToast("🎉 Đã áp dụng đề xuất Dàn ý tổng thể mới thành công!");
             } else if (proposal.type === 'outline' && proposal.chapterId) {
-                await updateChapterOutline(proposal.chapterId, proposal.content);
+                const currentCh = chapters?.find(c => c.id === proposal.chapterId);
+                const newOutline = mode === 'append' && currentCh?.outline 
+                    ? `${currentCh.outline}\n\n${proposal.content}` 
+                    : proposal.content;
+                await updateChapterOutline(proposal.chapterId, newOutline);
                 setToast(`🎉 Đã áp dụng đề xuất Đề cương mới cho "${proposal.chapterTitle}"!`);
             } else if (proposal.type === 'summary' && proposal.chapterId) {
-                await updateChapterSummary(proposal.chapterId, proposal.content);
+                const currentCh = chapters?.find(c => c.id === proposal.chapterId);
+                const newSummary = mode === 'append' && currentCh?.summary 
+                    ? `${currentCh.summary}\n\n${proposal.content}` 
+                    : proposal.content;
+                await updateChapterSummary(proposal.chapterId, newSummary);
                 setToast(`🎉 Đã áp dụng đề xuất Tóm tắt mới cho "${proposal.chapterTitle}"!`);
             } else if (proposal.type === 'content' && proposal.chapterId) {
-                await updateChapterContent(proposal.chapterId, proposal.content);
+                const currentCh = chapters?.find(c => c.id === proposal.chapterId);
+                const newContent = mode === 'append' && currentCh?.content 
+                    ? `${currentCh.content}\n\n${proposal.content}` 
+                    : proposal.content;
+                await updateChapterContent(proposal.chapterId, newContent);
                 bumpEditorSyncToken();
-                setToast(`🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
+                setToast(mode === 'append' 
+                    ? `🎉 Đã ghép nối tiếp nội dung vào Bản thảo "${proposal.chapterTitle}"!` 
+                    : `🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
             }
         } catch (e) {
             setToast("❌ Lỗi khi áp dụng đề xuất.");
         }
     };
+
+    const handleContinueWritingProposal = useCallback((prop: Proposal) => {
+        const lastExcerpt = prop.content.slice(-150).trim();
+        const prompt = `Phần bản thảo chương "${prop.chapterTitle}" ở trên viết rất tốt nhưng dường như chưa ra hết toàn bộ nội dung (hoặc đang dừng ở giữa chừng).
+Hãy VIẾT TIẾP TỤC toàn bộ phần còn lại, nối tiếp mượt mà ngay từ câu cuối cùng:
+"...${lastExcerpt}"
+Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ trọn vẹn từng chi tiết, lời thoại và bối cảnh cho đến hết chương trong thẻ:
+[PROPOSAL_CONTENT_CHAPTER_${prop.chapterId}: <nội dung viết tiếp hoàn chỉnh>]`;
+        handleSendChat(prompt);
+    }, [handleSendChat]);
 
     const activeProposals = useMemo(() => parseProposals(story?.plotChatHistory || []), [story?.plotChatHistory, chapters]);
 
@@ -1006,23 +1050,58 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                                                 <div className="whitespace-pre-wrap">{parsed.cleanText}</div>
                                                             )}
 
-                                                            {parsed.proposals.map((prop, pIdx) => (
-                                                                <div key={pIdx} className={`${parsed.cleanText ? 'mt-3 pt-3 border-t border-purple-500/20' : ''} font-sans not-italic text-left space-y-2`}>
+                                                             {parsed.proposals.map((prop, pIdx) => {
+                                                                const propKey = `${prop.type}_${prop.chapterId || 'p'}_${pIdx}`;
+                                                                const isExpanded = !!expandedProposals[propKey];
+                                                                const wordCount = prop.content.trim().split(/\s+/).filter(Boolean).length;
+
+                                                                return (
+                                                                <div key={pIdx} className={`${parsed.cleanText ? 'mt-3 pt-3 border-t border-purple-500/20' : ''} font-sans not-italic text-left space-y-2.5`}>
                                                                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                                                                        <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300 font-bold text-xs flex items-center gap-1.5 border border-purple-500/30">
-                                                                            <span>📝</span>
-                                                                            <span>{prop.type === 'content' ? `Bản Thảo: ${prop.chapterTitle}` : prop.type === 'outline' ? `Đề Cương: ${prop.chapterTitle}` : prop.type === 'summary' ? `Tóm Tắt: ${prop.chapterTitle}` : 'Dàn Ý Truyện'}</span>
-                                                                        </span>
-                                                                        <div className="flex items-center gap-1.5">
+                                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                                            <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300 font-bold text-xs flex items-center gap-1.5 border border-purple-500/30">
+                                                                                <span>📝</span>
+                                                                                <span>{prop.type === 'content' ? `Bản Thảo: ${prop.chapterTitle}` : prop.type === 'outline' ? `Đề Cương: ${prop.chapterTitle}` : prop.type === 'summary' ? `Tóm Tắt: ${prop.chapterTitle}` : 'Dàn Ý Truyện'}</span>
+                                                                            </span>
+                                                                            <span className="px-2 py-0.5 rounded bg-gray-900 text-gray-300 text-[11px] font-mono border border-gray-750">
+                                                                                ~{wordCount.toLocaleString()} từ
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                                            {/* Áp dụng ghi đè */}
                                                                             <button 
                                                                                 type="button"
-                                                                                onClick={() => applyProposal(prop)}
+                                                                                onClick={() => applyProposal(prop, 'replace')}
                                                                                 className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
-                                                                                title="Đồng bộ ngay vào bản thảo"
+                                                                                title="Đồng bộ ngay vào bản thảo (ghi đè)"
                                                                             >
                                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                                                                                Áp dụng vào chương
+                                                                                Áp dụng
                                                                             </button>
+                                                                            {/* Ghép nối tiếp */}
+                                                                            {prop.type === 'content' && (
+                                                                                <button 
+                                                                                    type="button"
+                                                                                    onClick={() => applyProposal(prop, 'append')}
+                                                                                    className="px-2.5 py-1 rounded-lg bg-teal-700 hover:bg-teal-600 text-teal-100 font-bold text-xs shadow transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
+                                                                                    title="Ghép nối tiếp vào cuối bản thảo hiện tại mà không ghi đè"
+                                                                                >
+                                                                                    ➕ Ghép nối tiếp
+                                                                                </button>
+                                                                            )}
+                                                                            {/* Viết tiếp phần còn lại */}
+                                                                            {prop.type === 'content' && (
+                                                                                <button 
+                                                                                    type="button"
+                                                                                    onClick={() => handleContinueWritingProposal(prop)}
+                                                                                    disabled={isPlotPlanning}
+                                                                                    className="px-2 py-1 rounded-lg bg-purple-700 hover:bg-purple-600 text-purple-100 font-bold text-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                                                                                    title="Yêu cầu AI viết tiếp tục toàn bộ đoạn còn lại nếu văn bản bị dừng nửa chừng"
+                                                                                >
+                                                                                    ⚡ Viết tiếp
+                                                                                </button>
+                                                                            )}
+                                                                            {/* Sao chép */}
                                                                             <button 
                                                                                 type="button"
                                                                                 onClick={() => {
@@ -1033,13 +1112,23 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                                                             >
                                                                                 Sao chép
                                                                             </button>
+                                                                            {/* Mở rộng / Thu gọn */}
+                                                                            <button 
+                                                                                type="button"
+                                                                                onClick={() => toggleExpandProposal(propKey)}
+                                                                                className="px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-all cursor-pointer"
+                                                                                title={isExpanded ? "Thu gọn hộp xem" : "Mở rộng toàn bộ văn bản"}
+                                                                            >
+                                                                                {isExpanded ? "Thu gọn" : "Mở rộng"}
+                                                                            </button>
                                                                         </div>
                                                                     </div>
-                                                                    <div className="max-h-96 overflow-y-auto p-3 rounded-xl bg-gray-950/80 border border-gray-750 text-xs font-serif leading-relaxed text-gray-200 whitespace-pre-wrap select-text custom-scrollbar">
+                                                                    <div className={`${isExpanded ? 'max-h-none' : 'max-h-96'} overflow-y-auto p-3.5 rounded-xl bg-gray-950/90 border border-gray-750 text-xs sm:text-[13px] font-serif leading-relaxed text-gray-200 whitespace-pre-wrap select-text custom-scrollbar`}>
                                                                         {prop.content}
                                                                     </div>
                                                                 </div>
-                                                            ))}
+                                                                );
+                                                            })}
                                                         </div>
                                                     </div>
                                                 );
@@ -1068,7 +1157,33 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
 
                                     {/* Chat Input bar */}
-                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0">
+                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 space-y-2">
+                                        {/* Quick Continuation & Optimization Chips */}
+                                        {activeProposals.length > 0 && !isPlotPlanning && (
+                                            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] custom-scrollbar">
+                                                <span className="text-gray-500 text-[10px] font-bold uppercase tracking-wider shrink-0">Hành động nhanh:</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const latestProp = activeProposals[activeProposals.length - 1];
+                                                        handleContinueWritingProposal(latestProp);
+                                                    }}
+                                                    className="px-2.5 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/30 shrink-0 flex items-center gap-1 transition-all cursor-pointer"
+                                                >
+                                                    ⚡ Viết tiếp phần còn lại
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleSendChat("Hãy trau chuốt câu từ thêm phần sắc nét, giữ nguyên 100% tình tiết, xưng hô chuẩn xác và tăng cường chiều sâu tâm lý nhân vật.");
+                                                    }}
+                                                    className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 shrink-0 transition-all cursor-pointer"
+                                                >
+                                                    ✨ Trau chuốt văn phong
+                                                </button>
+                                            </div>
+                                        )}
+
                                         <div className="relative flex items-center bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
                                             <input 
                                                 type="text"
@@ -1144,18 +1259,49 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                                             ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
                                                             : "bg-orange-500/10 text-orange-400 border-orange-500/20";
 
-                                                return (
+                                                 const wordCount = proposal.content.trim().split(/\s+/).filter(Boolean).length;
+                                                 return (
                                                     <div key={idx} className={`border rounded-2xl p-4 space-y-3 transition-all ${borderClass}`}>
-                                                        <div className="flex justify-between items-center gap-2">
-                                                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border truncate ${badgeColor}`}>
-                                                                {label}
-                                                            </span>
-                                                            <button 
-                                                                onClick={() => applyProposal(proposal)}
-                                                                className="text-[9px] bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase px-2.5 py-1.5 rounded-lg transition-all active:scale-95 shadow-md shrink-0"
-                                                            >
-                                                                Áp dụng
-                                                            </button>
+                                                        <div className="flex justify-between items-center gap-2 flex-wrap">
+                                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                                                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border truncate ${badgeColor}`}>
+                                                                    {label}
+                                                                </span>
+                                                                <span className="text-[9px] font-mono text-gray-400 bg-gray-950 px-1.5 py-0.5 rounded border border-gray-800">
+                                                                    ~{wordCount} từ
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1">
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={() => applyProposal(proposal, 'replace')}
+                                                                    className="text-[9px] bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase px-2 py-1 rounded-lg transition-all active:scale-95 shadow-md shrink-0 cursor-pointer"
+                                                                    title="Ghi đè bản thảo"
+                                                                >
+                                                                    Áp dụng
+                                                                </button>
+                                                                {isContent && (
+                                                                    <button 
+                                                                        type="button"
+                                                                        onClick={() => applyProposal(proposal, 'append')}
+                                                                        className="text-[9px] bg-teal-700 hover:bg-teal-600 text-teal-100 font-bold px-1.5 py-1 rounded-lg transition-all active:scale-95 shadow-md shrink-0 cursor-pointer"
+                                                                        title="Ghép nối tiếp vào cuối chương hiện tại"
+                                                                    >
+                                                                        ➕ Nối tiếp
+                                                                    </button>
+                                                                )}
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        navigator.clipboard.writeText(proposal.content);
+                                                                        setToast("📋 Đã sao chép đề xuất!");
+                                                                    }}
+                                                                    className="text-[9px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-1.5 py-1 rounded-lg transition-all cursor-pointer"
+                                                                    title="Sao chép"
+                                                                >
+                                                                    Copy
+                                                                </button>
+                                                            </div>
                                                         </div>
 
                                                         {/* Side-by-side / Compare View Box */}
@@ -1170,7 +1316,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                                             )}
                                                             <div className="space-y-1">
                                                                 <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block">Đề xuất cập nhật:</span>
-                                                                <p className="text-[10px] text-gray-200 bg-black/60 p-2.5 rounded-lg border border-white/5 max-h-32 overflow-y-auto font-serif whitespace-pre-wrap">
+                                                                <p className="text-[10px] text-gray-200 bg-black/60 p-2.5 rounded-lg border border-white/5 max-h-36 overflow-y-auto font-serif whitespace-pre-wrap select-text">
                                                                     {proposal.content}
                                                                 </p>
                                                             </div>
