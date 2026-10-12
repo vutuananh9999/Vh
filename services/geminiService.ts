@@ -1147,6 +1147,7 @@ export const geminiService = {
         systemInstruction, 
         temperature: 1.0, 
         topP: 0.98, 
+        maxOutputTokens: 65536,
         thinkingConfig: { thinkingBudget: 2048 } 
       }
     });
@@ -1322,7 +1323,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
           model: getFlash(),
           config: { 
             systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu. Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhiệt tình. Dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives || "Không có"}.`,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 32768,
             temperature: 0.7
           },
           history: sanitizedHistory
@@ -1445,14 +1446,14 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
           config: { 
             systemInstruction,
             temperature: 0.7,
-            maxOutputTokens: 16384,
-            thinkingConfig: { thinkingBudget: 1024 }
+            maxOutputTokens: 65536
           },
           history: sanitizedHistory
         });
         const response = await chat.sendMessageStream({ message });
         for await (const chunk of response) {
-          const text = chunk.text || "";
+          const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
+          const text = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
           if (text) {
             fullAccumulatedResponse += text;
             plotDebugLogger.updateStreaming(logId, text);
@@ -1490,8 +1491,7 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
             config: { 
               systemInstruction,
               temperature: 0.7,
-              maxOutputTokens: 16384,
-              thinkingConfig: { thinkingBudget: 1024 }
+              maxOutputTokens: 65536
             },
             history: []
           });
@@ -1499,7 +1499,8 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
           let retryAccumulated = "";
           let retryMetadata: any = null;
           for await (const chunk of response) {
-            const text = chunk.text || "";
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
+            const text = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
             if (text) {
               retryAccumulated += text;
               plotDebugLogger.updateStreaming(retryLogId, text);
@@ -1636,7 +1637,10 @@ TRẢ VỀ JSON:
     const stream = safeGenerateContentStream({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
-      config: { thinkingConfig: { thinkingBudget: 2048 } }
+      config: { 
+        maxOutputTokens: 65536,
+        thinkingConfig: { thinkingBudget: 2048 } 
+      }
     });
     for await (const chunk of stream) yield chunk;
   },
@@ -1768,6 +1772,7 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
           contents: [{ parts: [{ text: prompt }] }],
           config: { 
             temperature: 0.65,
+            maxOutputTokens: 65536,
             thinkingConfig: { thinkingBudget: 2048 }
           }
       });

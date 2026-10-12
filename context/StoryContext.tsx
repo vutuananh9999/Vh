@@ -412,7 +412,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...msg,
             parts: (msg.parts || []).map(p => ({
               ...p,
-              text: (p.text || '').replace(/(?:undefined)+$/i, '').trim()
+              text: (p.text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim()
             }))
           }));
         };
@@ -511,13 +511,15 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.chatPlanningStream(history, message, currentStory);
         let fullResponse = "";
         for await (const chunk of stream) {
-            if (chunk.text) {
-                fullResponse += chunk.text;
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
+            if (chunkText) {
+                fullResponse += chunkText;
             }
             // Record usage from last chunk
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
             
-            const cleanDisplay = fullResponse.replace(/(?:undefined)+$/i, '');
+            const cleanDisplay = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '');
             setStory(prev => {
                 if (!prev) return null;
                 const currentHist = prev.planningChatHistory || [];
@@ -531,7 +533,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             });
         }
         if (storyRef.current) {
-            const finalClean = fullResponse.replace(/(?:undefined)+$/i, '').trim();
+            const finalClean = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
             const updatedStory = {
                 ...storyRef.current,
                 planningChatHistory: (storyRef.current.planningChatHistory || []).map((m, idx, arr) => 
@@ -570,12 +572,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.chatPlotStream(history, message, currentStory, focusChapterId || activeChapterIdRef.current || undefined);
         let fullResponse = "";
         for await (const chunk of stream) {
-            if (chunk.text) {
-                fullResponse += chunk.text;
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
+            if (chunkText) {
+                fullResponse += chunkText;
             }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
             
-            const cleanDisplay = fullResponse.replace(/(?:undefined)+$/i, '');
+            const cleanDisplay = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '');
             setStory(prev => {
                 if (!prev) return null;
                 const currentHist = prev.plotChatHistory || [];
@@ -589,7 +593,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             });
         }
         if (storyRef.current) {
-            const finalClean = fullResponse.replace(/(?:undefined)+$/i, '').trim();
+            const finalClean = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
             const updatedStory = {
                 ...storyRef.current,
                 plotChatHistory: (storyRef.current.plotChatHistory || []).map((m, idx, arr) => 
@@ -1147,8 +1151,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       let lastStreamingUpdate = 0;
 
       for await (const chunk of stream) {
-        if (chunk.text) {
-          accumulated += chunk.text;
+        const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
+        const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
+        if (chunkText) {
+          accumulated += chunkText;
           const now = Date.now();
           // Throttle state updates to ~3 times per second during heavy streaming to prevent memory spikes
           if (now - lastStreamingUpdate > 300) {
@@ -1398,7 +1404,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         
         let accumulated = "";
         for await (const chunk of stream) {
-            const chunkText = chunk.text || "";
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
+            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
             if (chunkText) {
                 accumulated += chunkText;
                 setGenerationProgress(prev => Math.min(95, prev + 0.3));
@@ -1409,7 +1416,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setGenerationStatus("Lưu trữ và hoàn thiện bản thảo...");
         setGenerationProgress(98);
         
-        const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n' : '') + accumulated;
+        const cleanedAccum = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
+        const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n' : '') + cleanedAccum;
         updateChapterContent(currentActiveId, finalDraft, true);
         
         if (storyRef.current) {
@@ -1472,12 +1480,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.refineChapterStream(chapter.content, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
         let accumulated = "";
         for await (const chunk of stream) { 
-            if (chunk.text) {
-                accumulated += chunk.text; 
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
+            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
+            if (chunkText) {
+                accumulated += chunkText; 
             }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        const cleanedAccumulated = accumulated.replace(/(?:undefined)+$/i, '').trim();
+        const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
         setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: cleanedAccumulated });
     } catch (e: any) { 
         console.error(e);
@@ -1500,12 +1510,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stream = geminiService.refineSelectionStream(selection, prefix, suffix, currentStory, customInstruction);
         let accumulated = "";
         for await (const chunk of stream) { 
-            if (chunk.text) {
-                accumulated += chunk.text; 
+            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
+            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
+            if (chunkText) {
+                accumulated += chunkText; 
             }
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
-        const cleanedAccumulated = accumulated.replace(/(?:undefined)+$/i, '').trim();
+        const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
         setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + cleanedAccumulated + suffix });
     } catch (e: any) { 
         console.error(e);

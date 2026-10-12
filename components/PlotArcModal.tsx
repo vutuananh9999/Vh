@@ -231,153 +231,155 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         await sendPlotChatMessage(textToSend, focusedId);
     };
 
-    // Helper to strip proposed revision tags from rendering in Chat Bubble safely without RegExp backtracking
-    const cleanMessageText = (text: string): string => {
-        if (!text) return "";
-        const raw = text.replace(/(?:undefined)+$/i, '').trim();
-        let result = "";
-        let index = 0;
-        const tagPrefixes = [
-            '[PROPOSAL_PLANNING:',
-            '[PROPOSAL_OUTLINE_CHAPTER_',
-            '[PROPOSAL_SUMMARY_CHAPTER_',
-            '[PROPOSAL_CONTENT_CHAPTER_'
-        ];
+    // Helper to resolve chapter flexibly by ID, order number ("2", "Chương 2"), or title
+    const resolveChapter = useCallback((identifier: string | undefined): Chapter | undefined => {
+        if (!chapters || chapters.length === 0) return undefined;
+        if (!identifier) {
+            return (activeChapterId ? chapters.find(c => c.id === activeChapterId) : undefined) || chapters[0];
+        }
+
+        const cleanId = identifier.trim();
+        // 1. Exact ID match
+        let match = chapters.find(c => c.id === cleanId);
+        if (match) return match;
+
+        // 2. Numeric order match (e.g. "2" or "Chương 2" or "chuong 2")
+        const numMatch = cleanId.match(/\d+/);
+        if (numMatch) {
+            const orderNum = parseInt(numMatch[0], 10);
+            match = chapters.find(c => c.order === orderNum);
+            if (match) return match;
+        }
+
+        // 3. Title match (case-insensitive substring)
+        const lowerId = cleanId.toLowerCase();
+        match = chapters.find(c => 
+            c.title.toLowerCase().includes(lowerId) || 
+            lowerId.includes(c.title.toLowerCase())
+        );
+        if (match) return match;
+
+        // 4. Fallback to activeChapter or first chapter
+        return (activeChapterId ? chapters.find(c => c.id === activeChapterId) : undefined) || chapters[0];
+    }, [chapters, activeChapterId]);
+
+    // Parse message into conversational text and interactive proposal blocks safely
+    const parseMessageData = useCallback((text: string): { cleanText: string; proposals: Proposal[] } => {
+        if (!text) return { cleanText: "", proposals: [] };
+        const raw = text.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
         
+        const proposals: Proposal[] = [];
+        let cleanText = "";
+        let index = 0;
+
+        const tagPrefixes = [
+            { prefix: '[PROPOSAL_PLANNING:', type: 'planning' as const },
+            { prefix: '[PROPOSAL_OUTLINE_CHAPTER_', type: 'outline' as const },
+            { prefix: '[PROPOSAL_SUMMARY_CHAPTER_', type: 'summary' as const },
+            { prefix: '[PROPOSAL_CONTENT_CHAPTER_', type: 'content' as const }
+        ];
+
         while (index < raw.length) {
             const startIdx = raw.indexOf('[', index);
             if (startIdx === -1) {
-                result += raw.substring(index);
+                cleanText += raw.substring(index);
                 break;
             }
-            
-            result += raw.substring(index, startIdx);
-            
-            let foundTag = false;
-            for (const prefix of tagPrefixes) {
-                if (raw.startsWith(prefix, startIdx)) {
-                    foundTag = true;
+
+            cleanText += raw.substring(index, startIdx);
+
+            let matchedTag: typeof tagPrefixes[0] | null = null;
+            for (const tag of tagPrefixes) {
+                if (raw.startsWith(tag.prefix, startIdx)) {
+                    matchedTag = tag;
                     break;
                 }
             }
-            
-            if (foundTag) {
-                const endIdx = raw.indexOf(']', startIdx);
-                if (endIdx === -1) {
-                    // Tag is not closed yet (mid-stream or truncated) - do not leak raw tag syntax into chat bubble
-                    break;
+
+            if (matchedTag) {
+                // Find closing tag delimiter without cutting off internal markdown/brackets like [1] or [Hệ thống]
+                let endIdx = -1;
+                // Check \n] first
+                const newlineBracket = raw.indexOf('\n]', startIdx + matchedTag.prefix.length);
+                if (newlineBracket !== -1) {
+                    endIdx = newlineBracket + 1;
+                } else {
+                    // Check bracket followed by newline or next tag or end-of-string
+                    let searchPos = startIdx + matchedTag.prefix.length;
+                    while (searchPos < raw.length) {
+                        const nextBracket = raw.indexOf(']', searchPos);
+                        if (nextBracket === -1) break;
+                        const charAfter = raw.charAt(nextBracket + 1);
+                        if (charAfter === '' || charAfter === '\n' || charAfter === '\r' || charAfter === ' ' || raw.startsWith('[PROPOSAL_', nextBracket + 1)) {
+                            endIdx = nextBracket;
+                            break;
+                        }
+                        searchPos = nextBracket + 1;
+                    }
                 }
-                index = endIdx + 1;
+
+                // If not closed yet (streaming or truncated), preserve all remaining text as proposal content
+                const isTruncated = endIdx === -1;
+                const tagContent = isTruncated 
+                    ? raw.substring(startIdx) 
+                    : raw.substring(startIdx, endIdx + 1);
+
+                if (matchedTag.type === 'planning') {
+                    const content = tagContent.substring(
+                        matchedTag.prefix.length, 
+                        isTruncated ? undefined : tagContent.length - 1
+                    ).trim();
+                    if (content) {
+                        proposals.push({
+                            type: 'planning',
+                            content,
+                            originalContent: story?.planning || ""
+                        });
+                    }
+                } else {
+                    const colonIdx = tagContent.indexOf(':', matchedTag.prefix.length - 1);
+                    if (colonIdx !== -1) {
+                        const rawId = tagContent.substring(matchedTag.prefix.length, colonIdx).trim();
+                        const content = tagContent.substring(
+                            colonIdx + 1, 
+                            isTruncated ? undefined : tagContent.length - 1
+                        ).trim();
+                        const ch = resolveChapter(rawId);
+                        if (content && ch) {
+                            proposals.push({
+                                type: matchedTag.type,
+                                chapterId: ch.id,
+                                chapterTitle: ch.title,
+                                content,
+                                originalContent: matchedTag.type === 'content' ? (ch.content || "") : matchedTag.type === 'outline' ? (ch.outline || "") : (ch.summary || "")
+                            });
+                        }
+                    }
+                }
+
+                index = isTruncated ? raw.length : endIdx + 1;
             } else {
-                result += '[';
+                cleanText += '[';
                 index = startIdx + 1;
             }
         }
-        return result.replace(/(?:undefined)+$/i, '').trim();
-    };
 
-    // Helper to extract active proposals from chat logs safely without RegExp backtracking
-    const parseProposals = (messages: ChatMessage[]): Proposal[] => {
+        return {
+            cleanText: cleanText.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim(),
+            proposals
+        };
+    }, [story?.planning, resolveChapter]);
+
+    // Helper to extract active proposals from chat logs
+    const parseProposals = useCallback((messages: ChatMessage[]): Proposal[] => {
         const proposals: Proposal[] = [];
         if (!messages) return proposals;
 
         messages.forEach((msg) => {
             if (msg.role !== 'model') return;
             const text = msg.parts?.[0]?.text || "";
-            
-            let index = 0;
-            const tagPrefixes = [
-                '[PROPOSAL_PLANNING:',
-                '[PROPOSAL_OUTLINE_CHAPTER_',
-                '[PROPOSAL_SUMMARY_CHAPTER_',
-                '[PROPOSAL_CONTENT_CHAPTER_'
-            ];
-            
-            while (index < text.length) {
-                const startIdx = text.indexOf('[', index);
-                if (startIdx === -1) break;
-                
-                let foundPrefix = "";
-                for (const prefix of tagPrefixes) {
-                    if (text.startsWith(prefix, startIdx)) {
-                        foundPrefix = prefix;
-                        break;
-                    }
-                }
-                
-                if (foundPrefix) {
-                    const endIdx = text.indexOf(']', startIdx);
-                    if (endIdx === -1) {
-                        index = startIdx + 1;
-                        continue;
-                    }
-                    
-                    const tagContent = text.substring(startIdx, endIdx + 1);
-                    
-                    if (foundPrefix === '[PROPOSAL_PLANNING:') {
-                        const content = tagContent.substring('[PROPOSAL_PLANNING:'.length, tagContent.length - 1).trim();
-                        if (content) {
-                            proposals.push({
-                                type: 'planning',
-                                content,
-                                originalContent: story?.planning || ""
-                            });
-                        }
-                    } else if (foundPrefix === '[PROPOSAL_OUTLINE_CHAPTER_') {
-                        const colonIdx = tagContent.indexOf(':');
-                        if (colonIdx !== -1) {
-                            const chapterId = tagContent.substring('[PROPOSAL_OUTLINE_CHAPTER_'.length, colonIdx).trim();
-                            const content = tagContent.substring(colonIdx + 1, tagContent.length - 1).trim();
-                            const ch = (chapters || []).find(c => c.id === chapterId);
-                            if (content && ch) {
-                                proposals.push({
-                                    type: 'outline',
-                                    chapterId,
-                                    chapterTitle: ch.title,
-                                    content,
-                                    originalContent: ch.outline || ""
-                                });
-                            }
-                        }
-                    } else if (foundPrefix === '[PROPOSAL_SUMMARY_CHAPTER_') {
-                        const colonIdx = tagContent.indexOf(':');
-                        if (colonIdx !== -1) {
-                            const chapterId = tagContent.substring('[PROPOSAL_SUMMARY_CHAPTER_'.length, colonIdx).trim();
-                            const content = tagContent.substring(colonIdx + 1, tagContent.length - 1).trim();
-                            const ch = (chapters || []).find(c => c.id === chapterId);
-                            if (content && ch) {
-                                proposals.push({
-                                    type: 'summary',
-                                    chapterId,
-                                    chapterTitle: ch.title,
-                                    content,
-                                    originalContent: ch.summary || ""
-                                });
-                            }
-                        }
-                    } else if (foundPrefix === '[PROPOSAL_CONTENT_CHAPTER_') {
-                        const colonIdx = tagContent.indexOf(':');
-                        if (colonIdx !== -1) {
-                            const chapterId = tagContent.substring('[PROPOSAL_CONTENT_CHAPTER_'.length, colonIdx).trim();
-                            const content = tagContent.substring(colonIdx + 1, tagContent.length - 1).trim();
-                            const ch = (chapters || []).find(c => c.id === chapterId);
-                            if (content && ch) {
-                                proposals.push({
-                                    type: 'content',
-                                    chapterId,
-                                    chapterTitle: ch.title,
-                                    content,
-                                    originalContent: ch.content || ""
-                                });
-                            }
-                        }
-                    }
-                    
-                    index = endIdx + 1;
-                } else {
-                    index = startIdx + 1;
-                }
-            }
+            const { proposals: msgProposals } = parseMessageData(text);
+            proposals.push(...msgProposals);
         });
 
         const latestMap: { [key: string]: Proposal } = {};
@@ -387,7 +389,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         });
 
         return Object.values(latestMap);
-    };
+    }, [parseMessageData]);
 
     const applyProposal = async (proposal: Proposal) => {
         try {
@@ -983,8 +985,10 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                         ) : (
                                             story.plotChatHistory.map((msg, i) => {
                                                 const isUser = msg.role === 'user';
-                                                const cleanedText = cleanMessageText(msg.parts?.[0]?.text || "");
-                                                if (!cleanedText && !isUser) return null; // Hide if text becomes completely empty (only tags existed)
+                                                const rawText = msg.parts?.[0]?.text || "";
+                                                const parsed = parseMessageData(rawText);
+                                                const hasContent = parsed.cleanText || parsed.proposals.length > 0;
+                                                if (!hasContent && !isUser) return null;
 
                                                 return (
                                                     <div key={i} className={`flex gap-3 max-w-[92%] sm:max-w-[85%] ${isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'}`}>
@@ -993,12 +997,49 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                                                             {isUser ? 'U' : 'AI'}
                                                         </div>
 
-                                                        <div className={`p-3.5 sm:p-4 rounded-2xl text-[13.5px] sm:text-sm border leading-relaxed whitespace-pre-wrap shadow-md ${
+                                                        <div className={`p-3.5 sm:p-4 rounded-2xl text-[13.5px] sm:text-sm border leading-relaxed shadow-md ${
                                                             isUser 
                                                                 ? 'bg-rose-950/20 border-rose-500/30 text-rose-100 rounded-tr-none' 
                                                                 : 'bg-gray-800 border-gray-700/60 text-gray-200 rounded-tl-none font-serif shadow-inner'
                                                         }`}>
-                                                            {cleanedText}
+                                                            {parsed.cleanText && (
+                                                                <div className="whitespace-pre-wrap">{parsed.cleanText}</div>
+                                                            )}
+
+                                                            {parsed.proposals.map((prop, pIdx) => (
+                                                                <div key={pIdx} className={`${parsed.cleanText ? 'mt-3 pt-3 border-t border-purple-500/20' : ''} font-sans not-italic text-left space-y-2`}>
+                                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                                        <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300 font-bold text-xs flex items-center gap-1.5 border border-purple-500/30">
+                                                                            <span>📝</span>
+                                                                            <span>{prop.type === 'content' ? `Bản Thảo: ${prop.chapterTitle}` : prop.type === 'outline' ? `Đề Cương: ${prop.chapterTitle}` : prop.type === 'summary' ? `Tóm Tắt: ${prop.chapterTitle}` : 'Dàn Ý Truyện'}</span>
+                                                                        </span>
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <button 
+                                                                                type="button"
+                                                                                onClick={() => applyProposal(prop)}
+                                                                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
+                                                                                title="Đồng bộ ngay vào bản thảo"
+                                                                            >
+                                                                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                                                                Áp dụng vào chương
+                                                                            </button>
+                                                                            <button 
+                                                                                type="button"
+                                                                                onClick={() => {
+                                                                                    navigator.clipboard.writeText(prop.content);
+                                                                                    setToast("📋 Đã sao chép nội dung đề xuất!");
+                                                                                }}
+                                                                                className="px-2 py-1 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs transition-all cursor-pointer"
+                                                                            >
+                                                                                Sao chép
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="max-h-96 overflow-y-auto p-3 rounded-xl bg-gray-950/80 border border-gray-750 text-xs font-serif leading-relaxed text-gray-200 whitespace-pre-wrap select-text custom-scrollbar">
+                                                                        {prop.content}
+                                                                    </div>
+                                                                </div>
+                                                            ))}
                                                         </div>
                                                     </div>
                                                 );

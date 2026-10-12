@@ -22,9 +22,9 @@ export function cleanAndDeduplicateTranslation(rawText: string, originalContent?
     /^\[VĂN BẢN ĐÃ VIỆT HÓA\]:?\s*/i,
     /^\[BẢN DỊCH TIẾNG VIỆT\]:?\s*/i,
     /^\[BẢN DỊCH\]:?\s*/i,
-    /^Dưới đây là bản dịch.*?:\s*/i,
-    /^Dưới đây là bản Việt hóa.*?:\s*/i,
-    /^Sau đây là bản dịch.*?:\s*/i,
+    /^Dưới đây là\s+(?:toàn bộ\s+|toàn\s+)?(?:văn bản\s+)?(?:bản\s+)?(?:Việt\s+hóa|dịch).*?:\s*/i,
+    /^Sau đây là\s+(?:toàn bộ\s+|toàn\s+)?(?:văn bản\s+)?(?:bản\s+)?(?:Việt\s+hóa|dịch).*?:\s*/i,
+    /^\*\*\[?Bản dịch[^\]*]*\]?\*\*:\s*/i,
   ];
 
   for (const pattern of preamblePatterns) {
@@ -109,19 +109,25 @@ function removeStreamRestartDuplicates(text: string): string {
           const partBefore = text.slice(0, foundIdx).trim();
           const partAfter = text.slice(foundIdx).trim();
 
-          // Case A: Part before is shorter (aborted stream) and part after is longer (full stream)
-          // -> Discard the aborted partial prefix and keep the complete stream!
-          if (partAfter.length >= partBefore.length * 0.8 && partAfter.length > 200) {
-            text = partAfter;
-            // Recursively re-check in case it repeated more than once
-            return removeStreamRestartDuplicates(text);
-          }
+          // Require at least 120 matching characters to confirm true stream restart duplicate
+          const verifyLen = Math.min(120, partBefore.length, partAfter.length);
+          const isTrueRestartDuplicate = verifyLen >= 60 && text.slice(0, verifyLen) === text.slice(foundIdx, foundIdx + verifyLen);
 
-          // Case B: Part after is an identical duplicate of part before (or truncated duplicate appended)
-          // -> Keep part before!
-          if (partBefore.startsWith(partAfter) || (partBefore.length >= partAfter.length && partBefore.length > 200)) {
-            text = partBefore;
-            return removeStreamRestartDuplicates(text);
+          if (isTrueRestartDuplicate) {
+            // Case A: Part before is shorter (aborted stream) and part after is longer (full stream)
+            // -> Discard the aborted partial prefix and keep the complete stream!
+            if (partAfter.length >= partBefore.length * 0.8 && partAfter.length > 200) {
+              text = partAfter;
+              // Recursively re-check in case it repeated more than once
+              return removeStreamRestartDuplicates(text);
+            }
+
+            // Case B: Part after is an identical duplicate of part before (or truncated duplicate appended)
+            // -> Keep part before!
+            if (partBefore.startsWith(partAfter) || (partBefore.length >= partAfter.length && partBefore.startsWith(partAfter.slice(0, Math.min(150, partAfter.length))))) {
+              text = partBefore;
+              return removeStreamRestartDuplicates(text);
+            }
           }
         }
       }

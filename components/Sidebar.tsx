@@ -595,7 +595,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                                     {story.planningChatHistory?.map((msg, i) => (
                                         <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start animate-fadeIn'}`}>
                                             <div className={`max-w-[90%] p-3 rounded-2xl text-[11px] leading-relaxed border shadow-sm ${msg.role === 'user' ? 'bg-emerald-950/20 text-emerald-100 border-emerald-500/20 rounded-br-none' : 'bg-gray-850/90 text-gray-300 border-gray-700 rounded-bl-none font-serif italic'}`}>
-                                                {msg.parts[0]?.text?.replace(/(?:undefined)+$/i, '').trim() || ''}
+                                                {msg.parts[0]?.text?.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim() || ''}
                                             </div>
                                         </div>
                                     ))}
@@ -831,7 +831,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                 {story.planningChatHistory?.map((msg, i) => (
                     <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                         <div className={`max-w-[85%] p-4 rounded-2xl text-sm border ${msg.role === 'user' ? 'bg-purple-900/20 border-purple-500/30 text-purple-100 rounded-br-none' : 'bg-gray-800 border-gray-700 text-gray-200 rounded-bl-none'}`}>
-                            {msg.parts?.[0]?.text?.replace(/(?:undefined)+$/i, '').trim() || ''}
+                            {msg.parts?.[0]?.text?.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim() || ''}
                         </div>
                     </div>
                 ))}
