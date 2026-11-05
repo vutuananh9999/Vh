@@ -2050,9 +2050,9 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       s.id = newId;
                       s.chapters = s.chapters.map((c: any) => ({ ...c, id: generateId() }));
                       s.characters = s.characters.map((c: any) => ({ ...c, id: generateId() }));
-                      await storageService.saveStory(s);
+                      await storageService.saveStory(s, true);
                   }
-                  await loadStories();
+                  await loadStories(true);
                   alert(`Đã nhập thành công ${json.stories.length} truyện!`);
                   return;
               }
@@ -2062,10 +2062,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               if (s && s.title) {
                   const newId = generateId();
                   s.id = newId;
-                  s.chapters = s.chapters.map((c: any) => ({ ...c, id: generateId() }));
-                  s.characters = s.characters.map((c: any) => ({ ...c, id: generateId() }));
-                  await storageService.saveStory(s);
-                  await loadStories();
+                  s.chapters = (s.chapters || []).map((c: any) => ({ ...c, id: generateId() }));
+                  s.characters = (s.characters || []).map((c: any) => ({ ...c, id: generateId() }));
+                  await storageService.saveStory(s, true);
+                  await loadStories(true);
                   alert("Nhập truyện thành công!");
               } else { throw new Error("Invalid format"); }
           } catch (err) { alert("Lỗi file không hợp lệ."); }
@@ -2146,8 +2146,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               chapters: finalChapters
           };
 
-          await storageService.saveStory(newStory);
-          await loadStories();
+          await storageService.saveStory(newStory, true);
+          await loadStories(true);
           alert(`Đã tải lên truyện thành công từ file EPUB với ${finalChapters.length} chương!`);
       } catch (err: any) {
           console.error("Lỗi khi đọc file EPUB:", err);
@@ -2263,8 +2263,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   chapters: finalChapters
               };
 
-              await storageService.saveStory(newStory);
-              await loadStories();
+              await storageService.saveStory(newStory, true);
+              await loadStories(true);
               alert(`Tải lên truyện thành công với ${finalChapters.length} chương!`);
           } catch (err) {
               console.error(err);

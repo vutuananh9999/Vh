@@ -90,61 +90,74 @@ let isSavingInProgress = false;
 let pendingSaveResolvers: Array<() => void> = [];
 
 async function executeDirectSave(story: Story): Promise<void> {
-  const db = await openDB();
+  // Pre-compress all chapters BEFORE opening the IndexedDB transaction
+  // In IndexedDB, an open transaction auto-closes if an asynchronous tick (like Promise.all compressText) has no active requests!
+  const preparedPayloads: StoredChapterPayload[] = [];
+  const chaptersForStory = await Promise.all(
+    (story.chapters || []).map(async (ch) => {
+      const compressedContent = await compressText(ch.content || '');
+      const compressedTranslation = ch.translatedContent ? await compressText(ch.translatedContent) : '';
 
-  // Compress and save individual chapters to STORE_CHAPTER_DATA in a single transaction
-  const tx = db.transaction([STORE_STORIES, STORE_CHAPTER_DATA], 'readwrite');
-  const storyStore = tx.objectStore(STORE_STORIES);
-  const chapterStore = tx.objectStore(STORE_CHAPTER_DATA);
+      preparedPayloads.push({
+        id: ch.id,
+        storyId: story.id,
+        title: ch.title,
+        content: compressedContent,
+        translatedContent: compressedTranslation,
+        translatedTitle: ch.translatedTitle,
+        summary: ch.summary,
+        outline: ch.outline,
+        lastUpdated: ch.lastUpdated || Date.now()
+      });
 
-  // Save story metadata with chapters list having summary info
+      return {
+        id: ch.id,
+        title: ch.title,
+        order: ch.order,
+        lastUpdated: ch.lastUpdated || Date.now(),
+        wordGoal: ch.wordGoal,
+        isTranslation: ch.isTranslation,
+        translatedTitle: ch.translatedTitle,
+        content: ch.content, // In-memory stays intact
+        summary: ch.summary,
+        outline: ch.outline,
+        translatedContent: ch.translatedContent
+      };
+    })
+  );
+
   const storyToStore: Story = {
     ...story,
-    chapters: await Promise.all(
-      (story.chapters || []).map(async (ch) => {
-        const compressedContent = await compressText(ch.content || '');
-        const compressedTranslation = ch.translatedContent ? await compressText(ch.translatedContent) : '';
-
-        const payload: StoredChapterPayload = {
-          id: ch.id,
-          storyId: story.id,
-          title: ch.title,
-          content: compressedContent,
-          translatedContent: compressedTranslation,
-          translatedTitle: ch.translatedTitle,
-          summary: ch.summary,
-          outline: ch.outline,
-          lastUpdated: ch.lastUpdated || Date.now()
-        };
-
-        chapterStore.put(payload);
-
-        // Keep lightweight metadata in story object
-        return {
-          id: ch.id,
-          title: ch.title,
-          order: ch.order,
-          lastUpdated: ch.lastUpdated || Date.now(),
-          wordGoal: ch.wordGoal,
-          isTranslation: ch.isTranslation,
-          translatedTitle: ch.translatedTitle,
-          content: ch.content, // In-memory stays intact
-          summary: ch.summary,
-          outline: ch.outline,
-          translatedContent: ch.translatedContent
-        };
-      })
-    )
+    chapters: chaptersForStory
   };
 
-  storyStore.put(storyToStore);
+  const db = await openDB();
 
   return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => {
-      console.error("IndexedDB save error:", tx.error);
-      reject(tx.error);
-    };
+    try {
+      const tx = db.transaction([STORE_STORIES, STORE_CHAPTER_DATA], 'readwrite');
+      const storyStore = tx.objectStore(STORE_STORIES);
+      const chapterStore = tx.objectStore(STORE_CHAPTER_DATA);
+
+      // Synchronously write all prepared records in the active transaction
+      for (const payload of preparedPayloads) {
+        chapterStore.put(payload);
+      }
+      storyStore.put(storyToStore);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => {
+        console.error("IndexedDB save error:", tx.error);
+        reject(tx.error);
+      };
+      tx.onabort = () => {
+        console.error("IndexedDB save transaction aborted:", tx.error);
+        reject(tx.error || new Error("Transaction aborted"));
+      };
+    } catch (err) {
+      console.error("Failed to begin save transaction:", err);
+      reject(err);
+    }
   });
 }
 
