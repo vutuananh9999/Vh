@@ -180,6 +180,13 @@ function getAvailableKeysCount(): number {
   return getAllKeys().length;
 }
 
+export function sanitizeModelText(text: string | null | undefined): string {
+  if (!text) return "";
+  return text
+    .replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/gi, '')
+    .trim();
+}
+
 function isQuotaError(err: any): boolean {
   if (!err) return false;
   
@@ -1312,7 +1319,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     const sanitizedHistory = (history || []).slice(-10).map(h => ({
       role: h.role,
       parts: (h.parts || []).map(p => ({
-        text: (p.text || "").replace(/(?:undefined)+$/i, "").trim()
+        text: sanitizeModelText(p.text)
       }))
     }));
 
@@ -1413,7 +1420,7 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
     // Retain recent message history with generous length (up to 35,000 chars per turn)
     const sanitizedHistory = (history || []).slice(-6).map(h => {
       const parts = (h.parts || []).map(p => {
-        let text = (p.text || "").replace(/(?:undefined)+$/i, "").trim();
+        let text = sanitizeModelText(p.text);
         if (text.length > 35000) {
           text = text.substring(0, 35000) + "... [Đã giữ 35k ký tự]";
         }

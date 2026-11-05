@@ -6,6 +6,7 @@ import { SummaryViewModal } from './SummaryViewModal.tsx';
 import { DeleteChapterModal } from './DeleteChapterModal.tsx';
 import { TranslationsMenu } from './TranslationsMenu.tsx';
 import { MergeChapterModal } from './MergeChapterModal.tsx';
+import { InsertChapterModal } from './InsertChapterModal.tsx';
 import { getCachedWordCount } from '../utils/wordCount.ts';
 
 interface ChapterListItemProps {
@@ -20,6 +21,7 @@ interface ChapterListItemProps {
   onConfirmRename: () => void;
   onUpdateTimeSetting: (id: string, time: string) => void;
   onDeleteClick: (e: React.MouseEvent, chapter: Chapter) => void;
+  onInsertClick?: (e: React.MouseEvent, chapter: Chapter) => void;
 }
 
 const ChapterListItem = React.memo<ChapterListItemProps>(({
@@ -33,7 +35,8 @@ const ChapterListItem = React.memo<ChapterListItemProps>(({
   onUpdateTitle,
   onConfirmRename,
   onUpdateTimeSetting,
-  onDeleteClick
+  onDeleteClick,
+  onInsertClick
 }) => {
   const currentWords = getCachedWordCount(chapter.id, chapter.content, chapter.lastUpdated);
   const progress = Math.min(100, (currentWords / (chapter.wordGoal || 2000)) * 100);
@@ -80,7 +83,19 @@ const ChapterListItem = React.memo<ChapterListItemProps>(({
             </div>
           )}
         </div>
-        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity pr-2 gap-1">
+        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity pr-2 gap-0.5">
+          {onInsertClick && (
+            <button 
+              type="button" 
+              onClick={(e) => onInsertClick(e, chapter)} 
+              className="p-1.5 text-gray-500 hover:text-emerald-400 rounded-md hover:bg-emerald-950/50 transition-colors" 
+              title="Chèn chương trống sau chương này"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+          )}
           <button onClick={(e) => onStartRename(e, chapter.id)} className="p-1.5 text-gray-600 hover:text-primary-400 rounded-md hover:bg-gray-700" title="Đổi tên"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" strokeWidth={2}/></svg></button>
           {!isOnlyChapter && (
             <button onClick={(e) => onDeleteClick(e, chapter)} className="p-1.5 text-gray-600 hover:text-red-500 rounded-md hover:bg-red-900/20" title="Xóa"><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth={2}/></svg></button>
@@ -112,7 +127,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
     toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, ingestRawDocument,
     suggestNewChapter, isSuggestingChapter, suggestActiveChapterOutline, isGeneratingOutline,
     triggerSave, triggerLearn, isSavingManual, isLearning, importChaptersFromTxt, importChaptersFromEpub, exportStory, exportStoryEpub,
-    mergeChapters
+    mergeChapters, insertChapter
   } = useStory();
   
   const [tab, setTab] = useState<'chapters' | 'translations' | 'planning' | 'knowledge'>('chapters');
@@ -120,11 +135,20 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
   const [knowledgeSubTab, setKnowledgeSubTab] = useState<'core' | 'characters' | 'directives' | 'ingest'>('core');
   const [viewingSummary, setViewingSummary] = useState<Chapter | null>(null);
   const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
+  const [isInsertModalOpen, setIsInsertModalOpen] = useState(false);
+  const [insertTargetChapterId, setInsertTargetChapterId] = useState<string | null>(null);
+  const [insertPosition, setInsertPosition] = useState<'before' | 'after'>('after');
   const [planInput, setPlanInput] = useState('');
   const [rawTextInput, setRawTextInput] = useState('');
   const [webTopic, setWebTopic] = useState(''); 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [chapterToDelete, setChapterToDelete] = useState<Chapter | null>(null);
+
+  const handleOpenInsertModal = (chapterId?: string | null, position: 'before' | 'after' = 'after') => {
+    setInsertTargetChapterId(chapterId || activeChapterId || (story?.chapters?.[0]?.id ?? null));
+    setInsertPosition(position);
+    setIsInsertModalOpen(true);
+  };
   
   // Mobile Chat State
   const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
@@ -475,29 +499,80 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                 Không tìm thấy chương nào
               </div>
             ) : (
-              displayedChapters.map((chapter) => (
-                <ChapterListItem
-                  key={chapter.id}
-                  chapter={chapter}
-                  isActive={activeChapterId === chapter.id}
-                  isOnlyChapter={sortedChapters.length <= 1}
-                  isRenaming={renamingId === chapter.id}
-                  onSelect={selectChapter}
-                  onReorder={reorderChapter}
-                  onStartRename={handleStartRename}
-                  onUpdateTitle={updateChapterTitle}
-                  onConfirmRename={handleConfirmRename}
-                  onUpdateTimeSetting={updateChapterTimeSetting}
-                  onDeleteClick={handleDeleteClick}
-                />
+              displayedChapters.map((chapter, idx) => (
+                <React.Fragment key={chapter.id}>
+                  {idx === 0 && (
+                    <div className="group/insert relative h-3.5 -my-1 flex items-center justify-center opacity-0 hover:opacity-100 transition-all z-10">
+                      <div className="absolute inset-x-3 h-px bg-emerald-500/30 group-hover/insert:bg-emerald-500/60 transition-colors"></div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenInsertModal(chapter.id, 'before');
+                        }}
+                        className="relative px-2 py-0.5 rounded-full bg-gray-950 border border-emerald-500/40 text-[9px] font-bold text-emerald-400 hover:bg-emerald-950 hover:border-emerald-300 shadow-md flex items-center gap-1 transition-transform hover:scale-105 cursor-pointer"
+                        title="Chèn chương trống trước chương đầu tiên"
+                      >
+                        <span>+ Chèn chương đầu</span>
+                      </button>
+                    </div>
+                  )}
+                  <ChapterListItem
+                    chapter={chapter}
+                    isActive={activeChapterId === chapter.id}
+                    isOnlyChapter={sortedChapters.length <= 1}
+                    isRenaming={renamingId === chapter.id}
+                    onSelect={selectChapter}
+                    onReorder={reorderChapter}
+                    onStartRename={handleStartRename}
+                    onUpdateTitle={updateChapterTitle}
+                    onConfirmRename={handleConfirmRename}
+                    onUpdateTimeSetting={updateChapterTimeSetting}
+                    onDeleteClick={handleDeleteClick}
+                    onInsertClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenInsertModal(chapter.id, 'after');
+                    }}
+                  />
+                  <div className="group/insert relative h-3.5 -my-1 flex items-center justify-center opacity-0 hover:opacity-100 transition-all z-10">
+                    <div className="absolute inset-x-3 h-px bg-emerald-500/30 group-hover/insert:bg-emerald-500/60 transition-colors"></div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenInsertModal(chapter.id, 'after');
+                      }}
+                      className="relative px-2 py-0.5 rounded-full bg-gray-950 border border-emerald-500/40 text-[9px] font-bold text-emerald-400 hover:bg-emerald-950 hover:border-emerald-300 shadow-md flex items-center gap-1 transition-transform hover:scale-105 cursor-pointer"
+                      title={`Chèn chương trống sau ${chapter.title}`}
+                    >
+                      <span>+ Chèn chương trống ở đây</span>
+                    </button>
+                  </div>
+                </React.Fragment>
               ))
             )}
-            <div className="flex gap-2 mt-2">
-                <button onClick={() => addChapter()} className="flex-1 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-primary-500 hover:text-primary-400 transition-all">+ Thêm chương mới</button>
+            <div className="flex gap-1.5 mt-2">
+                <button 
+                  onClick={() => addChapter()} 
+                  className="flex-1 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-primary-500 hover:text-primary-400 transition-all"
+                  title="Thêm chương mới vào cuối tác phẩm"
+                >
+                  + Cuối
+                </button>
+                <button 
+                  onClick={() => handleOpenInsertModal(activeChapterId || sortedChapters[sortedChapters.length - 1]?.id, 'after')} 
+                  className="flex-1 py-2.5 border border-dashed border-emerald-900/60 bg-emerald-950/20 rounded-xl text-emerald-400 hover:text-emerald-300 hover:border-emerald-500 text-[10px] font-black uppercase transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm"
+                  title="Chèn chương trống vào bất kỳ vị trí nào giữa các chương"
+                >
+                    <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                    </svg>
+                    <span>Chèn giữa</span>
+                </button>
                 <button 
                   onClick={() => setIsMergeModalOpen(true)} 
                   disabled={(story?.chapters.length || 0) < 2}
-                  className="px-3 py-2.5 border border-dashed border-gray-700 hover:border-indigo-500 text-gray-400 hover:text-indigo-400 rounded-xl text-[10px] font-black uppercase transition-all flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:hover:border-gray-700 disabled:hover:text-gray-400" 
+                  className="px-2.5 py-2.5 border border-dashed border-gray-700 hover:border-indigo-500 text-gray-400 hover:text-indigo-400 rounded-xl text-[10px] font-black uppercase transition-all flex items-center justify-center gap-1 disabled:opacity-40" 
                   title="Gộp các chương hoặc nối các phần nhỏ thành 1 chương"
                 >
                     <svg className="w-3.5 h-3.5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -506,7 +581,7 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
                     <span>Gộp</span>
                 </button>
                 <input type="file" ref={chapterTxtInputRef} className="hidden" accept=".txt,.epub,application/epub+zip" onChange={handleChapterTxtUpload} />
-                <button onClick={() => chapterTxtInputRef.current?.click()} className="px-3 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT hoặc EPUB">
+                <button onClick={() => chapterTxtInputRef.current?.click()} className="px-2.5 py-2.5 border border-dashed border-gray-700 rounded-xl text-gray-500 text-[10px] font-black uppercase hover:border-emerald-500 hover:text-emerald-400 transition-all flex items-center justify-center" title="Tải chương từ file TXT hoặc EPUB">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
@@ -854,6 +929,14 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
         chapters={story?.chapters || []} 
         activeChapterId={activeChapterId} 
         onMerge={mergeChapters} 
+      />
+      <InsertChapterModal
+        isOpen={isInsertModalOpen}
+        onClose={() => setIsInsertModalOpen(false)}
+        chapters={story?.chapters || []}
+        initialTargetChapterId={insertTargetChapterId}
+        initialPosition={insertPosition}
+        onInsert={insertChapter}
       />
     </div>
   );

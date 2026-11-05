@@ -112,7 +112,16 @@ interface StoryContextType {
   isPlotPlanning: boolean;
 
   selectChapter: (id: string) => void;
-  addChapter: (params?: Partial<Chapter>) => Promise<void>;
+  addChapter: (
+    params?: Partial<Chapter>,
+    insertOptions?: { targetChapterId?: string; position?: 'before' | 'after'; autoRenumberFollowing?: boolean }
+  ) => Promise<string | undefined>;
+  insertChapter: (
+    targetChapterId: string,
+    position?: 'before' | 'after',
+    params?: Partial<Chapter>,
+    options?: { autoRenumberFollowing?: boolean }
+  ) => Promise<string | undefined>;
   deleteChapter: (id: string) => Promise<void>;
   updateChapterContent: (id: string, content: string, pushToHistory?: boolean) => void;
   updateChapterOutline: (id: string, outline: string) => void;
@@ -622,24 +631,118 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const selectChapter = useCallback((id: string) => setActiveChapterId(id), []);
 
-  const addChapter = async (params?: Partial<Chapter>) => {
-    if (!story) return;
-    const maxOrder = story.chapters.length > 0 ? Math.max(...story.chapters.map(c => c.order)) : 0;
+  const insertChapter = async (
+    targetChapterId: string,
+    position: 'before' | 'after' = 'after',
+    params?: Partial<Chapter>,
+    options?: { autoRenumberFollowing?: boolean }
+  ): Promise<string | undefined> => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return undefined;
+
+    const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
+    const targetIdx = sortedChapters.findIndex(c => c.id === targetChapterId);
+    
+    // If target not found, fall back to appending at the end
+    const insertIdx = targetIdx === -1 
+      ? sortedChapters.length 
+      : (position === 'before' ? targetIdx : targetIdx + 1);
+
+    const newChapterId = generateId();
+    const finalOrder = insertIdx + 1;
+
+    let initialTitle = params?.title?.trim();
+    if (!initialTitle) {
+      initialTitle = `Chương ${finalOrder}`;
+    }
+
     const newChapter: Chapter = {
-        id: generateId(), 
-        title: params?.title || `Chương ${story.chapters.length + 1}`, 
+      id: newChapterId,
+      title: initialTitle,
+      content: params?.content || '',
+      summary: params?.summary || '',
+      outline: params?.outline || '',
+      timeSetting: params?.timeSetting || '',
+      order: finalOrder,
+      wordGoal: params?.wordGoal || 2000,
+      lastUpdated: Date.now()
+    };
+
+    // Insert new blank chapter at insertIdx
+    sortedChapters.splice(insertIdx, 0, newChapter);
+
+    const shouldRenumber = options?.autoRenumberFollowing ?? false;
+
+    // Re-index all chapter orders and optionally renumber following chapters
+    const updatedChapters = sortedChapters.map((c, idx) => {
+      const orderNum = idx + 1;
+      let chapterTitle = c.title;
+
+      if (shouldRenumber && idx > insertIdx && c.id !== newChapterId) {
+        const match = chapterTitle.match(/^((?:Chương|Chapter)\s*)(\d+)(.*)$/i);
+        if (match) {
+          const prefix = match[1];
+          const oldNum = parseInt(match[2], 10);
+          const suffix = match[3];
+          chapterTitle = `${prefix}${oldNum + 1}${suffix}`;
+        }
+      }
+
+      return {
+        ...c,
+        order: orderNum,
+        title: chapterTitle
+      };
+    });
+
+    const updatedStory: Story = {
+      ...currentStory,
+      chapters: updatedChapters
+    };
+
+    setStory(updatedStory);
+    storyRef.current = updatedStory;
+    await storageService.saveStory(updatedStory);
+    setActiveChapterId(newChapterId);
+    bumpEditorSyncToken();
+    return newChapterId;
+  };
+
+  const addChapter = async (
+    params?: Partial<Chapter>,
+    insertOptions?: { targetChapterId?: string; position?: 'before' | 'after'; autoRenumberFollowing?: boolean }
+  ): Promise<string | undefined> => {
+    if (insertOptions?.targetChapterId) {
+      return await insertChapter(
+        insertOptions.targetChapterId,
+        insertOptions.position || 'after',
+        params,
+        { autoRenumberFollowing: insertOptions.autoRenumberFollowing }
+      );
+    }
+
+    const currentStory = storyRef.current;
+    if (!currentStory) return undefined;
+    const maxOrder = currentStory.chapters.length > 0 ? Math.max(...currentStory.chapters.map(c => c.order)) : 0;
+    const newId = generateId();
+    const newChapter: Chapter = {
+        id: newId, 
+        title: params?.title || `Chương ${currentStory.chapters.length + 1}`, 
         content: params?.content || '', 
         summary: params?.summary || '', 
         outline: params?.outline || '', 
         timeSetting: params?.timeSetting || '',
         order: maxOrder + 1, 
-        wordGoal: 2000, 
+        wordGoal: params?.wordGoal || 2000, 
         lastUpdated: Date.now()
     };
-    const updatedStory = { ...story, chapters: [...story.chapters, newChapter] };
+    const updatedStory = { ...currentStory, chapters: [...currentStory.chapters, newChapter] };
     setStory(updatedStory);
+    storyRef.current = updatedStory;
     await storageService.saveStory(updatedStory);
     setActiveChapterId(newChapter.id);
+    bumpEditorSyncToken();
+    return newId;
   };
 
   const deleteChapter = async (id: string) => {
@@ -836,7 +939,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             }
         }
         const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, content, lastUpdated: Date.now() } : c) };
-        storageService.saveStory(newState);
+        storageService.saveChapterDelta(prev.id, id, content);
         return newState;
     });
   }, []);
@@ -1228,6 +1331,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateChapterTranslation = async (chapterId: string, translatedContent: string, translatedTitle?: string) => {
     if (!storyRef.current) return;
+    const storyId = storyRef.current.id;
+    const currentChapter = storyRef.current.chapters.find(c => c.id === chapterId);
+    const existingContent = currentChapter?.content || '';
+
     const updatedChapters = storyRef.current.chapters.map(c => {
       if (c.id === chapterId) {
         return {
@@ -1242,7 +1349,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const updatedStory = { ...storyRef.current, chapters: updatedChapters };
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveChapterDelta(storyId, chapterId, existingContent, translatedTitle, translatedContent);
   };
 
   const promoteTranslationToMain = async (chapterId: string) => {
@@ -2380,7 +2487,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
       canUndo, canRedo, undo, redo,
       loadStories, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
-      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
+      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, insertChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
       generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,

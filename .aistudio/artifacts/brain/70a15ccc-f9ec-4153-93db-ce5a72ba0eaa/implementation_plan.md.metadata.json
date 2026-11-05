@@ -1,0 +1,6 @@
+{
+  "summary": "Kế hoạch tối ưu hóa toàn diện ứng dụng Aetheria Novel Studio:\n- Hiệu năng & Bộ nhớ: Tối ưu IndexedDB với lưu trữ phân đoạn chương, nén dữ liệu tránh quá tải bộ nhớ và ngăn tràn dung lượng trình duyệt.\n- Tốc độ hiển thị & Cuộn: Memoization danh sách chương Sidebar, ảo hóa đoạn văn bản trong Editor, chống giật khung hình khi gõ chương dài.\n- Độ ổn định AI: Tăng cường tự động tiếp nối khi gặp giới hạn token, xử lý triệt để lỗi ngắt quãng/undefined, tự động fallback model khi nghẽn hạn mức 429.\n- Trải nghiệm Đọc & Soạn thảo: Bổ sung thanh tùy chỉnh chế độ đọc (cỡ chữ, font Serif/Sans, màu nền mắt đêm/than chì), chế độ Tập trung Focus Mode và xuất bản thảo dự phòng.",
+  "updatedAt": "2026-11-04T21:27:25.885152965Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
