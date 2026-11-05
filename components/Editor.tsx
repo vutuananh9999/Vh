@@ -299,7 +299,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     prevIsGeneratingRef.current = isGenerating;
   }, [activeChapterId, editorVersion, isGenerating, editorSyncToken, activeChapter, updateChapterContent, updateChapterTitle, updateChapterTranslation]);
 
-  const adjustTextareaHeight = useCallback(() => {
+  const adjustTextareaHeight = useCallback((forceRecalculate = false) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const container = scrollContainerRef.current;
@@ -308,15 +308,20 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     const prevStart = isFocused ? textarea.selectionStart : null;
     const prevEnd = isFocused ? textarea.selectionEnd : null;
 
-    const currentHeight = textarea.offsetHeight;
-    if (textarea.scrollHeight > currentHeight) {
-      // Content expanded: grow directly without collapsing to 'auto' first to prevent cursor jumping
-      textarea.style.height = `${Math.max(450, textarea.scrollHeight)}px`;
-    } else {
-      // Content shrunk or needs recalculation: measure safely
+    if (forceRecalculate) {
+      // Force reset height to auto to get the true scrollHeight for new chapter content
       textarea.style.height = 'auto';
-      const newHeight = Math.max(450, textarea.scrollHeight);
-      textarea.style.height = `${newHeight}px`;
+      const accurateHeight = Math.max(450, textarea.scrollHeight);
+      textarea.style.height = `${accurateHeight}px`;
+    } else {
+      const currentHeight = textarea.offsetHeight;
+      if (textarea.scrollHeight > currentHeight) {
+        textarea.style.height = `${Math.max(450, textarea.scrollHeight)}px`;
+      } else {
+        textarea.style.height = 'auto';
+        const newHeight = Math.max(450, textarea.scrollHeight);
+        textarea.style.height = `${newHeight}px`;
+      }
     }
 
     if (container && container.scrollTop !== prevScrollTop) {
@@ -332,21 +337,28 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     }
   }, []);
 
+  // Synchronously measure whenever content, chapter, or edit mode changes
   useLayoutEffect(() => {
     if (isEditMode) {
-      adjustTextareaHeight();
+      adjustTextareaHeight(true);
     }
-  }, [isEditMode, activeChapterId, editorVersion, adjustTextareaHeight]);
+  }, [isEditMode, activeChapterId, editorVersion, localContent, adjustTextareaHeight]);
 
-  // Ensure textarea height is properly recalculated when switching into Edit mode
+  // Double check after microtask and DOM painting to guarantee full chapter expansion
   useEffect(() => {
     if (isEditMode) {
+      const raf = requestAnimationFrame(() => {
+        adjustTextareaHeight(true);
+      });
       const timer = setTimeout(() => {
-        adjustTextareaHeight();
-      }, 50);
-      return () => clearTimeout(timer);
+        adjustTextareaHeight(true);
+      }, 60);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(timer);
+      };
     }
-  }, [isEditMode, adjustTextareaHeight]);
+  }, [isEditMode, activeChapterId, editorVersion, localContent, adjustTextareaHeight]);
 
   // Scroll to top when switching chapters
   useEffect(() => {

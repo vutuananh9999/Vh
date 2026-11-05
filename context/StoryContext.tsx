@@ -341,7 +341,17 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const loadStories = async () => {
     try {
       const list = await storageService.getAllStorySummaries();
-      setStoriesList(list.sort((a, b) => (b.createdAt - a.createdAt)));
+      const sorted = list.sort((a, b) => (b.createdAt - a.createdAt));
+      setStoriesList(sorted);
+
+      const savedStoryId = localStorage.getItem('aetheria_active_story_id');
+      const targetId = (savedStoryId && sorted.some(s => s.id === savedStoryId)) 
+        ? savedStoryId 
+        : (sorted.length > 0 ? sorted[0].id : null);
+
+      if (targetId && !storyRef.current) {
+        await openStory(targetId);
+      }
     } catch (err) {
       console.error("Failed to load stories from storage:", err);
       setStoriesList([]);
@@ -403,6 +413,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }]
         };
         await storageService.saveStory(newStory);
+        try { localStorage.setItem('aetheria_active_story_id', storyId); } catch (_) {}
         setStory(newStory);
         setActiveChapterId(newStory.chapters[0].id);
         await loadStories();
@@ -415,6 +426,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const openStory = async (id: string) => {
+    try { localStorage.setItem('aetheria_active_story_id', id); } catch (_) {}
     const found = await storageService.getStory(id);
     if (found) {
         const fixedChapters = found.chapters.map(c => ({
@@ -446,7 +458,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const closeStory = () => { setStory(null); setActiveChapterId(null); loadStories(); setHistory({}); };
+  const closeStory = () => { 
+    try { localStorage.removeItem('aetheria_active_story_id'); } catch (_) {}
+    setStory(null); 
+    setActiveChapterId(null); 
+    loadStories(); 
+    setHistory({}); 
+  };
 
   const updateStorySettings = useCallback(async (settings: Partial<Story>) => {
     setStory(prev => {
