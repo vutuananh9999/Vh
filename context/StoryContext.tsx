@@ -339,9 +339,15 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const triggerLearn = useCallback(() => setLearnTrigger(prev => prev + 1), []);
 
   const loadStories = async () => {
-    const list = await storageService.getAllStorySummaries();
-    setStoriesList(list.sort((a, b) => (b.createdAt - a.createdAt)));
-    setIsStoriesLoaded(true);
+    try {
+      const list = await storageService.getAllStorySummaries();
+      setStoriesList(list.sort((a, b) => (b.createdAt - a.createdAt)));
+    } catch (err) {
+      console.error("Failed to load stories from storage:", err);
+      setStoriesList([]);
+    } finally {
+      setIsStoriesLoaded(true);
+    }
   };
 
   useEffect(() => { loadStories(); }, []);

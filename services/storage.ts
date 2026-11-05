@@ -26,31 +26,58 @@ const openDB = (): Promise<IDBDatabase> => {
   if (dbInstance) return dbInstance;
 
   dbInstance = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => {
+    // Safety timeout in case indexedDB hangs
+    const timeout = setTimeout(() => {
+      console.warn("IndexedDB open timed out after 5s");
       dbInstance = null;
-      reject(request.error);
-    };
-    
-    request.onsuccess = () => resolve(request.result);
+      reject(new Error("IndexedDB open timed out"));
+    }, 5000);
 
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_STORIES)) {
-        db.createObjectStore(STORE_STORIES, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(STORE_CHAPTER_DATA)) {
-        const chapterStore = db.createObjectStore(STORE_CHAPTER_DATA, { keyPath: 'id' });
-        chapterStore.createIndex('storyId', 'storyId', { unique: false });
-      }
-      if (!db.objectStoreNames.contains(STORE_VECTORS)) {
-        const vectorStore = db.createObjectStore(STORE_VECTORS, { keyPath: 'id' });
-        vectorStore.createIndex('storyId', 'storyId', { unique: false });
-        vectorStore.createIndex('referenceId', 'metadata.referenceId', { unique: false });
-        vectorStore.createIndex('type', 'metadata.type', { unique: false });
-      }
-    };
+    try {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onblocked = () => {
+        console.warn("IndexedDB open request was blocked by another tab or connection");
+      };
+
+      request.onerror = () => {
+        clearTimeout(timeout);
+        dbInstance = null;
+        console.error("IndexedDB open error:", request.error);
+        reject(request.error);
+      };
+      
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        const db = request.result;
+        db.onversionchange = () => {
+          db.close();
+          dbInstance = null;
+        };
+        resolve(db);
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains(STORE_STORIES)) {
+          db.createObjectStore(STORE_STORIES, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(STORE_CHAPTER_DATA)) {
+          const chapterStore = db.createObjectStore(STORE_CHAPTER_DATA, { keyPath: 'id' });
+          chapterStore.createIndex('storyId', 'storyId', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(STORE_VECTORS)) {
+          const vectorStore = db.createObjectStore(STORE_VECTORS, { keyPath: 'id' });
+          vectorStore.createIndex('storyId', 'storyId', { unique: false });
+          vectorStore.createIndex('referenceId', 'metadata.referenceId', { unique: false });
+          vectorStore.createIndex('type', 'metadata.type', { unique: false });
+        }
+      };
+    } catch (err) {
+      clearTimeout(timeout);
+      dbInstance = null;
+      reject(err);
+    }
   });
   
   return dbInstance;
