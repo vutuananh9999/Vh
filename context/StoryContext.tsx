@@ -338,19 +338,17 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const triggerSave = useCallback(() => setSaveTrigger(prev => prev + 1), []);
   const triggerLearn = useCallback(() => setLearnTrigger(prev => prev + 1), []);
 
-  const loadStories = async () => {
+  const loadStories = async (skipAutoOpen = false) => {
     try {
       const list = await storageService.getAllStorySummaries();
       const sorted = list.sort((a, b) => (b.createdAt - a.createdAt));
       setStoriesList(sorted);
 
-      const savedStoryId = localStorage.getItem('aetheria_active_story_id');
-      const targetId = (savedStoryId && sorted.some(s => s.id === savedStoryId)) 
-        ? savedStoryId 
-        : (sorted.length > 0 ? sorted[0].id : null);
-
-      if (targetId && !storyRef.current) {
-        await openStory(targetId);
+      if (!skipAutoOpen) {
+        const savedStoryId = localStorage.getItem('aetheria_active_story_id');
+        if (savedStoryId && sorted.some(s => s.id === savedStoryId) && !storyRef.current) {
+          await openStory(savedStoryId);
+        }
       }
     } catch (err) {
       console.error("Failed to load stories from storage:", err);
@@ -460,9 +458,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const closeStory = () => { 
     try { localStorage.removeItem('aetheria_active_story_id'); } catch (_) {}
+    storageService.flushSaves();
     setStory(null); 
     setActiveChapterId(null); 
-    loadStories(); 
+    loadStories(true); 
     setHistory({}); 
   };
 
