@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
-import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext } from "./promptBuilderService.ts";
+import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext, sampleManuscript } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
 import { plotDebugLogger } from "./plotDebugLogger.ts";
 import { requestThrottleService } from "./requestThrottleService.ts";
@@ -1078,7 +1078,7 @@ export const geminiService = {
     4. Đặc điểm xã hội/trang phục/công nghệ.`;
     
     try {
-      const response = await ai.models.generateContent({
+      const response = await safeGenerateContent({
         model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }] }
@@ -1102,7 +1102,7 @@ export const geminiService = {
     Mục tiêu: Cung cấp dữ liệu nền tảng chính xác để viết đồng nhân (fanfiction).`;
 
     try {
-      const response = await ai.models.generateContent({
+      const response = await safeGenerateContent({
         model: getFlash(),
         contents: [{ parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }] }
@@ -1118,29 +1118,37 @@ export const geminiService = {
   async extractWritingDNA(text: string): Promise<any | null> {
     if (!text.trim()) return null;
     const prompt = promptBuilderService.buildDNAExtractionPrompt(text);
-    try {
-      const response = await ai.models.generateContent({
-        model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { responseMimeType: "application/json" }
-      });
-      return { data: JSON.parse(response.text || "null"), usageMetadata: response.usageMetadata };
-    } catch (e) {
-      console.error("DNA Extraction failed:", e);
-      return null;
-    }
+    const dnaSchema = {
+      type: Type.OBJECT,
+      properties: {
+        narrativeVoice: { type: Type.STRING },
+        vocabularyPalette: { type: Type.ARRAY, items: { type: Type.STRING } },
+        sentenceStructure: { type: Type.STRING },
+        thematicElements: { type: Type.ARRAY, items: { type: Type.STRING } },
+        emotionalTone: { type: Type.STRING },
+        rhythm: { type: Type.STRING }
+      },
+      required: ["narrativeVoice", "vocabularyPalette", "sentenceStructure", "thematicElements", "emotionalTone", "rhythm"]
+    };
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, dnaSchema),
+      { name: "Chiết tách Hồn Văn", type: 'plot_analysis', priority: 'normal' }
+    );
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) throw new Error("Không thể phân tích Hồn Văn từ văn bản.");
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async generateStoryFoundation(seedIdea: string, genre: string): Promise<any> {
     const prompt = promptBuilderService.buildStoryFoundationPrompt(seedIdea, genre);
-    try {
-      const response = await ai.models.generateContent({
-        model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { responseMimeType: "application/json" }
-      });
-      return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    const response = await safeGenerateContent({
+      model: getFlash(),
+      contents: [{ parts: [{ text: prompt }] }],
+      config: { responseMimeType: "application/json", temperature: 0.7 }
+    });
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) throw new Error("Không thể khởi tạo nền tảng truyện.");
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async enforceCompliance(text: string, story: Story, verificationReport: string = ""): Promise<any> {
@@ -1154,15 +1162,13 @@ export const geminiService = {
         verificationReport
     );
     try {
-        const response = await ai.models.generateContent({
+        const response = await safeGenerateContent({
             model: getFlash(), 
             contents: [{ parts: [{ text: prompt }] }],
-            config: { 
-                temperature: 0.2
-            } 
+            config: { temperature: 0.25 } 
         });
         const resultText = response.text?.trim() || text;
-        if (resultText.length < text.length * 0.8) {
+        if (resultText.length < text.length * 0.75) {
             return { text, usageMetadata: response.usageMetadata };
         }
         return { text: resultText, usageMetadata: response.usageMetadata };
@@ -1195,21 +1201,22 @@ export const geminiService = {
     previousChapterTime: string = "",
     currentTimeline: string = "",
     historicalContext: string = "",
-    canonContext: string = "" 
+    canonContext: string = "",
+    fandomName: string = ""
   ) {
     const systemInstruction = promptBuilderService.buildSystemInstruction(
       genre, worldBible, pov, pronounStyle, writingStyle, interactionRules, negativePrompt, nsfw, hasSystem, mechanics, persistentDirectives, writingDNA
     );
     const prompt = promptBuilderService.buildForgePrompt(
-      immediateContext, worldBible, planning, characters, interactionRules, userInstruction, pronounStyle, targetWordCount, persistentDirectives, mechanics, chapterOutline, verificationReport, currentChapterTime, previousChapterTime, currentTimeline, historicalContext, canonContext
+      immediateContext, worldBible, planning, characters, interactionRules, userInstruction, pronounStyle, targetWordCount, persistentDirectives, mechanics, chapterOutline, verificationReport, currentChapterTime, previousChapterTime, currentTimeline, historicalContext, canonContext, genre, fandomName
     );
     const stream = safeGenerateContentStream({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: { 
         systemInstruction, 
-        temperature: 1.0, 
-        topP: 0.98, 
+        temperature: 0.9, 
+        topP: 0.96, 
         maxOutputTokens: 65536,
         thinkingConfig: { thinkingBudget: 2048 } 
       }
@@ -1230,10 +1237,12 @@ export const geminiService = {
 
   async generateChapterSummary(title: string, content: string): Promise<any> {
     return requestThrottleService.enqueuePromise(async () => {
-      const prompt = `Hãy tóm tắt đầy đủ các sự kiện quan trọng trong chương "${title}" (khoảng 200 từ). Tập trung vào chuyển biến của nhân vật và các vật phẩm/thông tin mới. [NỘI DUNG]: ${content.substring(0, 10000)}`;
-      const response = await ai.models.generateContent({ 
+      const safeBody = sampleManuscript(content, 24000);
+      const prompt = `Hãy tóm tắt đầy đủ các sự kiện quan trọng trong chương "${title}" (khoảng 180-250 từ bằng tiếng Việt). Tập trung vào: diễn biến chính, chuyển biến tâm lý/trạng thái nhân vật, địa điểm, vật phẩm hoặc manh mối mới được tiết lộ.\n\n[NỘI DUNG CHƯƠNG]:\n${safeBody}`;
+      const response = await safeGenerateContent({ 
           model: getFlash(), 
-          contents: [{ parts: [{ text: prompt }] }] 
+          contents: [{ parts: [{ text: prompt }] }],
+          config: { temperature: 0.3 }
       });
       return { text: response.text || "", usageMetadata: response.usageMetadata };
     }, {
@@ -1243,49 +1252,26 @@ export const geminiService = {
     });
   },
 
-  async generateChapterContentFromPlot(chapter: Chapter, story: Story): Promise<any> {
+  async generateChapterContentFromPlot(
+    chapter: Chapter,
+    story: Story,
+    options: { repairInstruction?: string; continuityNotes?: string } = {}
+  ): Promise<any> {
     return requestThrottleService.enqueuePromise(async () => {
-      const hasOriginalDraft = !!(chapter.content && chapter.content.trim().length > 30);
-      const prompt = `Bạn là một Đại văn hào chuyên nghiệp viết tiểu thuyết trực tuyến xuất sắc.
-Hãy viết hoặc chỉnh sửa/nâng cấp bản thảo (draft) cho chương "${chapter.title}" của tác phẩm "${story.title}" dựa trên các thông tin cốt truyện và định hướng sau đây:
-
-[THỂ LOẠI]: ${story.genre}
-[DANH SÁCH NHÂN VẬT CHÍNH]:
-${story.characters?.map(c => `- ${c.name}: ${c.description} (Vai trò: ${c.role})`).join('\n')}
-
-[BỐI CẢNH & THẾ GIỚI]:
-${story.setting || "Chưa thiết lập"}
-
-[ĐỀ CƯƠNG CHI TIẾT CHƯƠNG NÀY (OUTLINE)]:
-${chapter.outline || "Chưa thiết lập. Hãy tự thiết kế các phân cảnh kịch tính."}
-
-[BẢN THẢO / NGUYÊN MẪU HIỆN TẠI (NẾU CÓ - ĐẦY ĐỦ 100%)]:
-${chapter.content || "(Trống - Hãy viết mới hoàn toàn)"}
-
-${ORIGINAL_FIDELITY_PROTOCOL}
-
-Yêu cầu cụ thể:
-1. ${hasOriginalDraft ? '⚠️ ĐÃ CÓ BẢN THẢO / NGUYÊN MẪU GỐC: Bạn PHẢI BẢO TỒN 100% các chi tiết đắt giá, tên nhân vật, đạo cụ, từng lời thoại và diễn biến cụ thể trong bản thảo hiện tại. Hãy trau chuốt, nâng cấp văn phong và kết hợp mở rộng theo định hướng của Đề cương chi tiết (Outline). TUYỆT ĐỐI KHÔNG xóa bỏ, không tóm tắt hay làm mất các chi tiết của bản thảo nguyên mẫu.' : 'Hãy bám sát Đề cương chi tiết (Outline) để kiến tạo nên một chương truyện hoàn chỉnh, giàu chi tiết và cảm xúc.'}
-2. BẢO TỒN TOÀN BỘ CHI TIẾT: Tuyệt đối không lược bỏ tên nhân vật, vật phẩm, tình huống, tâm lý hay các phân cảnh của nguyên mẫu.
-3. Viết một chương truyện hoàn chỉnh, giàu chi tiết, nhịp điệu lôi cuốn, văn phong trau chuốt, giữ đúng tính cách các nhân vật.
-4. Tuyệt đối không được tóm tắt chương, hãy viết dưới dạng truyện đọc trực tiếp (với lời thoại, hành động, miêu tả tâm lý và bối cảnh chi tiết).
-5. Sử dụng các quy tắc kể chuyện từ ngôi kể: ${story.pov || "Ngôi thứ ba"} và phong cách đại từ: ${story.pronounStyle || "Tự nhiên"}.
-6. Đảm bảo dung lượng đầy đủ, kịch tính, lôi cuốn (tối thiểu bằng hoặc dài hơn bản thảo hiện tại).
-
-Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
-
+      const prompt = promptBuilderService.buildChapterPlotWriteOrFixPrompt(chapter, story, options);
       const response = await safeGenerateContent({ 
           model: getFlash(), 
           contents: [{ parts: [{ text: prompt }] }],
           config: {
-              temperature: 0.85,
+              temperature: 0.78,
+              maxOutputTokens: 65536,
               thinkingConfig: { thinkingBudget: 2048 } 
           }
       });
 
       return { text: response.text || "", usageMetadata: response.usageMetadata };
     }, {
-      name: `Soạn thảo: ${chapter.title}`,
+      name: `Soạn/Sửa thảo: ${chapter.title}`,
       type: 'content_gen',
       priority: 'normal'
     });
@@ -1320,37 +1306,69 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
         systemInstruction: 'Plot Arc JSON Analyzer'
       });
 
+      const plotArcSchema = {
+        type: Type.OBJECT,
+        properties: {
+          arcAnalysis: { type: Type.STRING },
+          pacingHeatmap: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+          unresolvedHooks: { type: Type.ARRAY, items: { type: Type.STRING } },
+          futurePredictions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          chapterIssues: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                chapterId: { type: Type.STRING },
+                chapterTitle: { type: Type.STRING },
+                issue: { type: Type.STRING },
+                fixSuggestion: { type: Type.STRING }
+              },
+              required: ["chapterTitle", "issue", "fixSuggestion"]
+            }
+          },
+          characterArcSummary: { type: Type.STRING }
+        },
+        required: ["arcAnalysis", "pacingHeatmap", "unresolvedHooks", "futurePredictions"]
+      };
+
       try {
-        const response = await safeGenerateContent({
-          model: getFlash(),
-          contents: [{ parts: [{ text: prompt }] }],
-          config: { 
-            responseMimeType: "application/json",
-            thinkingConfig: { thinkingBudget: 2048 }
-          }
-        });
+        const response = await generateAuditJsonWithFallback(prompt, plotArcSchema);
+        const parsed = safeJsonParse<any>(response?.text, null);
+        if (!parsed || typeof parsed !== 'object') {
+          throw new Error("AI không trả về dữ liệu phân tích cốt truyện đúng định dạng JSON.");
+        }
+
+        const normalized = {
+          arcAnalysis: String(parsed.arcAnalysis || "Chưa có phân tích tổng quan."),
+          pacingHeatmap: Array.isArray(parsed.pacingHeatmap)
+            ? parsed.pacingHeatmap.map((n: any) => Math.max(0, Math.min(100, Number(n) || 0)))
+            : [],
+          unresolvedHooks: Array.isArray(parsed.unresolvedHooks)
+            ? parsed.unresolvedHooks.map((x: any) => String(x)).filter(Boolean)
+            : [],
+          futurePredictions: Array.isArray(parsed.futurePredictions)
+            ? parsed.futurePredictions.map((x: any) => String(x)).filter(Boolean)
+            : [],
+          chapterIssues: Array.isArray(parsed.chapterIssues)
+            ? parsed.chapterIssues.map((ci: any) => ({
+                chapterId: ci?.chapterId ? String(ci.chapterId) : undefined,
+                chapterTitle: String(ci?.chapterTitle || "Chương truyện"),
+                issue: String(ci?.issue || ""),
+                fixSuggestion: String(ci?.fixSuggestion || "")
+              })).filter((ci: any) => ci.issue)
+            : [],
+          characterArcSummary: parsed.characterArcSummary ? String(parsed.characterArcSummary) : ""
+        };
+
         plotDebugLogger.completeSuccess(logId, {
           fullResponse: response.text || "",
           usageMetadata: response.usageMetadata
         });
-        return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-      } catch (e: any) {
-        try {
-          const response = await safeGenerateContent({
-            model: getFlash(),
-            contents: [{ parts: [{ text: prompt }] }],
-            config: { responseMimeType: "application/json" }
-          });
-          plotDebugLogger.completeSuccess(logId, {
-            fullResponse: response.text || "",
-            usageMetadata: response.usageMetadata
-          });
-          return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-        } catch (err: any) {
-          console.error("Plot Arc Analysis failed:", err);
-          plotDebugLogger.recordFailure(logId, err);
-          return null;
-        }
+        return { data: normalized, usageMetadata: response.usageMetadata };
+      } catch (err: any) {
+        console.error("Plot Arc Analysis failed:", err);
+        plotDebugLogger.recordFailure(logId, err);
+        throw err;
       }
     }, {
       name: `Phân tích Mạch truyện (${storyTitle || 'Toàn tác phẩm'})`,
@@ -1359,16 +1377,280 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     });
   },
 
-  async extractKnowledge(text: string, story: Story, categories: ExtractionCategory[] = ['characters', 'world']): Promise<any> {
-    const prompt = promptBuilderService.buildKnowledgeExtractionPrompt(text, story.characters, categories);
-    try {
-      const response = await safeGenerateContent({
-        model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { responseMimeType: "application/json" }
+  async extractKnowledge(
+    text: string,
+    story: Story,
+    categories: ExtractionCategory[] = ['characters', 'world', 'mechanics'],
+    options: { isFullStoryScan?: boolean; extraKnownCharacters?: Character[] } = {}
+  ): Promise<any> {
+    const knownCharacters = options.extraKnownCharacters || story.characters || [];
+    const safeText = sampleManuscript(text, 38000);
+    const prompt = promptBuilderService.buildKnowledgeExtractionPrompt(safeText, knownCharacters, categories, {
+      isFullStoryScan: options.isFullStoryScan,
+      storyTitle: story.title,
+      storyGenre: story.genre
+    });
+
+    const knowledgeSchema = {
+      type: Type.OBJECT,
+      properties: {
+        newCharacters: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              role: { type: Type.STRING },
+              entityType: { type: Type.STRING },
+              species: { type: Type.STRING },
+              description: { type: Type.STRING },
+              appearance: { type: Type.STRING },
+              traits: { type: Type.ARRAY, items: { type: Type.STRING } },
+              status: { type: Type.STRING },
+              currentLocation: { type: Type.STRING },
+              powerLevel: { type: Type.STRING },
+              abilities: { type: Type.STRING },
+              knowledge: { type: Type.STRING },
+              mentors: { type: Type.STRING },
+              enemies: { type: Type.STRING }
+            },
+            required: ["name", "description"]
+          }
+        },
+        characterUpdates: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              status: { type: Type.STRING },
+              healthStatus: { type: Type.STRING },
+              combatState: { type: Type.STRING },
+              currentLocation: { type: Type.STRING },
+              powerLevel: { type: Type.STRING },
+              abilities: { type: Type.STRING },
+              realizations: { type: Type.STRING },
+              knowledge: { type: Type.STRING },
+              enemies: { type: Type.STRING }
+            },
+            required: ["name"]
+          }
+        },
+        worldLore: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              topic: { type: Type.STRING },
+              content: { type: Type.STRING }
+            },
+            required: ["topic", "content"]
+          }
+        },
+        mechanics: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              rule: { type: Type.STRING },
+              detail: { type: Type.STRING }
+            },
+            required: ["rule", "detail"]
+          }
+        },
+        genreSuggestion: { type: Type.STRING },
+        synopsisSuggestion: { type: Type.STRING }
+      },
+      required: ["newCharacters", "characterUpdates", "worldLore", "mechanics"]
+    };
+
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, knowledgeSchema),
+      { name: `Quét tri thức & nhân vật: ${story.title}`, type: 'plot_analysis', priority: 'high' }
+    );
+
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("AI không trả về dữ liệu JSON trích xuất tri thức hợp lệ.");
+    }
+
+    return {
+      data: {
+        newCharacters: Array.isArray(parsed.newCharacters) ? parsed.newCharacters : [],
+        characterUpdates: Array.isArray(parsed.characterUpdates) ? parsed.characterUpdates : [],
+        worldLore: Array.isArray(parsed.worldLore) ? parsed.worldLore : [],
+        mechanics: Array.isArray(parsed.mechanics) ? parsed.mechanics : [],
+        genreSuggestion: parsed.genreSuggestion ? String(parsed.genreSuggestion) : undefined,
+        synopsisSuggestion: parsed.synopsisSuggestion ? String(parsed.synopsisSuggestion) : undefined
+      },
+      usageMetadata: response?.usageMetadata
+    };
+  },
+
+  async scanStoryEntities(
+    story: Story,
+    onProgress?: (progress: { current: number; total: number; label: string }) => void
+  ): Promise<{ data: any; usageMetadata?: any }> {
+    const sortedChapters = [...(story.chapters || [])]
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map(ch => ({
+        title: ch.title,
+        text: (ch.content?.trim() ? ch.content : (ch.translatedContent || '')).trim()
+      }))
+      .filter(ch => ch.text.length > 20);
+
+    if (sortedChapters.length === 0) {
+      throw new Error("Truyện hiện chưa có nội dung chương đủ dài để quét nhân vật và bối cảnh.");
+    }
+
+    // Group chapters into ~24,000 char batches, capped at 5 representative batches for very massive books
+    const allBatches: { label: string; text: string }[] = [];
+    let currentTitles: string[] = [];
+    let currentTexts: string[] = [];
+    let currentLen = 0;
+
+    for (const ch of sortedChapters) {
+      const chBlock = `=== ${ch.title} ===\n${ch.text.length > 20000 ? sampleManuscript(ch.text, 20000) : ch.text}`;
+      if (currentLen + chBlock.length > 24000 && currentTexts.length > 0) {
+        allBatches.push({
+          label: `${currentTitles[0]} → ${currentTitles[currentTitles.length - 1]}`,
+          text: currentTexts.join('\n\n')
+        });
+        currentTitles = [];
+        currentTexts = [];
+        currentLen = 0;
+      }
+      currentTitles.push(ch.title);
+      currentTexts.push(chBlock);
+      currentLen += chBlock.length;
+    }
+    if (currentTexts.length > 0) {
+      allBatches.push({
+        label: currentTitles.length > 1 ? `${currentTitles[0]} → ${currentTitles[currentTitles.length - 1]}` : currentTitles[0],
+        text: currentTexts.join('\n\n')
       });
-      return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    }
+
+    // If > 5 batches (huge novel), pick evenly distributed batches across start, middle, and end
+    let selectedBatches = allBatches;
+    if (allBatches.length > 5) {
+      const indices = new Set<number>([0, 1, Math.floor(allBatches.length / 2), allBatches.length - 2, allBatches.length - 1]);
+      selectedBatches = Array.from(indices).sort((a, b) => a - b).map(idx => allBatches[idx]);
+    }
+
+    const existingNamesMap = new Map<string, Character>();
+    (story.characters || []).forEach(c => existingNamesMap.set(c.name.trim().toLowerCase(), c));
+
+    const discoveredNewCharsMap = new Map<string, any>();
+    const characterUpdatesMap = new Map<string, any>();
+    const worldLoreMap = new Map<string, { topic: string; content: string }>();
+    const mechanicsMap = new Map<string, { rule: string; detail: string }>();
+    let writingDNA: WritingDNA | undefined = story.writingDNA;
+    let genreSuggestion: string | undefined;
+    let synopsisSuggestion: string | undefined;
+
+    const totalSteps = selectedBatches.length + (story.writingDNA ? 0 : 1);
+    let stepIdx = 0;
+
+    for (const batch of selectedBatches) {
+      stepIdx++;
+      onProgress?.({ current: stepIdx, total: totalSteps, label: `Đang quét nhân vật & bối cảnh (${batch.label})...` });
+
+      const knownList: Character[] = [
+        ...(story.characters || []),
+        ...Array.from(discoveredNewCharsMap.values()).map((nc, idx) => ({
+          id: `temp-${idx}`,
+          name: nc.name,
+          role: nc.role || 'Phụ',
+          description: nc.description || '',
+          status: nc.status || 'alive',
+          traits: nc.traits || [],
+          appearance: nc.appearance || '',
+          species: nc.species
+        }))
+      ];
+
+      const res = await this.extractKnowledge(batch.text, story, ['characters', 'world', 'mechanics'], {
+        isFullStoryScan: true,
+        extraKnownCharacters: knownList
+      });
+
+      const d = res?.data;
+      if (d) {
+        if (!genreSuggestion && d.genreSuggestion) genreSuggestion = d.genreSuggestion;
+        if (!synopsisSuggestion && d.synopsisSuggestion) synopsisSuggestion = d.synopsisSuggestion;
+
+        for (const nc of (d.newCharacters || [])) {
+          const key = String(nc?.name || '').trim().toLowerCase();
+          if (!key) continue;
+          if (existingNamesMap.has(key)) {
+            characterUpdatesMap.set(key, {
+              name: existingNamesMap.get(key)!.name,
+              ...characterUpdatesMap.get(key),
+              status: nc.status,
+              currentLocation: nc.currentLocation,
+              powerLevel: nc.powerLevel,
+              abilities: nc.abilities,
+              knowledge: nc.knowledge,
+              enemies: nc.enemies
+            });
+          } else {
+            const prev = discoveredNewCharsMap.get(key) || {};
+            discoveredNewCharsMap.set(key, {
+              ...prev,
+              ...nc,
+              traits: Array.from(new Set([...(prev.traits || []), ...(nc.traits || [])])),
+              description: nc.description && (!prev.description || nc.description.length > prev.description.length) ? nc.description : prev.description
+            });
+          }
+        }
+
+        for (const upd of (d.characterUpdates || [])) {
+          const key = String(upd?.name || '').trim().toLowerCase();
+          if (!key) continue;
+          if (discoveredNewCharsMap.has(key)) {
+            const prev = discoveredNewCharsMap.get(key);
+            discoveredNewCharsMap.set(key, { ...prev, ...upd, name: prev.name });
+          } else {
+            const prevUpd = characterUpdatesMap.get(key) || {};
+            characterUpdatesMap.set(key, { ...prevUpd, ...upd });
+          }
+        }
+
+        for (const lore of (d.worldLore || [])) {
+          const key = String(lore?.topic || '').trim().toLowerCase();
+          if (key && lore.content) worldLoreMap.set(key, lore);
+        }
+
+        for (const mech of (d.mechanics || [])) {
+          const key = String(mech?.rule || '').trim().toLowerCase();
+          if (key && mech.detail) mechanicsMap.set(key, mech);
+        }
+      }
+    }
+
+    if (!writingDNA && selectedBatches[0]) {
+      stepIdx++;
+      onProgress?.({ current: stepIdx, total: totalSteps, label: `Đang phân tích Hồn Văn (Writing DNA)...` });
+      try {
+        const dnaRes = await this.extractWritingDNA(selectedBatches[0].text);
+        if (dnaRes?.data) writingDNA = dnaRes.data;
+      } catch (e) {
+        console.warn("Optional Writing DNA scan failed:", e);
+      }
+    }
+
+    return {
+      data: {
+        newCharacters: Array.from(discoveredNewCharsMap.values()),
+        characterUpdates: Array.from(characterUpdatesMap.values()),
+        worldLore: Array.from(worldLoreMap.values()),
+        mechanics: Array.from(mechanicsMap.values()),
+        writingDNA: !story.writingDNA ? writingDNA : undefined,
+        genreSuggestion: (!story.genre || story.genre === 'Chưa xác định') ? genreSuggestion : undefined,
+        synopsisSuggestion: !story.synopsis?.trim() ? synopsisSuggestion : undefined
+      }
+    };
   },
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
@@ -1380,15 +1662,14 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     }));
 
     const stream = requestThrottleService.enqueueStream(async function* () {
-      let chat;
       try {
-        chat = ai.chats.create({
+        const chat = ai.chats.create({
           model: getFlash(),
           config: { 
-            systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu. Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhiệt tình. Dựa trên [CHỈ THỊ BỀN VỮNG]: ${story.persistentDirectives || "Không có"}.`,
+            systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán.\n- Bối cảnh: ${story.setting || '(Chưa có)'}\n- Cơ chế thế giới: ${story.mechanics || '(Không)'}\n- Chỉ thị bền vững: ${story.persistentDirectives || '(Không có)'}`,
             maxOutputTokens: 65536,
             temperature: 0.7,
-            thinkingConfig: { thinkingBudget: 0 }
+            thinkingConfig: { thinkingBudget: 512 }
           },
           history: sanitizedHistory
         });
@@ -1398,6 +1679,7 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
         }
       } catch (e) {
         console.warn("chatPlanningStream failed:", e);
+        throw e;
       }
     }, {
       name: `Planning Chat: ${message.substring(0, 30)}`,
@@ -1410,68 +1692,86 @@ Hãy viết/chỉnh sửa chương truyện ngay dưới đây:`;
     }
   },
 
-  async *chatPlotStream(history: ChatMessage[], message: string, story: Story, focusChapterId?: string) {
+  async *chatPlotStream(
+    history: ChatMessage[],
+    message: string,
+    story: Story,
+    focusChapterId?: string,
+    extraContext?: { plotArcAnalysis?: any; auditReport?: any }
+  ) {
     const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 65000,
+      maxTotalChars: 60000,
       focusChapterId,
       targetChapterMention: message
     });
 
-    const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor). Nhiệm vụ của bạn là cùng tác giả phân tích cốt truyện, phát hiện lỗ hổng logic, sửa chữa tác phẩm và đề xuất hướng phát triển cốt truyện tốt nhất.
-Tên truyện: "${story.title}"
-Thể loại: ${story.genre}
-Phong cách viết / Giọng văn: ${story.writingStyle || "Chuẩn mực văn học"}
-Dàn ý tổng thể hiện tại: ${story.planning || "Chưa có"}
-Nhân vật chính: ${story.characters?.map(c => `${c.name} (${c.role || 'Nhân vật'})`).join(', ') || "Chưa thiết lập"}
+    const activeKnowledge = (story.knowledgeLogs || [])
+      .filter(k => k.isActive)
+      .slice(-20)
+      .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
+      .join('\n') || '(Chưa có)';
+
+    const rosterText = (story.characters || []).length > 0
+      ? story.characters.slice(0, 35).map(c =>
+          `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}, trạng thái: ${c.status || 'alive'}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.healthStatus ? `, thể trạng: ${c.healthStatus}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.abilities ? `, kỹ năng: ${c.abilities}` : ''}${c.traits?.length ? `, tính cách/xưng hô: ${c.traits.join(', ')}` : ''}${c.knowledge ? `, tri thức: ${c.knowledge}` : ''}${c.enemies ? `, kẻ thù: ${c.enemies}` : ''}): ${c.description || ''}`
+        ).join('\n')
+      : '(Chưa có hồ sơ nhân vật — có thể hướng dẫn tác giả nhấn nút Quét Nhân Vật ở tab Thực Thể)';
+
+    const analysisInsights: string[] = [];
+    if (extraContext?.plotArcAnalysis) {
+      const pa = extraContext.plotArcAnalysis;
+      if (pa.unresolvedHooks?.length) analysisInsights.push(`• Nút thắt chưa giải quyết: ${pa.unresolvedHooks.join(' | ')}`);
+      if (pa.chapterIssues?.length) {
+        analysisInsights.push(`• Lỗi mạch lạc từng chương đã phát hiện:\n` + pa.chapterIssues.map((ci: any) => `  - ${ci.chapterTitle}: ${ci.issue} (Gợi ý sửa: ${ci.fixSuggestion})`).join('\n'));
+      }
+    }
+    if (extraContext?.auditReport?.plotCoherence?.plotHoles?.length) {
+      analysisInsights.push(`• Lỗ hổng từ Kiểm toán toàn truyện: ${extraContext.auditReport.plotCoherence.plotHoles.join(' | ')}`);
+    }
+
+    const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor) của tác phẩm "${story.title}".
+Nhiệm vụ của bạn là cùng tác giả phân tích mạch truyện, rà soát tính nhất quán nhân vật & thế giới, sửa chữa lỗ hổng logic và nâng cấp/viết lại chương truyện theo đúng mạch lạc toàn tác phẩm.
+
+[HỒ SƠ WORLD BIBLE & QUY TẮC TÁC PHẨM]:
+- Tên truyện: "${story.title}" | Thể loại: ${story.genre || 'Tiểu thuyết'}
+- Ngôi kể (POV): ${story.pov || 'Ngôi thứ ba'} | Quy tắc xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}
+- Phong cách viết / Hồn văn: ${story.writingStyle || story.writingDNA?.narrativeVoice || 'Chuẩn mực văn học'}
+- Dòng thời gian: ${story.currentTimeline || '(Chưa thiết lập)'}
+- Dàn ý tổng thể (Blueprint): ${story.planning || '(Chưa có)'}
+- Bối cảnh thế giới (Setting): ${story.setting || '(Chưa thiết lập)'}
+- Hệ thống sức mạnh / Quy tắc thế giới (Mechanics): ${story.mechanics || '(Chưa thiết lập)'}
+- Quy tắc tương tác & Ràng buộc: ${story.interactionRules || '(Không có)'}
+- Chỉ thị bền vững: ${story.persistentDirectives || '(Không có)'}
+
+[TRI THỨC ĐÃ KHÓA (KNOWLEDGE LOGS)]:
+${activeKnowledge}
+
+[HỒ SƠ NHÂN VẬT (${(story.characters || []).length} nhân vật)]:
+${rosterText}
+${analysisInsights.length > 0 ? `\n[KẾT QUẢ PHÂN TÍCH MẠCH TRUYỆN & LỖI LOGIC HIỆN CÓ]:\n${analysisInsights.join('\n')}` : ''}
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
 [DỮ LIỆU CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
 ${chaptersContext}
 
-[GIAO THỨC TỐI THƯỢNG VỀ BẢO TỒN BẢN THẢO & KHÔNG ĐƯỢC RÚT BỚT CHI TIẾT]:
-1. 📖 BẢN THẢO THỰC TẾ (MANUSCRIPT) LÀ CHÂN LÝ DUY NHẤT:
-   - Bạn PHẢI đọc và làm việc trực tiếp trên từng câu chữ, lời thoại, hành động, vật phẩm và tình huống trong phần [BẢN THẢO THỰC TẾ].
-   - Tóm tắt (Summary) và Đề cương (Outline) chỉ là tài liệu tham khảo phụ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi tự ý suy đoán hay cắt bớt các chi tiết phong phú trong bản thảo!
-2. 🚫 NGHIÊM CẤM RÚT BỚT HOẶC TÓM TẮT HỜI HỢT:
-   - Khi nhận xét hoặc trả lời người dùng, hãy trích dẫn dẫn chứng thực tế từ bản thảo.
-   - Tuyệt đối không được trả lời chung chung, không được cố tình lược bớt các chi tiết mà tác giả đã dày công xây dựng.
-3. ✍️ ĐỀ XUẤT SỬA ĐỔI BẢN THẢO [PROPOSAL_CONTENT_CHAPTER_<id>]:
-   - Khi đưa ra đề xuất sửa đổi bản thảo chương, BẮT BUỘC PHẢI DÙNG BẢN THẢO NGUYÊN MẪU CỦA CHƯƠNG ĐÓ LÀM GỐC.
-   - PHẢI viết TOÀN VĂN ĐẦY ĐỦ 100% TỪ ĐẦU ĐẾN CUỐI CHƯƠNG (Full Manuscript).
-   - GIỮ NGUYÊN VẸN 100% các tình tiết, nhân vật, lời thoại, bối cảnh đắt giá. Chỉ chỉnh sửa, trau chuốt hoặc bổ sung các phân cảnh cần thiết theo đúng yêu cầu.
-   - CẤM TUYỆT ĐỐI các hành vi lười biếng như: chèn các câu "[... giữ nguyên phần còn lại ...]", "[... đoạn này tiếp tục như cũ ...]" hoặc tóm tắt nửa chừng.
+[GIAO THỨC BẢO TỒN BẢN THẢO & ĐỀ XUẤT SỬA ĐỔI]:
+1. 📖 BẢN THẢO THỰC TẾ LÀ CHÂN LÝ DUY NHẤT:
+   - Mọi nhận xét và đề xuất sửa đổi PHẢI dựa trên tình tiết thực tế, tên nhân vật, lời thoại và mạch liên kết giữa các chương. Trích dẫn cụ thể tên chương/chi tiết khi phân tích.
+2. 🔧 SỬA CHỮA THEO MẠCH LẠC:
+   - Khi tác giả yêu cầu sửa một chương hoặc vá lỗ hổng logic, hãy kiểm tra chương trước, chương sau, hồ sơ nhân vật (vết thương, vị trí, tri thức, xưng hô) và World Bible để bản sửa khớp nối hoàn hảo.
+3. ✍️ ĐỀ XUẤT SỬA ĐỔI CÓ THỂ ÁP DỤNG TRỰC TIẾP:
+   Khi đề xuất sửa đổi cụ thể, bọc nội dung hoàn chỉnh trong một trong các thẻ sau để giao diện tự động hiện nút "Xem Diff & Áp dụng":
+   - Cập nhật Dàn ý tổng thể:
+     [PROPOSAL_PLANNING: <nội dung dàn ý mới>]
+   - Cập nhật Đề cương một chương:
+     [PROPOSAL_OUTLINE_CHAPTER_<chapterId>: <nội dung đề cương mới>]
+   - Cập nhật Tóm tắt một chương:
+     [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <nội dung tóm tắt mới>]
+   - Cập nhật/Sửa chữa toàn văn Bản thảo chương (PHẢI viết đầy đủ 100% từ đầu đến cuối, KHÔNG viết "[... giữ nguyên phần còn lại ...]"):
+     [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh>]
 
-[QUY TẮC BẤT KHẢ XÂM PHẠM KHI NGƯỜI DÙNG YÊU CẦU "VIỆT HÓA", "DỊCH", "CHUYỂN NGỮ", "BIÊN DỊCH", "TRAU CHUỐT CÂU TỪ"]:
-⚠️ BẢN ĐỒNG THUẬN TUYỆT ĐỐI VỀ TÍNH CHÂN THỰC NGUYÊN BẢN (STRICT LOCALIZATION & FIDELITY DIRECTIVE):
-1. 🛑 CẤM BỊA / ĐẺ THÊM CHI TIẾT (ZERO FABRICATION / NO ADDED PLOT):
-   - Khi người dùng yêu cầu "Việt hóa", "Dịch", "Chuyển ngữ", "Biên tập câu từ": Nhiệm vụ DUY NHẤT là chuyển tải nguyên vẹn 100% nội dung, tình tiết, lời thoại và ý nghĩa của văn bản gốc sang tiếng Việt mượt mà, chuẩn văn phong truyện, tự nhiên và giàu cảm xúc.
-   - CẤM TUYỆT ĐỐI tự chế thêm nhân vật, tự bịa thêm lời thoại mới, tự thêm các phân cảnh hành động hay tình huống không có trong bản gốc.
-   - CẤM tự ý thay đổi bối cảnh, kết cục, số phận hay tính cách của nhân vật so với nguyên tác.
-2. 🛑 CẤM BỎ SÓT / CẮT XÉN CHI TIẾT GỐC (ZERO OMISSIONS):
-   - Mọi phân đoạn, mọi câu thoại, từng cử chỉ, từng vật phẩm, từng sự kiện trong bản gốc BẮT BUỘC PHẢI ĐƯỢC CHUYỂN NGỮ VÀ GIỮ LẠI ĐẦY ĐỦ 100% theo đúng trình tự thời gian từ đầu đến cuối.
-   - Tuyệt đối KHÔNG được tóm tắt, KHÔNG được gộp đoạn làm biến mất chi tiết gốc.
-3. 🎯 TRỌNG TÂM:
-   - Chuyển ngữ chuẩn theo ngữ cảnh thể loại (${story.genre}), xưng hô chuẩn mực theo thiết lập nhân vật, câu từ trau chuốt, trôi chảy, giàu hình ảnh nhưng GIỮ ĐÚNG 100% CỐT TRUYỆN GỐC.
-   - Khi đưa ra [PROPOSAL_CONTENT_CHAPTER_<id>: ...]: Cung cấp TOÀN VĂN bản thảo sau khi đã Việt hóa hoàn chỉnh từ dòng đầu tiên đến dòng cuối cùng.
-
-Bạn hãy trao đổi nhiệt tình, mang tính phân tích sắc bén và thấu hiểu sâu sắc từng chi tiết của tác phẩm.
-ĐẶC BIỆT: Bạn có quyền đưa ra đề xuất sửa đổi cấu trúc bằng cách thêm một trong các thẻ sau vào tin nhắn của bạn (nút "Áp dụng" sẽ tự động hiển thị cho người dùng để đồng bộ trực tiếp với bản thảo hoặc dàn ý):
-
-- Để đề xuất cập nhật Dàn ý câu chuyện (Story Planning):
-[PROPOSAL_PLANNING: <nội dung dàn ý mới>]
-
-- Để đề xuất cập nhật Đề cương/Dàn ý một chương cụ thể (thay <chapterId> bằng ID của chương đó, ví dụ: [PROPOSAL_OUTLINE_CHAPTER_12345: nội dung đề cương]):
-[PROPOSAL_OUTLINE_CHAPTER_<chapterId>: <nội dung đề cương mới>]
-
-- Để đề xuất cập nhật Tóm tắt một chương cụ thể (thay <chapterId> bằng ID của chương đó):
-[PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <nội dung tóm tắt mới>]
-
-- Để đề xuất cập nhật/sửa đổi trực tiếp Bản thảo/Nội dung chương viết (thay <chapterId> bằng ID hoặc số thứ tự của chương, ví dụ [PROPOSAL_CONTENT_CHAPTER_2: toàn bộ nội dung bản thảo hoàn chỉnh]):
-[PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh, đầy đủ 100% từ đầu đến cuối không tóm tắt>]
-- Nếu đang VIẾT TIẾP phần còn lại của một chương dở dang: Hãy viết tiếp tục toàn văn liền mạch và bọc trong thẻ [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <nội dung viết tiếp hoàn chỉnh>].
-
-Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi tiết, phản hồi bằng tiếng Việt.`;
+Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứng và tôn trọng tuyệt đối bản sắc tác phẩm.`;
 
     // Retain recent message history with generous length (up to 35,000 chars per turn)
     const sanitizedHistory = (history || []).slice(-6).map(h => {
@@ -1512,7 +1812,7 @@ Hãy viết phân tích sâu sắc, bảo tồn nguyên vẹn văn phong và chi
             systemInstruction,
             temperature: 0.7,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingBudget: 0 }
+            thinkingConfig: { thinkingBudget: 1024 }
           },
           history: sanitizedHistory
         });
@@ -1642,21 +1942,26 @@ Dựa trên thông tin đầu vào:
 - Thể loại: "${genre}"
 - Tóm tắt: "${synopsis}"
 - Niên đại: "${timeline}"
-Let's sáng tạo toàn bộ thiết lập chi tiết cho thế giới này. Đảm bảo tính nhất quán và chiều sâu.
-TRẢ VỀ ĐỊNH DẠNG JSON CHUẨN...`;
+Hãy sáng tạo thiết lập chi tiết cho thế giới này với chiều sâu và tính nhất quán cao.
+TRẢ VỀ JSON HỢP LỆ:
+{
+  "setting": "Địa lý, xã hội, không khí bối cảnh",
+  "mechanics": "Hệ thống sức mạnh / phép thuật / quy luật cốt lõi",
+  "interactionRules": "Quy tắc giao tiếp, phe phái và xung đột quyền lực"
+}`;
 
-    try {
-      const response = await safeGenerateContent({
-        model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { 
-            responseMimeType: "application/json",
-            temperature: 0.95,
-            thinkingConfig: { thinkingBudget: 2048 }
-        }
-      });
-      return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    const response = await safeGenerateContent({
+      model: getFlash(),
+      contents: [{ parts: [{ text: prompt }] }],
+      config: { 
+          responseMimeType: "application/json",
+          temperature: 0.85,
+          thinkingConfig: { thinkingBudget: 1024 }
+      }
+    });
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) return null;
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async suggestMainCharacter(title: string, genre: string, synopsis: string): Promise<any> {
@@ -1672,31 +1977,39 @@ TRẢ VỀ JSON:
   "name": "Tên nhân vật (Phù hợp bối cảnh)",
   "gender": "Giới tính",
   "species": "Chủng tộc (Vd: Nhân tộc, Yêu hồ...)",
-  "archetype": "Kiểu mẫu nhân vật (Vd: Phế vật nghịch thiên, Xuyên không...)",
+  "archetype": "Kiểu mẫu nhân vật",
   "background": "Xuất thân & Động cơ (Ngắn gọn)"
 }`;
     
-    try {
-        const response = await ai.models.generateContent({
-            model: getFlash(),
-            contents: [{ parts: [{ text: prompt }] }],
-            config: { 
-                responseMimeType: "application/json",
-                temperature: 1.0
-            }
-        });
-        return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    const response = await safeGenerateContent({
+        model: getFlash(),
+        contents: [{ parts: [{ text: prompt }] }],
+        config: { 
+            responseMimeType: "application/json",
+            temperature: 0.9
+        }
+    });
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) return null;
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async balanceChapterLength(content: string, target: number, current: number, interactionRules: string, genre: string, negativePrompt: string): Promise<any> {
-    const prompt = `Cân bằng độ dài (${target} từ). JSON: { "edited_text": "..." }. VĂN BẢN: ${content.substring(0, 10000)}`;
-    const response = await ai.models.generateContent({
-      model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }],
-      config: { responseMimeType: "application/json" }
-    });
-    return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+    const prompt = promptBuilderService.buildBalanceLengthPrompt(content, target, current, interactionRules, genre, negativePrompt);
+    const schema = {
+      type: Type.OBJECT,
+      properties: { edited_text: { type: Type.STRING } },
+      required: ["edited_text"]
+    };
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, schema),
+      { name: `Cân bằng độ dài (${target} từ)`, type: 'content_gen', priority: 'normal' }
+    );
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed || !parsed.edited_text) {
+      throw new Error("AI không trả về văn bản cân bằng độ dài hợp lệ.");
+    }
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async *refineChapterStream(content: string, worldBible: string, interactionRules: string, genre: string, writingStyle: string, pov: string, pronounStyle: string, negativePrompt: string, nsfw: boolean, customInstruction: string, persistentDirectives: string, mechanics: string, styleReference: string) {
@@ -1713,36 +2026,11 @@ TRẢ VỀ JSON:
   },
 
   async *refineSelectionStream(selection: string, prefix: string, suffix: string, story: Story, instruction: string) {
-    const prompt = `[NHIỆM VỤ: TINH CHỈNH ĐOẠN VĂN BẢN CHỌN LỌC]
-Bạn là Biên tập viên văn học cao cấp. Hãy chỉnh sửa và nâng cấp đoạn văn bản sau đây theo yêu cầu của tác giả.
-
-${ORIGINAL_FIDELITY_PROTOCOL}
-
-[BỐI CẢNH LIỀN TRƯỚC]:
-"...${prefix.slice(-600)}"
-
-[ĐOẠN VĂN NGUYÊN MẪU CẦN SỬA]:
-"""
-${selection}
-"""
-
-[BỐI CẢNH LIỀN SAU]:
-"${suffix.slice(0, 600)}..."
-
-[YÊU CẦU CHỈNH SỬA CỤ THỂ]:
-"${instruction || 'Trau chuốt văn phong mượt mà, giàu cảm xúc và hình ảnh'}"
-
-[QUY TẮC BẮT BUỘC]:
-1. 🛡️ GIỮ NGUYÊN TOÀN BỘ CỐT LÕI NGUYÊN MẪU: Giữ nguyên mọi chi tiết, hành động của nhân vật, đồ vật, lời thoại và ý nghĩa của đoạn văn gốc.
-2. 🚫 KHÔNG TẮT HOẶC CẮT BỚT: Tuyệt đối không tóm tắt hay làm mất các chi tiết đặc sắc trong bản gốc.
-3. 🔗 LIỀN MẠCH: Đảm bảo đoạn văn sau khi sửa khớp nối hoàn hảo và mượt mà với bối cảnh trước và sau.
-4. 📝 Chỉ trả về đúng đoạn văn đã chỉnh sửa thay thế, không kèm lời dẫn giải hay chào hỏi.
-
-BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
+    const prompt = promptBuilderService.buildRefineSelectionPrompt(selection, prefix, suffix, story, instruction);
     const stream = safeGenerateContentStream({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
-      config: { thinkingConfig: { thinkingBudget: 2048 } }
+      config: { maxOutputTokens: 16384, thinkingConfig: { thinkingBudget: 1024 } }
     });
     for await (const chunk of stream) yield chunk;
   },
@@ -1926,56 +2214,106 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
   },
 
   async analyzeVocabulary(content: string, interactionRules: string): Promise<any> {
-    const prompt = `Phân tích từ vựng và gợi ý tinh chỉnh văn chương. JSON.`;
-    const response = await ai.models.generateContent({
-      model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }],
-      config: { responseMimeType: "application/json" }
-    });
-    return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+    const prompt = promptBuilderService.buildVocabularyAnalysisPrompt(content, interactionRules);
+    const vocabSchema = {
+      type: Type.OBJECT,
+      properties: {
+        insights: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              word: { type: Type.STRING },
+              count: { type: Type.NUMBER },
+              suggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+              context: { type: Type.STRING }
+            },
+            required: ["word", "count", "suggestions", "context"]
+          }
+        }
+      },
+      required: ["insights"]
+    };
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, vocabSchema),
+      { name: "Phân tích từ vựng & lặp từ", type: 'plot_analysis', priority: 'normal' }
+    );
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) throw new Error("AI không trả về dữ liệu phân tích từ vựng hợp lệ.");
+    return {
+      data: Array.isArray(parsed.insights) ? parsed.insights : (Array.isArray(parsed) ? parsed : []),
+      usageMetadata: response?.usageMetadata
+    };
   },
 
   async extractStylisticRule(text: string): Promise<any> {
     const prompt = promptBuilderService.buildStyleRuleExtractionPrompt(text);
-    const response = await ai.models.generateContent({
+    const response = await safeGenerateContent({
       model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }]
+      contents: [{ parts: [{ text: prompt }] }],
+      config: { temperature: 0.3 }
     });
-    return { text: response.text || "", usageMetadata: response.usageMetadata };
+    return { text: response.text?.trim() || "", usageMetadata: response.usageMetadata };
   },
 
   async deriveStylisticRule(original: string, modified: string): Promise<any> {
     const prompt = promptBuilderService.buildDeriveStylisticRulePrompt(original, modified);
-    const response = await ai.models.generateContent({
-      model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }]
-    });
-    return { text: response.text || "", usageMetadata: response.usageMetadata };
-  },
-
-  async autoUpdateCharacterStatus(character: Character, longTermMemory: string, shortTermMemory: string): Promise<any> {
-    const prompt = `[NHIỆM VỤ: PHÂN TÍCH TIẾN HÓA NHÂN VẬT & CẬP NHẬT TRI THỨC]...`;
-    const response = await ai.models.generateContent({
+    const response = await safeGenerateContent({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
-      config: { responseMimeType: "application/json" }
+      config: { temperature: 0.3 }
     });
-    return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+    return { text: response.text?.trim() || "", usageMetadata: response.usageMetadata };
+  },
+
+  async autoUpdateCharacterStatus(character: Character, storyContext: string): Promise<any> {
+    const prompt = promptBuilderService.buildAutoUpdateCharacterPrompt(character, storyContext);
+    const charUpdateSchema = {
+      type: Type.OBJECT,
+      properties: {
+        status: { type: Type.STRING },
+        healthStatus: { type: Type.STRING },
+        combatState: { type: Type.STRING },
+        currentLocation: { type: Type.STRING },
+        powerLevel: { type: Type.STRING },
+        abilities: { type: Type.STRING },
+        knowledge: { type: Type.STRING },
+        mentors: { type: Type.STRING },
+        enemies: { type: Type.STRING },
+        description: { type: Type.STRING }
+      }
+    };
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, charUpdateSchema),
+      { name: `Đồng bộ nhân vật: ${character.name}`, type: 'plot_analysis', priority: 'normal' }
+    );
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error(`Không thể phân tích cập nhật cho nhân vật ${character.name}.`);
+    }
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async generateAdvancedChapterSuggestion(story: Story): Promise<any> {
     const prompt = promptBuilderService.buildNextChapterSuggestionPrompt(story);
-    try {
-      const response = await ai.models.generateContent({
-        model: getFlash(),
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { 
-            responseMimeType: "application/json", 
-            temperature: 0.8
-        }
-      });
-      return { data: JSON.parse(response.text || "null"), usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    const suggestionSchema = {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING },
+        conflict: { type: Type.STRING },
+        emotionalGoal: { type: Type.STRING },
+        outline: { type: Type.STRING },
+        logicCheck: { type: Type.STRING }
+      },
+      required: ["title", "conflict", "emotionalGoal", "outline", "logicCheck"]
+    };
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, suggestionSchema),
+      { name: `Gợi ý chương mới: ${story.title}`, type: 'plot_analysis', priority: 'normal' }
+    );
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed) throw new Error("AI không trả về gợi ý chương hợp lệ.");
+    return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
   async *translateToVietnameseStream(

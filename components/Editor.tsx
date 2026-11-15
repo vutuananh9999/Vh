@@ -1771,8 +1771,60 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                           <button onClick={() => togglePreset("Kiểm tra lặp từ và gợi ý thay thế")} className={`py-3 text-[10px] font-bold border rounded-xl transition-all ${selectedPresets.has("Kiểm tra lặp từ và gợi ý thay thế") ? 'bg-blue-600 text-white border-blue-400' : 'bg-gray-800 text-gray-400 border-gray-700'}`}>🔎 Quét lặp từ</button>
                           <button onClick={() => togglePreset("Phát hiện mâu thuẫn logic trong đoạn văn")} className={`py-3 text-[10px] font-bold border rounded-xl transition-all ${selectedPresets.has("Phát hiện mâu thuẫn logic trong đoạn văn") ? 'bg-blue-600 text-white border-blue-400' : 'bg-gray-800 text-gray-400 border-gray-700'}`}>🧩 Soi logic</button>
                         </div>
-                        <button onClick={auditActiveChapter} disabled={isAuditingChapter} className="w-full py-4 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl text-[10px] font-black uppercase hover:bg-blue-600/30 transition-all flex items-center justify-center gap-2 shadow-xl">{isAuditingChapter ? <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span> : '🔍 Toàn văn phân tích'}</button>
-                        {chapterAuditReport && (<div className="p-4 bg-blue-950/20 border border-blue-900/30 rounded-2xl animate-fadeIn"><h5 className="text-[9px] font-black text-blue-400 uppercase mb-2">Lời khuyên của AI:</h5><p className="text-[11px] text-gray-300 leading-relaxed italic">"{chapterAuditReport.pacingAnalysis || 'Đang chờ dữ liệu...'}"</p></div>)}
+                        <button onClick={auditActiveChapter} disabled={isAuditingChapter} className="w-full py-3.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl text-[10px] font-black uppercase hover:bg-blue-600/30 transition-all flex items-center justify-center gap-2 shadow-xl">{isAuditingChapter ? <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span> : '🔍 Toàn văn phân tích logic chương'}</button>
+                        {chapterAuditReport && (
+                          <div className="p-4 bg-blue-950/20 border border-blue-900/30 rounded-2xl animate-fadeIn space-y-3">
+                            <h5 className="text-[9px] font-black text-blue-400 uppercase">Kết quả kiểm toán chương:</h5>
+                            <p className="text-[11px] text-gray-300 leading-relaxed italic">"{chapterAuditReport.pacingAnalysis || 'Chưa có nhận xét nhịp điệu.'}"</p>
+                            {[
+                              ...(chapterAuditReport.internalConsistency || []),
+                              ...(chapterAuditReport.characterLogic || []),
+                              ...(chapterAuditReport.worldRuleViolations || [])
+                            ].length > 0 && (
+                              <div className="space-y-1.5 pt-2 border-t border-blue-900/30">
+                                <span className="text-[9px] font-bold text-rose-400 uppercase block">
+                                  Phát hiện {[...(chapterAuditReport.internalConsistency || []), ...(chapterAuditReport.characterLogic || []), ...(chapterAuditReport.worldRuleViolations || [])].length} lỗi cần sửa:
+                                </span>
+                                <ul className="space-y-1 text-[10px] text-rose-200 max-h-28 overflow-y-auto custom-scrollbar">
+                                  {[
+                                    ...(chapterAuditReport.internalConsistency || []),
+                                    ...(chapterAuditReport.characterLogic || []),
+                                    ...(chapterAuditReport.worldRuleViolations || [])
+                                  ].slice(0, 6).map((err: any, i: number) => (
+                                    <li key={i}>• {err.issue || err.character || JSON.stringify(err)}</li>
+                                  ))}
+                                </ul>
+                                <button
+                                  type="button"
+                                  disabled={isGenerating}
+                                  onClick={() => {
+                                    const allIssues = [
+                                      ...(chapterAuditReport.internalConsistency || []).map((x: any) => x.issue),
+                                      ...(chapterAuditReport.characterLogic || []).map((x: any) => `${x.character}: ${x.issue}`),
+                                      ...(chapterAuditReport.worldRuleViolations || []).map((x: any) => x.issue)
+                                    ].filter(Boolean);
+                                    refineChapter(`Khắc phục triệt để các lỗi logic/mạch lạc sau mà vẫn bảo tồn nguyên tác:\n- ${allIssues.join('\n- ')}`);
+                                  }}
+                                  className="w-full mt-2 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow transition-all disabled:opacity-40"
+                                >
+                                  ✨ AI Tự động sửa theo báo cáo (Xem Diff)
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {onOpenPlotArc && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsRefinePanelOpen(false);
+                              onOpenPlotArc();
+                            }}
+                            className="w-full py-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all"
+                          >
+                            🎯 Mở Plot & Co-Edit Studio (Sửa toàn cục)
+                          </button>
+                        )}
                     </div>
                 )}
                 <div className="pt-2 border-t border-gray-800 space-y-3">

@@ -8,7 +8,7 @@ interface Props {
 }
 
 export const CharacterList: React.FC<Props> = ({ characters }) => {
-  const { addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter } = useStory();
+  const { addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter, scanStoryCharactersAndLore, isScanningStory, scanProgress, story } = useStory();
   const [selectedChar, setSelectedChar] = useState<Character | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [activeTab, setActiveTab] = useState<'info' | 'stats' | 'memory' | 'relations'>('info');
@@ -157,9 +157,30 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
               </svg>
           </div>
 
-          <button onClick={() => setIsAdding(!isAdding)} className={`w-full py-2.5 rounded text-[10px] font-black uppercase tracking-widest transition-all border shadow-lg ${isAdding ? 'bg-red-900/20 text-red-400 border-red-900/50' : 'bg-primary-600/10 text-primary-400 border-primary-500/30 hover:bg-primary-600/20'}`}>
-            {isAdding ? 'Hủy bỏ' : '+ Tạo nhân vật mới'}
-          </button>
+          <div className="grid grid-cols-1 gap-2">
+            <button
+              onClick={scanStoryCharactersAndLore}
+              disabled={isScanningStory || !story?.chapters?.some(c => (c.content || c.translatedContent || '').trim().length >= 30)}
+              className="w-full py-2.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all border shadow-lg bg-gradient-to-r from-emerald-600/20 to-cyan-600/20 text-emerald-300 border-emerald-500/40 hover:from-emerald-600/35 hover:to-cyan-600/35 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              title="Đọc toàn bộ truyện đã tải lên để tự động trích xuất nhân vật, bối cảnh, hệ thống và Hồn Văn"
+            >
+              {isScanningStory ? (
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-emerald-300 border-t-transparent rounded-full animate-spin shrink-0"></span>
+                  <span className="truncate">{scanProgress?.label || 'Đang quét nhân vật...'}</span>
+                </>
+              ) : (
+                <>
+                  <span>🔍</span>
+                  <span>Quét nhân vật & Tri thức từ truyện</span>
+                </>
+              )}
+            </button>
+
+            <button onClick={() => setIsAdding(!isAdding)} className={`w-full py-2 rounded text-[10px] font-black uppercase tracking-widest transition-all border ${isAdding ? 'bg-red-900/20 text-red-400 border-red-900/50' : 'bg-primary-600/10 text-primary-400 border-primary-500/30 hover:bg-primary-600/20'}`}>
+              {isAdding ? 'Hủy bỏ' : '+ Tạo nhân vật thủ công'}
+            </button>
+          </div>
           
           {isAdding && (
               <div className="mt-4 space-y-3 bg-gray-950/60 p-4 rounded-xl border border-gray-800 animate-fadeIn shadow-2xl">
@@ -193,6 +214,16 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
+        {filteredCharacters.length === 0 && (
+          <div className="text-center py-8 px-4 border border-dashed border-gray-800 rounded-2xl bg-gray-900/30 space-y-3">
+            <div className="text-2xl">👥</div>
+            <p className="text-xs text-gray-400 leading-relaxed">
+              {characters.length === 0
+                ? 'Chưa có hồ sơ nhân vật nào. Nếu bạn vừa tải truyện lên, hãy nhấn "Quét nhân vật & Tri thức từ truyện" ở trên để AI tự động lập danh sách nhân vật!'
+                : 'Không tìm thấy nhân vật khớp từ khóa tìm kiếm.'}
+            </p>
+          </div>
+        )}
         {filteredCharacters.map(char => {
           const isDeceased = char.status === 'deceased';
           const icon = getEntityIcon(char.entityType);
@@ -280,7 +311,15 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
                         <div className="space-y-6 animate-fadeIn">
                             {isEditing ? (
                                 <div className="space-y-4">
-                                    <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} />
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} placeholder="Tên nhân vật..." />
+                                      <select className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white outline-none" value={editForm.role || 'Phụ'} onChange={e => setEditForm({...editForm, role: e.target.value})}>
+                                          <option value="Chính">Vai trò: Chính</option>
+                                          <option value="Phụ">Vai trò: Phụ</option>
+                                          <option value="Phản diện">Vai trò: Phản diện</option>
+                                          <option value="Ẩn số">Vai trò: Ẩn số</option>
+                                      </select>
+                                    </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <select className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white outline-none" value={editForm.entityType || 'human'} onChange={e => setEditForm({...editForm, entityType: e.target.value as EntityType})}>
                                             <option value="human">Người</option>
@@ -288,15 +327,23 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
                                             <option value="spirit">Tinh Linh</option>
                                             <option value="object">Pháp Bảo</option>
                                         </select>
-                                        <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.species || ''} onChange={e => setEditForm({...editForm, species: e.target.value})} placeholder="Chủng tộc (Vd: Rồng)..." />
+                                        <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.species || ''} onChange={e => setEditForm({...editForm, species: e.target.value})} placeholder="Chủng tộc / Danh phận..." />
                                     </div>
-                                    <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white font-medium text-indigo-400" value={editForm.currentLocation} onChange={e => setEditForm({...editForm, currentLocation: e.target.value})} placeholder="Vị trí hiện tại..." />
-                                    <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.description} onChange={e => setEditForm({...editForm, description: e.target.value})} />
-                                    <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white placeholder:italic" placeholder="Ngoại hình..." value={editForm.appearance} onChange={e => setEditForm({...editForm, appearance: e.target.value})} />
-                                    <button onClick={handleSaveEdit} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest">Lưu hồ sơ</button>
+                                    <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm font-medium text-indigo-400" value={editForm.currentLocation || ''} onChange={e => setEditForm({...editForm, currentLocation: e.target.value})} placeholder="Vị trí hiện tại..." />
+                                    <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={Array.isArray(editForm.traits) ? editForm.traits.join(', ') : ''} onChange={e => setEditForm({...editForm, traits: e.target.value.split(',').map(s => s.trim()).filter(Boolean)})} placeholder="Tính cách nổi bật (phân cách bằng dấu phẩy)..." />
+                                    <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.description || ''} onChange={e => setEditForm({...editForm, description: e.target.value})} placeholder="Mô tả vai trò, tiểu sử..." />
+                                    <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white placeholder:italic" placeholder="Ngoại hình..." value={editForm.appearance || ''} onChange={e => setEditForm({...editForm, appearance: e.target.value})} />
+                                    <button onClick={handleSaveEdit} className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black uppercase tracking-widest transition-all">Lưu hồ sơ</button>
                                 </div>
                             ) : (
-                                <div className="space-y-6">
+                                <div className="space-y-4">
+                                    {selectedChar.traits && selectedChar.traits.length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {selectedChar.traits.map((t, idx) => (
+                                          <span key={idx} className="text-[10px] px-2.5 py-1 rounded-full bg-primary-950/50 text-primary-300 border border-primary-500/20 font-semibold">{t}</span>
+                                        ))}
+                                      </div>
+                                    )}
                                     <div className="bg-gray-850/50 p-4 rounded-2xl border border-gray-800">
                                         <label className="block text-[9px] font-black text-gray-500 uppercase mb-2">Mô tả</label>
                                         <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">{selectedChar.description || 'Không.'}</div>
@@ -322,10 +369,11 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
                                               <option value="sealed">Phong ấn</option>
                                               <option value="deceased">Tử vong</option>
                                          </select>
-                                         <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.powerLevel} onChange={e => setEditForm({...editForm, powerLevel: e.target.value})} placeholder="Thực lực..." />
+                                         <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.powerLevel || ''} onChange={e => setEditForm({...editForm, powerLevel: e.target.value})} placeholder="Thực lực..." />
                                      </div>
-                                     <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-white font-mono" value={editForm.combatState} onChange={e => setEditForm({...editForm, combatState: e.target.value})} placeholder='JSON Combat State: {"hp": "100%", "injuries": []}' />
-                                     <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.healthStatus} onChange={e => setEditForm({...editForm, healthStatus: e.target.value})} placeholder="Tóm tắt tình trạng..." />
+                                     <textarea className="w-full h-20 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.abilities || ''} onChange={e => setEditForm({...editForm, abilities: e.target.value})} placeholder="Kỹ năng / Chiêu thức / Pháp bảo..." />
+                                     <textarea className="w-full h-24 bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-white font-mono" value={editForm.combatState || ''} onChange={e => setEditForm({...editForm, combatState: e.target.value})} placeholder='JSON Combat State: {"hp": "100%", "injuries": []}' />
+                                     <input className="w-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.healthStatus || ''} onChange={e => setEditForm({...editForm, healthStatus: e.target.value})} placeholder="Tóm tắt tình trạng..." />
                                      <button onClick={handleSaveEdit} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black uppercase">Cập nhật thực lực</button>
                                  </div>
                              ) : (
@@ -375,18 +423,32 @@ export const CharacterList: React.FC<Props> = ({ characters }) => {
                     )}
                     {activeTab === 'relations' && (
                         <div className="space-y-6 animate-fadeIn">
-                             <div className="bg-orange-950/10 border border-orange-900/20 p-5 rounded-3xl space-y-4">
-                                <div className="grid gap-3">
-                                    <div className="bg-black/30 p-3 rounded-xl border border-white/5">
-                                        <label className="text-[8px] font-black text-gray-600 uppercase mb-1 block">Người hướng dẫn</label>
-                                        <p className="text-xs text-gray-300">{selectedChar.mentors || 'Không có.'}</p>
-                                    </div>
-                                    <div className="bg-black/30 p-3 rounded-xl border border-white/5">
-                                        <label className="text-[8px] font-black text-gray-600 uppercase mb-1 block">Đối trọng</label>
-                                        <p className="text-xs text-red-400 font-bold">{selectedChar.enemies || 'Vô ưu.'}</p>
-                                    </div>
-                                </div>
-                             </div>
+                             {isEditing ? (
+                               <div className="space-y-4">
+                                 <div>
+                                   <label className="text-[9px] font-black text-gray-500 uppercase mb-1 block">Người hướng dẫn / Sư phụ / Đồng minh</label>
+                                   <textarea className="w-full h-20 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.mentors || ''} onChange={e => setEditForm({...editForm, mentors: e.target.value})} placeholder="Ví dụ: Sư phụ Huyền Thiên, bạn thân..." />
+                                 </div>
+                                 <div>
+                                   <label className="text-[9px] font-black text-gray-500 uppercase mb-1 block">Đối trọng / Kẻ thù</label>
+                                   <textarea className="w-full h-20 bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm text-white" value={editForm.enemies || ''} onChange={e => setEditForm({...editForm, enemies: e.target.value})} placeholder="Ví dụ: Huyết Ma Tông..." />
+                                 </div>
+                                 <button onClick={handleSaveEdit} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black uppercase">Lưu quan hệ</button>
+                               </div>
+                             ) : (
+                               <div className="bg-orange-950/10 border border-orange-900/20 p-5 rounded-3xl space-y-4">
+                                  <div className="grid gap-3">
+                                      <div className="bg-black/30 p-3 rounded-xl border border-white/5">
+                                          <label className="text-[8px] font-black text-gray-600 uppercase mb-1 block">Người hướng dẫn / Đồng minh</label>
+                                          <p className="text-xs text-gray-300 whitespace-pre-wrap">{selectedChar.mentors || 'Không có.'}</p>
+                                      </div>
+                                      <div className="bg-black/30 p-3 rounded-xl border border-white/5">
+                                          <label className="text-[8px] font-black text-gray-600 uppercase mb-1 block">Đối trọng / Kẻ thù</label>
+                                          <p className="text-xs text-red-400 font-bold whitespace-pre-wrap">{selectedChar.enemies || 'Vô ưu.'}</p>
+                                      </div>
+                                  </div>
+                               </div>
+                             )}
                         </div>
                     )}
                 </div>

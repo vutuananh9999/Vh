@@ -75,7 +75,10 @@ interface StoryContextType {
   vocabularyInsights: any | null;
   webInspiration: { insights: string, sources: WebInspiration[] } | null;
   plotArcAnalysis: any | null;
+  plotArcError: string | null;
   isAnalyzingPlotArc: boolean;
+  isScanningStory: boolean;
+  scanProgress: { current: number; total: number; label: string } | null;
   userInstruction: string;
   setUserInstruction: (text: string) => void;
   targetWordCount: number;
@@ -107,7 +110,7 @@ interface StoryContextType {
 
   sendPlanningMessage: (message: string) => Promise<void>;
   clearPlanningChat: () => Promise<void>;
-  sendPlotChatMessage: (message: string) => Promise<void>;
+  sendPlotChatMessage: (message: string, focusChapterId?: string) => Promise<void>;
   clearPlotChat: () => Promise<void>;
   isPlotPlanning: boolean;
 
@@ -138,6 +141,16 @@ interface StoryContextType {
   refineSelection: (selection: string, startIdx: number, endIdx: number, customInstruction: string) => Promise<void>;
   learnFromChapter: () => Promise<void>;
   learnFromText: (text: string, categories?: ExtractionCategory[]) => Promise<void>;
+  scanStoryCharactersAndLore: () => Promise<void>;
+  applyKnowledgeExtraction: (selection: {
+    newCharacters: any[];
+    characterUpdates: any[];
+    worldLore: any[];
+    mechanics: any[];
+    writingDNA?: WritingDNA | null;
+    genreSuggestion?: string;
+    synopsisSuggestion?: string;
+  }) => Promise<void>;
   learnStyleFromText: (text: string) => Promise<void>;
   learnWritingDNA: (text: string) => Promise<void>; 
   learnFromInteraction: (original: string, modified: string) => Promise<void>;
@@ -152,7 +165,7 @@ interface StoryContextType {
   analyzeActiveChapterQuality: () => Promise<void>;
   summarizeChapter: (id: string) => Promise<void>;
   summarizeAllChaptersSequentially: () => Promise<void>;
-  generateChapterContentFromPlot: (id: string) => Promise<string>;
+  generateChapterContentFromPlot: (id: string, options?: { repairInstruction?: string; continuityNotes?: string }) => Promise<string>;
   translateChapter: (id: string, options?: TranslationOptions) => Promise<void>;
   translationOptions: TranslationOptions;
   setTranslationOptions: React.Dispatch<React.SetStateAction<TranslationOptions>>;
@@ -285,7 +298,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [vocabularyInsights, setVocabularyInsights] = useState<any | null>(null);
   const [webInspiration, setWebInspiration] = useState<{ insights: string, sources: WebInspiration[] } | null>(null);
   const [plotArcAnalysis, setPlotArcAnalysis] = useState<any | null>(null);
+  const [plotArcError, setPlotArcError] = useState<string | null>(null);
   const [isAnalyzingPlotArc, setIsAnalyzingPlotArc] = useState(false);
+  const [isScanningStory, setIsScanningStory] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [userInstruction, setUserInstruction] = useState('');
   const [targetWordCount, setTargetWordCount] = useState(2000); 
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
@@ -448,6 +464,11 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           plotChatHistory: cleanHistory(found.plotChatHistory)
         };
         setStory(fixedStory);
+        setPlotArcAnalysis(null);
+        setPlotArcError(null);
+        setAuditReport(null);
+        setChapterAuditReport(null);
+        setConsistencyReport(null);
         if (fixedStory.chapters.length > 0) {
             const sorted = [...fixedStory.chapters].sort((a, b) => a.order - b.order);
             setActiveChapterId(sorted[0].id);
@@ -461,6 +482,11 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     storageService.flushSaves();
     setStory(null); 
     setActiveChapterId(null); 
+    setPlotArcAnalysis(null);
+    setPlotArcError(null);
+    setAuditReport(null);
+    setChapterAuditReport(null);
+    setConsistencyReport(null);
     loadStories(true); 
     setHistory({}); 
   };
@@ -601,7 +627,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setStory({ ...currentStory, plotChatHistory: updatedHistoryWithUser });
 
     try {
-        const stream = geminiService.chatPlotStream(history, message, currentStory, focusChapterId || activeChapterIdRef.current || undefined);
+        const stream = geminiService.chatPlotStream(
+          history,
+          message,
+          currentStory,
+          focusChapterId || activeChapterIdRef.current || undefined,
+          { plotArcAnalysis, auditReport }
+        );
         let fullResponse = "";
         for await (const chunk of stream) {
             const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
@@ -1184,7 +1216,10 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [isSequentiallySummarizing, recordUsage]);
 
-  const generateChapterContentFromPlot = async (chapterId: string): Promise<string> => {
+  const generateChapterContentFromPlot = async (
+    chapterId: string,
+    options?: { repairInstruction?: string; continuityNotes?: string }
+  ): Promise<string> => {
     const currentStory = storyRef.current;
     if (!currentStory) throw new Error("Không tìm thấy dữ liệu truyện.");
     
@@ -1192,21 +1227,40 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!chapter) throw new Error("Không tìm thấy chương chỉ định.");
     
     setIsGenerating(true);
-    setGenerationStatus("Đang dùng AI tự động viết/sửa bản thảo chương...");
+    setGenerationStatus("Đang dùng AI tự động viết/sửa bản thảo chương theo mạch lạc...");
     
     try {
-        const result = await geminiService.generateChapterContentFromPlot(chapter, currentStory);
+        const result = await geminiService.generateChapterContentFromPlot(chapter, currentStory, options);
         if (result && result.text) {
             recordUsage(result.usageMetadata);
-            updateChapterContent(chapterId, result.text, true);
+            setStory(prev => {
+                if (!prev) return null;
+                const updatedChapters = prev.chapters.map(c =>
+                    c.id === chapterId
+                        ? {
+                            ...c,
+                            originalContent: c.originalContent || c.content,
+                            content: result.text,
+                            lastUpdated: Date.now()
+                          }
+                        : c
+                );
+                const updated = { ...prev, chapters: updatedChapters };
+                storyRef.current = updated;
+                storageService.saveStory(updated);
+                return updated;
+            });
+            bumpEditorSyncToken();
             return result.text;
         }
         return chapter.content;
-    } catch (e) {
+    } catch (e: any) {
         console.error("Lỗi khi tự động sửa bản thảo:", e);
+        alert(e?.message || "Lỗi khi tự động soạn/sửa bản thảo bằng AI.");
         throw e;
     } finally {
         setIsGenerating(false);
+        setGenerationStatus("");
     }
   };
 
@@ -1490,28 +1544,48 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             recordUsage(result.usageMetadata);
             setChapterSuggestion(result.data);
         }
-    } catch (e) { console.error(e); }
-    finally { setIsSuggestingChapter(false); }
+    } catch (e: any) {
+        console.error("suggestNewChapter error:", e);
+        alert(`Lỗi gợi ý chương tiếp theo: ${e?.message || 'Không thể kết nối AI.'}`);
+    } finally {
+        setIsSuggestingChapter(false);
+    }
   };
 
   const generateContinue = async (mode: 'append' | 'regenerate' = 'append') => {
     const currentStory = storyRef.current;
     const currentActiveId = activeChapterId; 
     if (!currentStory || !currentActiveId) return;
-    const chapter = currentStory.chapters.find(c => c.id === currentActiveId)!;
+    const chapter = currentStory.chapters.find(c => c.id === currentActiveId);
+    if (!chapter) return;
+
     const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
     const currentIndex = sortedChapters.findIndex(c => c.id === currentActiveId);
     const previousChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
-    const previousChapterTime = previousChapter?.timeSetting || "Không rõ (Chương mở đầu)";
+    const previousChapterTime = previousChapter?.timeSetting || "Không rõ";
+
+    const isTransMode = editorVersion === 'translation';
+    const currentBody = isTransMode ? (chapter.translatedContent || '') : (chapter.content || '');
+    const initialContent = mode === 'regenerate' ? "" : currentBody;
 
     setIsGenerating(true);
     setGenerationProgress(5); 
     setGenerationStatus("Đang tải dữ liệu và chuẩn bị kiến tạo...");
     
     try {
-        const stmContext = mode === 'regenerate' ? "" : chapter.content.slice(-2500);
-        const entitySearchContext = chapter.outline + " " + userInstruction + " " + stmContext;
+        const prevText = previousChapter ? (previousChapter.content?.trim() ? previousChapter.content : (previousChapter.translatedContent || '')) : '';
+        const stmContext = initialContent.slice(-2500);
+        const entitySearchContext = [chapter.outline, userInstruction, stmContext, previousChapter?.summary, prevText.slice(-1000)].filter(Boolean).join(' ');
         
+        const immediateContext = initialContent.trim().length < 300 && previousChapter
+            ? `[DIỄN BIẾN CUỐI CHƯƠNG TRƯỚC - ${previousChapter.title}]:\n${previousChapter.summary ? `Tóm tắt: ${previousChapter.summary}\n` : ''}${prevText.slice(-1500)}\n\n[BẢN THẢO CHƯƠNG HIỆN TẠI (${chapter.title})]:\n${initialContent}`
+            : initialContent;
+
+        const recentSummaries = sortedChapters
+            .slice(Math.max(0, currentIndex - 4), currentIndex)
+            .map(c => `- ${c.title}: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`)
+            .join('\n');
+
         let historicalContext = "";
         let canonContext = "";
         
@@ -1520,16 +1594,45 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
              canonContext = docsText;
         }
 
-        setGenerationStatus("Đang dệt nên thế giới và chương truyện...");
+        setGenerationStatus("Đang truy xuất World Bible & mạch nhân vật...");
         setGenerationProgress(25);
         const dynamicWorldBible = await getRelevantKnowledge(entitySearchContext, currentStory);
+        const activeLogs = (currentStory.knowledgeLogs || [])
+            .filter(l => l.isActive)
+            .slice(0, 20)
+            .map(l => `- [${l.category}] ${l.title}: ${l.content}`)
+            .join('\n');
+        const combinedWorldBible = activeLogs ? `${dynamicWorldBible}\n\n[KÝ ỨC THẾ GIỚI & LUẬT LỆ ĐÃ QUÉT]:\n${activeLogs}` : dynamicWorldBible;
 
         setGenerationStatus("Aetheria đang viết tiếp bản thảo...");
         setGenerationProgress(45);
 
-        const initialContent = mode === 'regenerate' ? "" : chapter.content;
         const stream = geminiService.generateStoryStream(
-            initialContent, dynamicWorldBible, currentStory.planning, currentStory.characters, currentStory.interactionRules, userInstruction, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, currentStory.hasSystem || false, targetWordCount, currentStory.persistentDirectives || "", currentStory.mechanics || "", chapter.outline, "", currentStory.writingDNA, chapter.timeSetting || "", previousChapterTime, currentStory.currentTimeline || "", historicalContext, canonContext
+            immediateContext,
+            combinedWorldBible,
+            currentStory.planning,
+            currentStory.characters,
+            currentStory.interactionRules,
+            userInstruction,
+            currentStory.genre,
+            currentStory.writingStyle || "",
+            currentStory.pov,
+            currentStory.pronounStyle,
+            currentStory.negativePrompt,
+            currentStory.nsfw || false,
+            currentStory.hasSystem || false,
+            targetWordCount,
+            currentStory.persistentDirectives || "",
+            currentStory.mechanics || "",
+            chapter.outline,
+            recentSummaries,
+            currentStory.writingDNA,
+            chapter.timeSetting || "",
+            previousChapterTime,
+            currentStory.currentTimeline || "",
+            historicalContext,
+            canonContext,
+            currentStory.fandomName || ""
         );
         
         let accumulated = "";
@@ -1547,12 +1650,17 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setGenerationProgress(98);
         
         const cleanedAccum = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n' : '') + cleanedAccum;
-        updateChapterContent(currentActiveId, finalDraft, true);
+        const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n\n' : '') + cleanedAccum;
+        if (isTransMode) {
+            await updateChapterTranslation(currentActiveId, finalDraft);
+        } else {
+            updateChapterContent(currentActiveId, finalDraft, true);
+        }
         
         if (storyRef.current) {
             await storageService.saveStory(storyRef.current);
         }
+        bumpEditorSyncToken();
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tạo nội dung.");
@@ -1578,36 +1686,79 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         });
         alert("Đã phục hồi Hồn Văn từ văn bản mẫu!");
       }
-    } catch (e) { }
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message || "Lỗi khi phân tích Hồn Văn.");
+    }
     setIsLearning(false);
   };
 
   const balanceChapterLength = async () => {
     const currentStory = storyRef.current;
     if (!currentStory || !activeChapterId) return;
-    const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+    const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
+    const sourceContent = isTrans
+      ? (chapter.translatedContent || '')
+      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
+    if (!sourceContent.trim() || sourceContent.trim().length < 30) {
+      alert("Chương hiện tại chưa có đủ nội dung để AI cân bằng độ dài.");
+      return;
+    }
+
     setIsGenerating(true);
+    setGenerationStatus("Đang cân bằng dung lượng & nhịp văn chương...");
     try {
-        const result = await geminiService.balanceChapterLength(chapter.content, chapter.wordGoal || 2000, fastWordCount(chapter.content), currentStory.interactionRules, currentStory.genre, currentStory.negativePrompt);
+        const result = await geminiService.balanceChapterLength(
+          sourceContent,
+          chapter.wordGoal || 2000,
+          fastWordCount(sourceContent),
+          currentStory.interactionRules,
+          currentStory.genre,
+          currentStory.negativePrompt
+        );
         if (result && result.data && result.data.edited_text) {
           recordUsage(result.usageMetadata);
-          updateChapterContent(activeChapterId, result.data.edited_text);
-          if (storyRef.current) {
-              await storageService.saveStory(storyRef.current);
+          if (isTrans) {
+            await updateChapterTranslation(activeChapterId, result.data.edited_text);
+          } else {
+            updateChapterContent(activeChapterId, result.data.edited_text, true);
           }
+          bumpEditorSyncToken();
         }
-    } catch (e) { } finally { setIsGenerating(false); }
+    } catch (e: any) {
+        console.error(e);
+        alert(e?.message || "Lỗi khi cân bằng độ dài chương.");
+    } finally {
+        setIsGenerating(false);
+        setGenerationStatus("");
+    }
   };
 
   const refineChapter = async (customInstruction?: string) => {
     const currentStory = storyRef.current;
     if (!currentStory || !activeChapterId) return;
-    const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
+    const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
+    const sourceText = isTrans
+      ? (chapter.translatedContent || '')
+      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
+    if (!sourceText || sourceText.trim().length < 20) {
+      alert("Chương hiện tại chưa có đủ nội dung để tinh chỉnh.");
+      return;
+    }
+
     setIsGenerating(true);
     setGenerationStatus("Đang tinh chỉnh chương với bảo tồn 100% nguyên mẫu...");
     try {
-        const dynamicWorldBible = await getRelevantKnowledge(chapter.outline, currentStory);
-        const stream = geminiService.refineChapterStream(chapter.content, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
+        const ragQuery = chapter.outline?.trim() || `${chapter.title} ${sourceText.slice(0, 1500)}`;
+        const dynamicWorldBible = await getRelevantKnowledge(ragQuery, currentStory);
+        const stream = geminiService.refineChapterStream(sourceText, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
         let accumulated = "";
         for await (const chunk of stream) { 
             const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
@@ -1618,7 +1769,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
         const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: cleanedAccumulated });
+        setPendingEdit({ chapterId: activeChapterId, original: sourceText, modified: cleanedAccumulated, isTranslation: isTrans });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh văn bản.");
@@ -1631,11 +1782,18 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const refineSelection = async (selection: string, startIdx: number, endIdx: number, customInstruction: string) => {
     const currentStory = storyRef.current;
     if (!currentStory || !activeChapterId) return;
-    const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
+    const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
+    const sourceText = isTrans
+      ? (chapter.translatedContent || '')
+      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
     setIsGenerating(true);
     setGenerationStatus("Đang tinh chỉnh đoạn văn bản chọn lọc...");
-    const prefix = chapter.content.substring(0, startIdx);
-    const suffix = chapter.content.substring(endIdx);
+    const prefix = sourceText.substring(0, startIdx);
+    const suffix = sourceText.substring(endIdx);
     try {
         const stream = geminiService.refineSelectionStream(selection, prefix, suffix, currentStory, customInstruction);
         let accumulated = "";
@@ -1648,7 +1806,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
         }
         const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        setPendingEdit({ chapterId: activeChapterId, original: chapter.content, modified: prefix + cleanedAccumulated + suffix });
+        setPendingEdit({ chapterId: activeChapterId, original: sourceText, modified: prefix + cleanedAccumulated + suffix, isTranslation: isTrans });
     } catch (e: any) { 
         console.error(e);
         alert(e?.message || "Lỗi trong quá trình tinh chỉnh phân đoạn.");
@@ -1708,6 +1866,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Ghi đè: Vẫn lưu giữ bản gốc originalContent để đối soát sau này
         const updatedChapters = currentStory.chapters.map(c => {
           if (c.id === chapterId) {
+            if (isTranslation) {
+              return {
+                ...c,
+                translatedContent: modified,
+                translationLastUpdated: Date.now()
+              };
+            }
             return {
               ...c,
               content: modified,
@@ -1730,28 +1895,225 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const discardPendingEdit = () => setPendingEdit(null);
 
   const learnFromChapter = async () => {
-    if (!storyRef.current || !activeChapterId) return;
-    const chapter = storyRef.current.chapters.find(c => c.id === activeChapterId)!;
+    const currentStory = storyRef.current;
+    if (!currentStory || !activeChapterId) return;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
+    const targetContent = editorVersion === 'translation' && chapter.translatedContent?.trim()
+      ? chapter.translatedContent
+      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
+    if (!targetContent || targetContent.trim().length < 20) {
+      alert("Chương hiện tại chưa có đủ nội dung để quét tri thức & nhân vật.");
+      return;
+    }
+
     setIsLearning(true);
     try {
-        const report = await geminiService.extractKnowledge(chapter.content, storyRef.current);
-        if (report) {
+        const report = await geminiService.extractKnowledge(targetContent, currentStory, ['characters', 'world', 'mechanics', 'dna']);
+        if (report?.data) {
             recordUsage(report.usageMetadata);
             setConsistencyReport(report.data);
         }
-    } catch (e) { } finally { setIsLearning(false); }
+    } catch (e: any) {
+        console.error("learnFromChapter error:", e);
+        alert(`Lỗi khi quét tri thức chương: ${e?.message || 'Không thể kết nối AI.'}`);
+    } finally { setIsLearning(false); }
   };
 
-  const learnFromText = async (text: string, categories: ExtractionCategory[] = ['characters', 'world']) => {
+  const learnFromText = async (text: string, categories: ExtractionCategory[] = ['characters', 'world', 'mechanics']) => {
     if (!storyRef.current) return;
+    if (!text || text.trim().length < 20) {
+      alert("Văn bản nạp vào quá ngắn để trích xuất tri thức.");
+      return;
+    }
     setIsLearning(true);
     try {
         const report = await geminiService.extractKnowledge(text, storyRef.current, categories);
-        if (report) {
+        if (report?.data) {
             recordUsage(report.usageMetadata);
             setConsistencyReport(report.data);
         }
-    } catch (e) { } finally { setIsLearning(false); }
+    } catch (e: any) {
+        console.error("learnFromText error:", e);
+        alert(`Lỗi khi trích xuất tri thức: ${e?.message || 'Không thể kết nối AI.'}`);
+    } finally { setIsLearning(false); }
+  };
+
+  const scanStoryCharactersAndLore = async () => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+
+    const hasContent = (currentStory.chapters || []).some(
+      ch => (ch.content || ch.translatedContent || '').trim().length >= 30
+    );
+    if (!hasContent) {
+      alert("Truyện chưa có đủ nội dung chương (tối thiểu 30 ký tự) để quét nhân vật và thế giới.");
+      return;
+    }
+
+    setIsScanningStory(true);
+    setScanProgress({ current: 0, total: 1, label: 'Đang chuẩn bị phân tích toàn truyện...' });
+    try {
+      const result = await geminiService.scanStoryEntities(currentStory, (progress) => {
+        setScanProgress(progress);
+      });
+      if (result?.data) {
+        if (result.usageMetadata) recordUsage(result.usageMetadata);
+        const totalFound =
+          (result.data.newCharacters?.length || 0) +
+          (result.data.characterUpdates?.length || 0) +
+          (result.data.worldLore?.length || 0) +
+          (result.data.mechanics?.length || 0);
+        if (totalFound === 0 && !result.data.writingDNA) {
+          alert("AI đã quét xong nhưng chưa phát hiện nhân vật hoặc dữ liệu thế giới mới nào.");
+        } else {
+          setConsistencyReport(result.data);
+        }
+      }
+    } catch (e: any) {
+      console.error("scanStoryCharactersAndLore error:", e);
+      alert(`Lỗi khi quét nhân vật & dữ liệu truyện: ${e?.message || 'Vui lòng kiểm tra API Key hoặc thử lại.'}`);
+    } finally {
+      setIsScanningStory(false);
+      setScanProgress(null);
+    }
+  };
+
+  const applyKnowledgeExtraction = async (selection: {
+    newCharacters: any[];
+    characterUpdates: any[];
+    worldLore: any[];
+    mechanics: any[];
+    writingDNA?: WritingDNA | null;
+    genreSuggestion?: string;
+    synopsisSuggestion?: string;
+  }) => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+
+    let updatedChars = [...(currentStory.characters || [])];
+    const normalizeName = (n: string) => (n || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+    // 1. Add / merge discovered new characters
+    for (const raw of selection.newCharacters || []) {
+      const name = (raw?.name || '').trim();
+      if (!name) continue;
+      const existingIdx = updatedChars.findIndex(c => normalizeName(c.name) === normalizeName(name));
+      const cleanTraits = Array.isArray(raw.traits)
+        ? raw.traits
+        : (typeof raw.traits === 'string' && raw.traits.trim() ? raw.traits.split(/[,;]/).map((s: string) => s.trim()).filter(Boolean) : []);
+
+      if (existingIdx >= 0) {
+        const prev = updatedChars[existingIdx];
+        updatedChars[existingIdx] = {
+          ...prev,
+          role: raw.role || prev.role,
+          species: raw.species || prev.species,
+          description: prev.description
+            ? (raw.description && !prev.description.includes(raw.description) ? `${prev.description}\n${raw.description}` : prev.description)
+            : (raw.description || ''),
+          appearance: prev.appearance || raw.appearance || '',
+          currentLocation: raw.currentLocation || prev.currentLocation || '',
+          powerLevel: raw.powerLevel || prev.powerLevel || '',
+          abilities: prev.abilities || raw.abilities || '',
+          traits: Array.from(new Set([...(prev.traits || []), ...cleanTraits])),
+        };
+      } else {
+        updatedChars.push({
+          id: generateId(),
+          name,
+          role: raw.role || 'Phụ',
+          entityType: raw.entityType || 'human',
+          species: raw.species || '',
+          description: raw.description || '',
+          appearance: raw.appearance || '',
+          traits: cleanTraits,
+          status: raw.status || 'alive',
+          powerLevel: raw.powerLevel || '',
+          currentLocation: raw.currentLocation || '',
+          abilities: raw.abilities || '',
+          knowledge: raw.knowledge || '',
+          mentors: raw.mentors || '',
+          enemies: raw.enemies || '',
+        });
+      }
+    }
+
+    // 2. Apply updates to existing characters
+    for (const upd of selection.characterUpdates || []) {
+      const name = (upd?.name || '').trim();
+      if (!name) continue;
+      const idx = updatedChars.findIndex(c => normalizeName(c.name) === normalizeName(name));
+      if (idx >= 0) {
+        const prev = updatedChars[idx];
+        const mergedKnowledge = upd.knowledge
+          ? (prev.knowledge && !prev.knowledge.includes(upd.knowledge) ? `${prev.knowledge}\n• ${upd.knowledge}` : (prev.knowledge || upd.knowledge))
+          : prev.knowledge;
+        updatedChars[idx] = {
+          ...prev,
+          status: upd.status || prev.status,
+          powerLevel: upd.powerLevel || prev.powerLevel,
+          healthStatus: upd.healthStatus || prev.healthStatus,
+          currentLocation: upd.currentLocation || prev.currentLocation,
+          abilities: upd.abilities || prev.abilities,
+          knowledge: mergedKnowledge,
+        };
+      }
+    }
+
+    // 3. Append world lore & mechanics atomically
+    const newLogs: KnowledgeLog[] = [];
+    let nextSetting = currentStory.setting || '';
+    for (const lore of selection.worldLore || []) {
+      if (!lore?.topic || !lore?.content) continue;
+      if (!nextSetting.includes(lore.topic)) {
+        nextSetting = `${nextSetting ? nextSetting + '\n\n' : ''}### ${lore.topic}\n${lore.content}`;
+      }
+      newLogs.push({
+        id: generateId(),
+        timestamp: Date.now(),
+        category: 'world',
+        title: lore.topic,
+        content: lore.content,
+        isActive: true
+      });
+    }
+
+    let nextMechanics = currentStory.mechanics || '';
+    for (const mech of selection.mechanics || []) {
+      const title = (mech?.name || mech?.rule || '').trim();
+      const body = (mech?.detail || mech?.rule || '').trim();
+      if (!title || !body) continue;
+      if (!nextMechanics.includes(title)) {
+        nextMechanics = `${nextMechanics ? nextMechanics + '\n\n' : ''}• **${title}**: ${body}`;
+      }
+      newLogs.push({
+        id: generateId(),
+        timestamp: Date.now(),
+        category: 'mechanics',
+        title,
+        content: body,
+        isActive: true
+      });
+    }
+
+    const updatedStory: Story = {
+      ...currentStory,
+      characters: updatedChars,
+      setting: nextSetting,
+      mechanics: nextMechanics,
+      writingDNA: selection.writingDNA || currentStory.writingDNA,
+      genre: selection.genreSuggestion?.trim() ? selection.genreSuggestion.trim() : currentStory.genre,
+      synopsis: selection.synopsisSuggestion?.trim() ? selection.synopsisSuggestion.trim() : currentStory.synopsis,
+      knowledgeLogs: [...(currentStory.knowledgeLogs || []), ...newLogs]
+    };
+
+    setStory(updatedStory);
+    storyRef.current = updatedStory;
+    await storageService.saveStory(updatedStory);
+    setConsistencyReport(null);
   };
 
   const learnStyleFromText = async (text: string) => {
@@ -1948,33 +2310,61 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const analyzeActiveChapterQuality = async () => {
-    if (!storyRef.current || !activeChapterId) return;
+    const currentStory = storyRef.current;
+    if (!currentStory || !activeChapterId) return;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
+    const targetContent = editorVersion === 'translation' && chapter.translatedContent?.trim()
+      ? chapter.translatedContent
+      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
+    if (!targetContent || targetContent.trim().length < 20) {
+      alert("Chương hiện tại chưa có đủ nội dung để phân tích từ vựng.");
+      return;
+    }
+
     setIsCheckingErrors(true);
-    const chapter = storyRef.current.chapters.find(c => c.id === activeChapterId)!;
     try {
-        const report = await geminiService.analyzeVocabulary(chapter.content, storyRef.current.interactionRules || "");
-        if (report) {
+        const report = await geminiService.analyzeVocabulary(targetContent, currentStory.interactionRules || "");
+        if (report?.data) {
             recordUsage(report.usageMetadata);
             setVocabularyInsights(report.data);
         }
-    } catch (e) { } finally { setIsCheckingErrors(false); }
+    } catch (e: any) {
+        console.error(e);
+        alert(e?.message || "Lỗi khi phân tích chất lượng văn phong.");
+    } finally { setIsCheckingErrors(false); }
   };
 
   const suggestActiveChapterOutline = async () => {
-    if (!storyRef.current || !activeChapterId) return;
     const currentStory = storyRef.current;
-    const chapter = currentStory.chapters.find(c => c.id === activeChapterId)!;
+    if (!currentStory || !activeChapterId) return;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
     setIsGeneratingOutline(true);
     try {
-        const shortTermMemory = chapter.content.slice(-2000);
-        const longTermMemory = currentStory.chapters.filter(c => c.id !== activeChapterId && c.order < chapter.order).slice(-3).map(c => c.summary).join('\n');
+        const sorted = [...currentStory.chapters].sort((a, b) => a.order - b.order);
+        const curIdx = sorted.findIndex(c => c.id === activeChapterId);
+        const prevCh = curIdx > 0 ? sorted[curIdx - 1] : null;
+
+        const currentBody = (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || '')).slice(-2000);
+        const shortTermMemory = currentBody || (prevCh ? `[Cuối chương trước - ${prevCh.title}]:\n${(prevCh.content || prevCh.translatedContent || '').slice(-1500)}` : '');
+        const longTermMemory = sorted
+            .slice(Math.max(0, curIdx - 3), curIdx)
+            .map(c => `[${c.title}]: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`)
+            .join('\n');
         
         const result = await geminiService.suggestOutline(chapter, currentStory, userInstruction, longTermMemory, shortTermMemory);
         if (result && result.text) {
             recordUsage(result.usageMetadata);
             updateChapterOutline(activeChapterId, result.text);
         }
-    } catch (e) { } finally { setIsGeneratingOutline(false); }
+    } catch (e: any) {
+        console.error(e);
+        alert(e?.message || "Lỗi khi AI gợi ý đề cương chương.");
+    } finally { setIsGeneratingOutline(false); }
   };
 
   const generateChapterVideo = async () => {
@@ -2007,15 +2397,29 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const clearVocabularyInsights = () => setVocabularyInsights(null);
 
   const analyzeStoryPlotArc = useCallback(async () => {
-      if (!storyRef.current) return;
+      const currentStory = storyRef.current;
+      if (!currentStory) return;
+
+      const hasSubstantialContent = (currentStory.chapters || []).some(
+        ch => (ch.content || ch.translatedContent || ch.summary || ch.outline || '').trim().length >= 30
+      );
+      if (!hasSubstantialContent) {
+        setPlotArcError("Truyện chưa đủ dữ liệu (cần ít nhất 1 chương có nội dung, tóm tắt hoặc đề cương) để AI phân tích mạch truyện.");
+        return;
+      }
+
+      setPlotArcError(null);
       setIsAnalyzingPlotArc(true);
       try {
-          const result = await geminiService.analyzePlotArc(storyRef.current);
-          if (result) {
+          const result = await geminiService.analyzePlotArc(currentStory);
+          if (result?.data) {
               recordUsage(result.usageMetadata);
               setPlotArcAnalysis(result.data);
           }
-      } catch (e) { }
+      } catch (e: any) {
+          console.error("analyzeStoryPlotArc error:", e);
+          setPlotArcError(e?.message || "Không thể phân tích mạch truyện lúc này. Vui lòng kiểm tra API Key hoặc thử lại.");
+      }
       finally { setIsAnalyzingPlotArc(false); }
   }, [recordUsage]);
 
@@ -2524,18 +2928,43 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!currentStory) return null;
       const character = currentStory.characters.find(c => c.id === charId);
       if (!character) return null;
-      const recentChapters = [...currentStory.chapters].sort((a, b) => b.order - a.order).slice(0, 3);
-      const shortTermMemory = recentChapters.map(c => `[${c.title}]: ${c.summary}`).join('\n');
-      const longTermMemory = `[QUÁ KHỨ]: ${character.description}. [TÌNH TRẠNG CŨ]: ${character.healthStatus}`;
+
+      const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
+      const mentioning = sortedChapters.filter(c => {
+        const haystack = `${c.title}\n${c.summary || ''}\n${c.content || ''}\n${c.translatedContent || ''}`.toLowerCase();
+        return haystack.includes(character.name.toLowerCase());
+      });
+      const sourceChapters = (mentioning.length > 0 ? mentioning : sortedChapters).slice(-4);
+      const storyContext = sourceChapters.map(c => {
+        const rawText = (c.content?.trim() ? c.content : (c.translatedContent || '')).trim();
+        const excerpt = rawText.length > 1500 ? `${rawText.slice(0, 600)}\n...\n${rawText.slice(-900)}` : rawText;
+        return `[${c.title}]:\nTóm tắt: ${c.summary || 'Chưa có'}\nDiễn biến:\n${excerpt}`;
+      }).join('\n\n---\n\n');
+
+      if (!storyContext.trim()) {
+        alert("Chưa có nội dung chương nào để đồng bộ tình trạng nhân vật.");
+        return null;
+      }
 
       try {
-          const result = await geminiService.autoUpdateCharacterStatus(character, longTermMemory, shortTermMemory);
+          const result = await geminiService.autoUpdateCharacterStatus(character, storyContext);
           if (result && result.data) {
               recordUsage(result.usageMetadata);
-              await updateCharacter(charId, result.data);
-              return { ...character, ...result.data };
+              const mergedUpdates = {
+                ...result.data,
+                knowledge: result.data.knowledge
+                  ? (character.knowledge && !character.knowledge.includes(result.data.knowledge)
+                      ? `${character.knowledge}\n• ${result.data.knowledge}`
+                      : result.data.knowledge)
+                  : character.knowledge
+              };
+              await updateCharacter(charId, mergedUpdates);
+              return { ...character, ...mergedUpdates };
           }
-      } catch (e) { console.error(e); }
+      } catch (e: any) {
+          console.error("autoUpdateCharacter error:", e);
+          alert(e?.message || "Không thể đồng bộ tình trạng nhân vật lúc này.");
+      }
       return null;
   };
 
@@ -2546,14 +2975,14 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       generationProgress, generationStatus,
       isPlanning, isPlotPlanning, isLearning, isSearchingWeb, isAuditing, isAuditingChapter, isCheckingErrors, isGeneratingOutline, isGeneratingVideo,
       isSavingManual, setIsSavingManual, saveTrigger, triggerSave, learnTrigger, triggerLearn,
-      videoGenerationStatus, generatedVideoUrl, consistencyReport, auditReport, chapterAuditReport, vocabularyInsights, webInspiration, plotArcAnalysis, isAnalyzingPlotArc,
+      videoGenerationStatus, generatedVideoUrl, consistencyReport, auditReport, chapterAuditReport, vocabularyInsights, webInspiration, plotArcAnalysis, plotArcError, isAnalyzingPlotArc, isScanningStory, scanProgress,
       userInstruction, setUserInstruction, targetWordCount, setTargetWordCount,
       pendingEdit, setPendingEdit, chapterSuggestion, setChapterSuggestion, isSuggestingChapter,
       lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
       canUndo, canRedo, undo, redo,
       loadStories, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
       sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, insertChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
-      generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, learnStyleFromText, learnWritingDNA, learnFromInteraction,
+      generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, scanStoryCharactersAndLore, applyKnowledgeExtraction, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
       clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,
       exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub, importChaptersFromTxt, importChaptersFromEpub, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,

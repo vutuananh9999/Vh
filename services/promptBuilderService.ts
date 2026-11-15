@@ -2,124 +2,69 @@
 import { Character, Chapter, Story, ExtractionCategory, WritingDNA } from '../types.ts';
 import { NSFW_INSTRUCTION } from './nsfwPrompt.ts';
 
+const isAsoiafUniverse = (...fields: (string | undefined)[]): boolean => {
+  const combined = fields.filter(Boolean).join(' ').toLowerCase();
+  if (!combined) return false;
+  return /asoiaf|a song of ice and fire|game of thrones|westeros|targaryen|stark|lannister|baratheon|valyrian|dragonstone|trò chơi vương quyền|bài ca băng và lửa|gia tộc rồng|bảy vương quốc/.test(combined);
+};
+
+const isModernOrContemporaryGenre = (genre?: string, setting?: string): boolean => {
+  const combined = `${genre || ''} ${setting || ''}`.toLowerCase();
+  return /hiện đại|đô thị|ngôn tình|trinh thám|kinh dị|học đường|khoa huyễn|sci-fi|cyberpunk|slice of life|modern|urban|contemporary|light novel|isekai/.test(combined);
+};
+
 const WRITING_COMMANDMENTS = `
-[GIAO THỨC VIẾT VĂN TỐI THƯỢM - MASTERPIECE PROTOCOL]
+[GIAO THỨC VIẾT VĂN CHUYÊN NGHIỆP - LITERARY CRAFT PROTOCOL]
 
 1. KỸ THUẬT "DEEP POV" & "SENSORY IMMERSION":
-- CẤM dùng các "từ lọc" (filter words): "Hắn cảm thấy lạnh", "Nàng nhìn thấy", "Ta nghe được".
--> SỬA THÀNH TRỰC TIẾP: "Cơn gió buốt giá luồn qua khe áo", "Bóng đen lướt qua tầm mắt", "Tiếng sấm rền vang".
-- Kết hợp ít nhất 3 giác quan trong mỗi phân cảnh. Ưu tiên: Xúc giác (nhiệt độ, kết cấu), Khứu giác (mùi vị không khí) và Thính giác.
+- HẠN CHẾ các "từ lọc" (filter words) làm xa cách người đọc: "Hắn cảm thấy lạnh", "Nàng nhìn thấy", "Ta nghe được".
+-> VIẾT TRỰC TIẾP: "Cơn gió buốt giá luồn qua khe áo", "Bóng đen lướt qua tầm mắt", "Tiếng sấm rền vang".
+- Kết hợp linh hoạt nhiều giác quan trong phân cảnh quan trọng (Thị giác, Thính giác, Xúc giác, Khứu giác, Vị giác) phù hợp với bối cảnh truyện.
 
 2. NGUYÊN LÝ "TẢNG BĂNG TRÔI" (SUBTEXT):
-- Nhân vật không bao giờ nói toẹt ra toàn bộ suy nghĩ. Hãy để hành động, ánh mắt và những câu thoại bỏ lửng nói thay lời.
-- Tạo chiều sâu tâm lý: Sự mâu thuẫn giữa hành động bên ngoài và suy nghĩ bên trong.
+- Nhân vật không nói toẹt ra toàn bộ suy nghĩ. Hãy để hành động, ánh mắt, khoảng lặng và những câu thoại có ẩn ý bộc lộ nội tâm.
+- Tạo chiều sâu tâm lý: Sự giằng xé giữa lý trí và cảm xúc, giữa mục tiêu cá nhân và hoàn cảnh.
 
 3. NHỊP ĐIỆU VĂN CHƯƠNG (DYNAMIC PACING):
-- Cảnh hành động/Nguy hiểm: Dùng câu ngắn, động từ mạnh, tiết tấu dồn dập. Ngắt câu liên tục.
-- Cảnh nội tâm/Mô tả: Dùng câu phức, câu dài, giàu tính từ và hình ảnh ẩn dụ.
-- Tránh lặp lại cấu trúc câu liên tiếp (Vd: Không viết 3 câu liên tiếp bắt đầu bằng "Hắn...").
+- Cảnh hành động/Nguy hiểm: Dùng câu ngắn, động từ mạnh, tiết tấu dồn dập.
+- Cảnh nội tâm/Mô tả: Dùng câu giàu hình ảnh, nhịp điệu lắng đọng, gợi cảm.
+- Tránh lặp lại cấu trúc đầu câu liên tiếp (Vd: Không viết 3-4 câu liền cùng mở đầu bằng "Hắn...").
 
 4. SỰ CHÍNH XÁC VỀ CHI TIẾT (SPECIFICITY):
-- Đừng viết "một loài hoa đẹp". Hãy viết "cánh hoa Mạn Đà La đỏ thẫm như máu".
-- Đừng viết "hắn cầm vũ khí". Hãy viết "ngón tay hắn siết chặt cán đao lạnh lẽo".
+- Ưu tiên chi tiết cụ thể, sống động thay cho tính từ chung chung sáo rỗng.
 `;
 
 const ASOIAF_KNOWLEDGE_MATRIX = `
-[BÁCH KHOA TOÀN THƯ VŨ TRỤ A SONG OF ICE AND FIRE (GAME OF THRONES)]
-AI PHẢI THAM CHIẾU DỮ LIỆU NÀY ĐỂ ĐẢM BẢO TÍNH "GRRM" (GEORGE R.R. MARTIN):
-
-1. 🏰 CÁC ĐẠI GIA TỘC (GREAT HOUSES):
-   - **Stark:** Danh dự, khắc kỷ, "Winter is Coming". Gắn liền với Sói Tuyết (Direwolf).
-   - **Lannister:** Giàu có, trả nợ, kiêu hãnh, chính trị tàn nhẫn. "Hear Me Roar".
-   - **Targaryen:** Rồng, điên loạn/thiên tài, loạn luân để giữ dòng máu. "Fire and Blood".
-   - **Baratheon:** Cơn thịnh nộ, sức mạnh thể chất, tiệc tùng. "Ours is the Fury".
-   - **Tyrell:** Quyền lực mềm, lương thực, hiệp sĩ hào nhoáng. "Growing Strong".
-   - **Martell:** Bất khuất, dùng độc, bình đẳng giới. "Unbowed, Unbent, Unbroken".
-   - **Greyjoy:** Cướp bóc, hạm đội sắt, văn hóa Viking. "We Do Not Sow".
-
-2. 🛡️ CÁC GIA TỘC CHƯ HẦU QUAN TRỌNG (VASSAL HOUSES):
-   - **Nhà Bolton (Dreadfort):** "Our Blades are Sharp". Tàn bạo, lột da kẻ thù, xảo quyệt, luôn ganh đua với nhà Stark.
-   - **Nhà Hightower (Oldtown):** "We Light the Way". Cực kỳ giàu có, nắm giữ tri thức (Citadel) và ảnh hưởng lên Thất Diện Giáo. Quyền lực ngầm.
-   - **Nhà Velaryon (Driftmark):** Gốc Valyria cổ xưa, làm chủ biển cả, giàu có nhờ thương mại. Tóc bạch kim, mắt tím.
-   - **Nhà Dayne (Dorne):** Sở hữu thanh kiếm "Dawn" (Bình Minh) làm từ thiên thạch. Danh hiệu "Kiếm Thần Buổi Sớm" chỉ trao cho hiệp sĩ giỏi nhất, không truyền cho con trưởng.
-   - **Nhà Frey (The Twins):** Giữ cầu, thu phí, đông con, keo kiệt, hay bị khinh thường nhưng nắm giữ vị trí chiến lược.
-   - **Nhà Mormont (Bear Island):** Nghèo nhưng trung thành tuyệt đối, phụ nữ cũng là chiến binh.
-   - **Nhà Manderly (White Harbor):** Gốc Nam sống ở Bắc, rất giàu, sở hữu hạm đội duy nhất của phương Bắc. Bề ngoài béo tốt vui vẻ nhưng thâm sâu ("The North Remembers").
-   - **Nhà Tarly (Horn Hill):** Quân đội kỷ luật nhất The Reach, sở hữu kiếm Valyrian "Heartsbane".
-
-3. 💰 TỔ CHỨC & THẾ LỰC (ORGANIZATIONS):
-   - **Golden Company (Hội Đồng Vàng):** "Beneath the gold, the bitter steel". Lính đánh thuê xịn nhất Essos. Kỷ luật như quân chính quy. Có Voi chiến. Chưa từng phá hợp đồng (trừ khi vì Rồng/Blackfyre).
-   - **Iron Bank (Ngân Hàng Sắt Braavos):** "The Iron Bank will have its due". Thế lực tài chính thao túng các cuộc chiến. Vua chúa không trả nợ sẽ bị thay thế.
-   - **Faceless Men (Vô Diện Giả):** Hội sát thủ thờ Thần Nhiều Mặt. Có thể thay đổi khuôn mặt. Giá thuê cực đắt (có thể là 1/3 tài sản hoặc con cái). "Valar Morghulis".
-   - **The Citadel (Hội Maester):** Nắm giữ tri thức, y thuật, thư tín (quạ). Có giả thuyết (Grand Maester Conspiracy) cho rằng họ âm thầm triệt tiêu phép thuật và Rồng để tạo ra thế giới lý trí.
-   - **Night's Watch (Tuần Đêm):** Nơi chứa tội phạm/con hoang. Giữ Tường Thành. Không vợ con, không đất đai.
-
-4. 🐉 RỒNG & SINH VẬT HUYỀN BÍ (DRAGON LORE):
-   - **Đặc tính Rồng:**
-     + Vũ khí hủy diệt hàng loạt (Nuke). Lửa rồng nung chảy đá và sắt.
-     + Không ngừng lớn lên cho đến khi chết (nếu có đủ thức ăn và không gian).
-     + Vảy cứng dần theo tuổi tác. Rồng già (như Vhagar) rất chậm chạp nhưng da cực dày.
-     + **Mối liên kết:** Một rồng chỉ chấp nhận một kỵ sĩ (Rider) tại một thời điểm. Khi kỵ sĩ chết, rồng có thể nhận người mới.
-   - **Các Rồng nổi tiếng (Tham chiếu):**
-     + *Balerion (The Black Dread):* Khổng lồ, lửa đen, bóng che khuất cả thị trấn.
-     + *Vhagar:* Già nua, to lớn nhất thời Hậu Chinh Phạt, tính khí cục súc.
-     + *Caraxes (Blood Wyrm):* Cổ dài, linh hoạt, hung dữ.
-   - **Sinh vật khác:** Direwolf (Sói Tuyết - Thông minh, to bằng ngựa con), White Walkers (Bóng Trắng - Necromancy), Kraken (Quái vật biển).
-
-5. ⚔️ CHIẾN TRANH, HẬU CẦN & CHÍNH TRỊ (WARFARE & POLITICS):
-   - **Hậu cần (Logistics):** Quân đội chết vì đói/bệnh nhiều hơn vì kiếm. Cắt đường tiếp tế = Thắng.
-   - **Địa lợi:** Kỵ binh vô dụng ở rừng/núi/đầm lầy. Bộ binh sợ đồng bằng. Công thành là hạ sách (thường vây hãm bỏ đói).
-   - **Âm mưu:** Thông tin là vũ khí. Varys ("Little Birds") thắng nhờ biết điều người khác không biết. Hôn nhân là hiệp ước quân sự bền vững nhất.
-   - **Quyền Khách (Guest Right):** Quy luật thiêng liêng. Ăn bánh mì và muối của chủ nhà -> Được bảo vệ. Phá vỡ điều này (Red Wedding) là tội ác tày trời bị thần linh nguyền rủa.
-
-6. 🗣️ NGÔN NGỮ & VĂN HÓA (GRRM-ISMS):
-   - Dùng: "Mayhaps", "Nuncle", "Seven Hells", "Words are wind", "Dark wings, dark words".
-   - Xưng hô: Ser (Hiệp sĩ), Your Grace (Vua/Hậu), My Lord/Lady.
-   - Tiền tệ: Rồng Vàng (Gold Dragon) > Hươu Bạc (Silver Stag) > Đồng Xu (Copper Penny).
+[BÁCH KHOA VŨ TRỤ A SONG OF ICE AND FIRE (GAME OF THRONES) - CHỈ ÁP DỤNG CHO ĐỒNG NHÂN/BỐI CẢNH WESTEROS]:
+1. Các Đại Gia Tộc & Chư Hầu: Stark, Lannister, Targaryen, Baratheon, Tyrell, Martell, Greyjoy, Bolton, Hightower, Velaryon, Dayne, Frey, Mormont, Manderly, Tarly.
+2. Tổ chức & Thế lực: Golden Company, Iron Bank, Faceless Men, Citadel (Maester), Night's Watch.
+3. Quy tắc Rồng, Chiến tranh & Văn hóa: Hậu cần chiến trường, Quyền Khách (Guest Right), lời thề phong kiến, chi phí phép thuật, tiền tệ (Rồng Vàng, Hươu Bạc).
 `;
 
-const RATIONALITY_PROTOCOL = `
-[GIAO THỨC LOGIC & CHỐNG SÁO RỖNG (ANTI-TROPE GUARDRAILS)]
+const UNIVERSAL_RATIONALITY_PROTOCOL = `
+[GIAO THỨC LOGIC & CHỐNG SÁO RỖNG (CONSISTENCY & RATIONALITY GUARDRAILS)]
 AI TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM CÁC QUY TẮC SAU ĐÂY:
 
-1. 🧠 LOGIC HÀNH ĐỘNG & TƯ DUY:
-   - **Không có "Kẻ ác ngốc nghếch":** Tywin Lannister hay Roose Bolton không làm việc thừa. Họ tàn nhẫn nhưng có lý do (bảo vệ gia tộc/quyền lực).
-   - **Hậu quả tàn khốc:** Sai lầm chính trị nhỏ (sỉ nhục một chư hầu) có thể dẫn đến sự phản bội lớn sau này. Không có "Hào quang nhân vật chính" cứu mạng vô lý.
-   - **Động cơ:** Mọi nhân vật (kể cả lính canh) đều có động cơ riêng (tiền, sợ hãi, về nhà). Không ai là NPC vô tri.
+1. 🧠 LOGIC HÀNH ĐỘNG & TÂM LÝ NHÂN VẬT:
+   - Không có nhân vật hành động ngu ngốc chỉ để đẩy cốt truyện. Mọi nhân vật (kể cả phản diện hay nhân vật phụ) đều phải có động cơ, lợi ích và giới hạn nhận thức hợp lý.
+   - Không bẻ cong tính cách (OOC): Hành động, lời thoại và cách xưng hô phải nhất quán với hồ sơ nhân vật và các chương trước.
 
-2. 🩸 GIỚI HẠN SỨC MẠNH NGƯỜI THƯỜNG (HUMAN FRAGILITY):
-   - **Không hư cấu sức mạnh:** Trừ khi nhân vật có phép thuật/dòng máu đặc biệt (được ghi trong hồ sơ), họ chỉ là người thường.
-   - **Thực tế:** Một kiếm sĩ huyền thoại (như Arthur Dayne) vẫn có thể bị giết bởi 3-4 lính thường nếu bị vây đánh hoặc đâm lén. Không có kiểu "một chém chết ngàn quân".
-   - **Chấn thương:** Bị đâm là chảy máu, mất sức, nhiễm trùng. Không thể tự hồi phục ngay lập tức.
+2. ⚖️ NHẤT QUÁN HỆ THỐNG SỨC MẠNH & GIỚI HẠN VẬT LÝ:
+   - Tuân thủ nghiêm ngặt quy tắc thế giới / hệ thống sức mạnh (Mechanics) đã thiết lập. Không tự ý buff/nerf vô lý hay xuất hiện năng lực từ hư không.
+   - Chấn thương, thể lực và tài nguyên tiêu hao phải có hậu quả thực tế qua từng phân cảnh.
 
-3. 🐉 CÂN BẰNG SỨC MẠNH (BALANCE):
-   - Rồng rất mạnh nhưng không vô đối. Một mũi tên trúng mắt là chết. Rồng cần không gian để cất cánh.
-   - Phép thuật luôn đòi hỏi sự hy sinh (máu, sự sống, ký ức). Không có phép thuật miễn phí.
-
-4. 🔒 TRUTH KEEPER (BẢO TOÀN SỰ THẬT):
-   - Tuyệt đối tuân thủ các sự kiện đã viết trong Context cũ.
-   - Theo dõi sát sao vết thương: Bị chém ở chân chương trước -> Chương này phải đi khập khiễng.
-   - Theo dõi vật phẩm: Không tự nhiên lôi ra đồ vật chưa từng nhặt.
-
-5. ⚔️ MÔ TẢ CHIẾN TRẬN THỰC TẾ:
-   - Chiến trường là hỗn loạn (Chaos), ồn ào, bụi bặm và máu me. Không ai nhìn bao quát được toàn cảnh.
-   - Mệnh lệnh truyền đi bằng tù và/cờ hiệu, rất dễ bị hiểu sai.
-   - Sĩ khí (Morale) quan trọng hơn số lượng quân. Lính đánh thuê (như Golden Company) chiến đấu vì vàng và danh tiếng, không bán mạng vô ích.
+3. 🔒 TRUTH KEEPER (BẢO TOÀN SỰ THẬT & LIÊN TỤC):
+   - Tuyệt đối tuân thủ các sự kiện, mốc thời gian, địa điểm và vật phẩm đã xuất hiện trong các chương trước.
+   - Vị trí nhân vật phải hợp lý (không dịch chuyển tức thời vô giải thích).
+   - Tri thức nhân vật phải khớp thời điểm: Nhân vật chưa chứng kiến sự kiện A thì không thể hành động như đã biết sự kiện A.
 `;
 
 const TRUTH_KEEPER_PROTOCOL = `
 [GIAO THỨC BẢO TOÀN SỰ THẬT - TRUTH KEEPER]
-Để tránh Hallucination và đảm bảo tính nhất quán:
-
-1. 🔒 **QUY TẮC BẤT BIẾN VỀ QUÁ KHỨ:**
-   - Dữ liệu Context là chân lý. Không viết sai lệch sự kiện đã xảy ra.
-
-2. 📍 **TÍNH LIÊN TỤC:**
-   - Vị trí nhân vật phải hợp lý (không teleport).
-   - Trang bị/Vết thương phải được theo dõi sát sao.
-
-3. 🧩 **KIỂM TRA CHÉO:**
-   - Trước khi viết mưu kế, tự hỏi: "Kẻ địch có đủ thông minh để nhận ra không?". Nếu có, hãy để kẻ địch phản đòn.
+Để tránh Hallucination và đảm bảo tính liên tục mạch truyện:
+1. 🔒 **QUY TẮC BẤT BIẾN VỀ QUÁ KHỨ:** Mọi chi tiết đã xảy ra trong bản thảo các chương trước là sự thật nền tảng. Không viết mâu thuẫn với diễn biến cũ trừ khi đang chủ đích sửa lỗi đó theo yêu cầu tác giả.
+2. 📍 **TÍNH LIÊN TỤC KHÔNG-THỜI GIAN:** Vị trí, vết thương, trang bị, mối quan hệ và xưng hô của nhân vật phải nối tiếp mượt mà giữa các chương.
+3. 🧩 **ĐỐI CHIẾU CHÉO:** Luôn kiểm tra xem chi tiết sắp viết có làm vỡ lời hứa cốt truyện (plot hook) hoặc quy tắc thế giới hay không.
 `;
 
 export const ORIGINAL_FIDELITY_PROTOCOL = `
@@ -129,11 +74,10 @@ export const ORIGINAL_FIDELITY_PROTOCOL = `
    - TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM MẤT các chi tiết đã có trong bản gốc/nguyên mẫu: Tên nhân vật, danh xưng, đặc điểm ngoại hình, vật phẩm/vũ khí, từng câu thoại đắt giá, bối cảnh vi mô, tình tiết phụ, các cử chỉ/hành động cụ thể và cảm xúc tinh tế.
    - Giữ nguyên vẹn tính cách, phong thái, thói quen xưng hô và động cơ của từng nhân vật theo đúng nguyên mẫu.
 2. 🚫 CẤM TÓM TẮT & RÚT GỌN VÔ CỚ (NO SUMMARIZATION/NO OMISSIONS):
-   - Bản chỉnh sửa PHẢI DUY TRÌ HOẶC MỞ RỘNG độ dài so với bản gốc (tối thiểu 100% - 130% dung lượng bản cũ).
+   - Bản chỉnh sửa PHẢI DUY TRÌ HOẶC MỞ RỘNG độ dài so với bản gốc (tối thiểu 100% - 130% dung lượng bản cũ, trừ khi người dùng yêu cầu rút gọn).
    - Tuyệt đối KHÔNG được biến các đoạn đối thoại chi tiết, các phân cảnh miêu tả sống động thành 1-2 câu tóm tắt hời hợt.
 3. ✨ NÂNG CẤP VĂN PHONG NHƯNG GIỮ NGUYÊN BẢN SẮC:
-   - Nhiệm vụ chỉnh sửa là: Làm giàu hình ảnh, trau chuốt từ ngữ, tăng cường xúc cảm/ngũ quan, mài giũa nhịp điệu và làm nổi bật các chi tiết có sẵn — KHÔNG PHẢI là xóa đi viết cái khác hoàn toàn xa lạ.
-   - Nếu bản gốc có những chi tiết độc đáo hoặc ẩn ý của tác giả, PHẢI giữ lại và tôn vinh chúng.
+   - Nhiệm vụ chỉnh sửa là: Làm giàu hình ảnh, trau chuốt từ ngữ, vá lỗi mâu thuẫn logic/liên kết mạch truyện và giữ đúng bản sắc tác giả — KHÔNG PHẢI là xóa đi viết câu chuyện hoàn toàn xa lạ.
 `;
 
 export function sampleManuscript(content: string, maxChars: number): string {
@@ -168,17 +112,22 @@ export function formatSmartChapterContext(
   const focusId = options.focusChapterId;
   const mentionText = (options.targetChapterMention || "").trim().toLowerCase();
 
+  const getDisplayText = (c: Chapter) => (c.content?.trim() ? c.content : (c.translatedContent || ''));
+
   // If entire story content fits within budget, deliver 100% full verbatim manuscript for ALL chapters!
-  const totalRawChars = chapters.reduce((acc, c) => acc + (c.content?.length || 0), 0);
+  const totalRawChars = chapters.reduce((acc, c) => acc + getDisplayText(c).length, 0);
   if (totalRawChars <= maxTotalChars) {
-    return chapters.map((c, i) => `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) ===
+    return chapters.map((c, i) => {
+      const text = getDisplayText(c);
+      return `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
 [BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ 100%)]:
-${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa có bản thảo chi tiết)"}`).join('\n\n----------------------------------------\n\n');
+${text.trim().length > 0 ? text : "(Chương này chưa có bản thảo chi tiết)"}`;
+    }).join('\n\n----------------------------------------\n\n');
   }
 
-  // Identify prioritized chapters (Target/Mentioned or Focused) with strict non-empty matching
+  // Identify prioritized chapters (Target/Mentioned or Focused)
   const isTarget = (c: Chapter, i: number) => {
     if (focusId && c.id === focusId) return true;
     if (mentionText.length >= 2) {
@@ -202,9 +151,8 @@ ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa c
     if (isTarget(c, idx)) targetIndices.add(idx);
   });
 
-  // If user didn't mention a specific chapter and no chapter is focused, prioritize the last edited chapter or chapter 1
   if (targetIndices.size === 0) {
-    const lastWithContent = chapters.map((c, i) => ({ hasContent: !!(c.content && c.content.trim().length > 0), idx: i }))
+    const lastWithContent = chapters.map((c, i) => ({ hasContent: getDisplayText(c).trim().length > 0, idx: i }))
       .filter(item => item.hasContent)
       .pop();
     if (lastWithContent !== undefined) {
@@ -214,28 +162,22 @@ ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa c
     }
   }
 
-  // Identify neighbor indices (chapters immediately around target indices, plus start and end)
   const neighborIndices = new Set<number>();
   targetIndices.forEach(idx => {
     if (idx > 0) neighborIndices.add(idx - 1);
     if (idx < numChapters - 1) neighborIndices.add(idx + 1);
   });
-  // Include Chapter 1 and the very latest chapter
   neighborIndices.add(0);
   if (numChapters > 1) neighborIndices.add(numChapters - 1);
-  // Remove targets from neighbors
   targetIndices.forEach(idx => neighborIndices.delete(idx));
 
-  // Determine budget distribution
-  const targetCharsAllocated = Math.min(35000, Math.floor(maxTotalChars * 0.6));
+  const targetCharsAllocated = Math.min(35000, Math.floor(maxTotalChars * 0.58));
   const perTargetBudget = Math.floor(targetCharsAllocated / Math.max(1, targetIndices.size));
 
-  // For small stories (<= 25 chapters), all chapters can have sampled manuscripts.
-  // For large stories (> 25 chapters, e.g. 500+ chapters), distant chapters only provide concise summaries to avoid multi-megabyte prompt allocations.
   const isLargeStory = numChapters > 25;
   const remainingBudget = Math.max(5000, maxTotalChars - targetCharsAllocated);
   const sampleCandidateCount = isLargeStory ? Math.max(1, neighborIndices.size) : Math.max(1, numChapters - targetIndices.size);
-  const perSampleBudget = Math.min(3000, Math.max(300, Math.floor((remainingBudget * 0.7) / sampleCandidateCount)));
+  const perSampleBudget = Math.min(3500, Math.max(350, Math.floor((remainingBudget * 0.7) / sampleCandidateCount)));
 
   const renderedChapters: string[] = [];
   const distantSummaries: string[] = [];
@@ -244,25 +186,24 @@ ${c.content && c.content.trim().length > 0 ? c.content : "(Chương này chưa c
     const c = chapters[i];
     const isFocused = targetIndices.has(i);
     const isNeighbor = neighborIndices.has(i);
-    const hasContent = !!(c.content && c.content.trim().length > 0);
+    const fullText = getDisplayText(c);
+    const hasContent = fullText.trim().length > 0;
 
-    // 1. Target chapter: full or deep manuscript
     if (isFocused) {
-      const rawText = hasContent 
-        ? (c.content.length > perTargetBudget ? c.content.substring(0, perTargetBudget) + `\n\n[... Trích đoạn ${perTargetBudget.toLocaleString()} ký tự đầu của chương ...]` : c.content)
+      const rawText = hasContent
+        ? (fullText.length > perTargetBudget ? fullText.substring(0, perTargetBudget) + `\n\n[... Trích đoạn ${perTargetBudget.toLocaleString()} ký tự đầu của chương ...]` : fullText)
         : "(Chương này chưa có bản thảo chi tiết)";
       const block = `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) [ĐANG TẬP TRUNG / ĐƯỢC CHỈ ĐỊNH] ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
-[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU - ĐẦY ĐỦ)]:
+[BẢN THẢO THỰC TẾ (MANUSCRIPT NGUYÊN MẪU)]:
 ${rawText}`;
       renderedChapters.push(block);
       continue;
     }
 
-    // 2. Neighbor chapters or all chapters in small stories: sampled manuscript
     if (!isLargeStory || isNeighbor) {
-      const sample = hasContent ? sampleManuscript(c.content, perSampleBudget) : "(Chương này chưa có bản thảo chi tiết)";
+      const sample = hasContent ? sampleManuscript(fullText, perSampleBudget) : "(Chương này chưa có bản thảo chi tiết)";
       const block = `=== CHƯƠNG ${i + 1}: ${c.title || `Chương ${i + 1}`} (ID: ${c.id}) ===
 [Đề cương (Outline)]: ${c.outline || "(Chưa có)"}
 [Tóm tắt sơ lược (Summary)]: ${c.summary || "(Chưa có)"}
@@ -272,9 +213,8 @@ ${sample}`;
       continue;
     }
 
-    // 3. Distant chapters in large stories (500+ chapters): compact timeline entry to save memory and tokens
-    const compactSummary = c.summary?.trim() || c.outline?.trim() || "(Chưa có tóm tắt)";
-    distantSummaries.push(`• Chương ${i + 1} (${c.title}): ${compactSummary.slice(0, 150)}`);
+    const compactSummary = c.summary?.trim() || c.outline?.trim() || (hasContent ? sampleManuscript(fullText, 240) : "(Chưa có nội dung)");
+    distantSummaries.push(`• Chương ${i + 1} (${c.title}): ${compactSummary.slice(0, 220)}`);
   }
 
   if (distantSummaries.length > 0) {
@@ -283,32 +223,64 @@ ${sample}`;
 
   const fullResult = renderedChapters.join('\n\n----------------------------------------\n\n');
   if (fullResult.length > maxTotalChars) {
-    return fullResult.substring(0, maxTotalChars) + "\n\n[... Đã cắt bớt để bảo toàn bộ nhớ an toàn ...]";
+    return fullResult.substring(0, maxTotalChars) + "\n\n[... Đã cắt bớt để bảo toàn giới hạn ngữ cảnh ...]";
   }
   return fullResult;
 }
 
+const formatCharacterRosterForPrompt = (characters: Character[], maxCount = 35): string => {
+  if (!characters || characters.length === 0) return "(Chưa có hồ sơ nhân vật)";
+  return characters.slice(0, maxCount).map(c => {
+    const entityLabel = c.entityType === 'creature' ? 'Sinh vật/Thú' : c.entityType === 'spirit' ? 'Tinh linh/Hồn' : c.entityType === 'object' ? 'Pháp bảo/Vật phẩm' : 'Nhân vật';
+    const parts = [
+      `Vai trò: ${c.role || 'Phụ'}`,
+      `Loại: ${entityLabel}${c.species ? ` (${c.species})` : ''}`,
+      `Trạng thái: ${c.status || 'alive'}`,
+      c.currentLocation ? `Vị trí: ${c.currentLocation}` : '',
+      c.healthStatus ? `Thể trạng/Vết thương: ${c.healthStatus}` : '',
+      c.combatState ? `Chiến trạng: ${c.combatState}` : '',
+      c.powerLevel ? `Thực lực/Cảnh giới: ${c.powerLevel}` : '',
+      c.abilities ? `Kỹ năng: ${c.abilities}` : '',
+      c.traits?.length ? `Tính cách/Đặc trưng: ${c.traits.join(', ')}` : '',
+      c.knowledge ? `Tri thức nắm giữ: ${c.knowledge}` : '',
+      c.mentors ? `Người dẫn dắt: ${c.mentors}` : '',
+      c.enemies ? `Đối trọng/Kẻ thù: ${c.enemies}` : '',
+      c.appearance ? `Ngoại hình: ${c.appearance}` : '',
+      c.description ? `Mô tả: ${c.description}` : ''
+    ].filter(Boolean);
+    return `- ${c.name}: ${parts.join(' | ')}`;
+  }).join('\n');
+};
+
 export const promptBuilderService = {
   buildStoryFoundationPrompt: (seedIdea: string, genre: string): string => {
-    return `Khởi tạo một câu chuyện đắt giá dựa trên ý tưởng: "${seedIdea}" với thể loại: "${genre}". 
-    Trả về định dạng JSON bao gồm: title, synopsis (hấp dẫn, có hook, nhấn mạnh xung đột chính trị/lợi ích), setting (chi tiết địa lý, các gia tộc/phe phái), planning, mechanics, interactionRules.`;
+    return `Khởi tạo nền tảng một tác phẩm tiểu thuyết đắt giá dựa trên ý tưởng: "${seedIdea}" với thể loại: "${genre}".
+Trả về JSON hợp lệ gồm các trường:
+{
+  "title": "Tên truyện ấn tượng",
+  "synopsis": "Văn án hấp dẫn, có hook và nêu bật xung đột cốt lõi",
+  "setting": "Mô tả chi tiết bối cảnh thế giới, địa lý, xã hội và các thế lực chính",
+  "planning": "Dàn ý tổng thể 3-4 hồi phát triển cốt truyện",
+  "mechanics": "Hệ thống sức mạnh, phép thuật, công nghệ hoặc quy luật đặc thù của tác phẩm",
+  "interactionRules": "Quy tắc xưng hô, văn hóa giao tiếp và ràng buộc logic quan trọng"
+}`;
   },
 
   buildDNAExtractionPrompt: (text: string): string => {
     return `[NHIỆM VỤ: CHIẾT TÁCH HỒN VĂN (WRITING DNA)]
-Hãy phân tích đoạn văn bản sau và trích xuất "Hệ gen văn chương" đặc trưng.
+Hãy phân tích đoạn văn bản sau và trích xuất "Hệ gen văn chương" đặc trưng của tác giả.
 
 VĂN BẢN MẪU:
 """
-${text.substring(0, 10000)}
+${sampleManuscript(text, 14000)}
 """
 
 TRẢ VỀ JSON:
 {
-  "narrativeVoice": "Giọng kể (Vd: Lạnh lùng tàn khốc, Sử thi, Châm biếm...)",
-  "vocabularyPalette": ["Danh sách 10 từ/cụm từ độc đáo/cổ ngữ tác giả hay dùng"],
-  "sentenceStructure": "Cấu trúc câu (Vd: Câu phức hoa mỹ, Mô tả chi tiết món ăn/trang phục...)",
-  "thematicElements": ["Các hình ảnh biểu tượng lặp lại (Máu, Tuyết, Rồng...)"],
+  "narrativeVoice": "Giọng kể (Vd: Lạnh lùng, Sử thi, Trữ tình, Châm biếm, Tự sự ngôi 1...)",
+  "vocabularyPalette": ["Danh sách 8-12 từ/cụm từ đặc trưng tác giả hay dùng"],
+  "sentenceStructure": "Cấu trúc câu đặc trưng",
+  "thematicElements": ["Các mô-típ/hình ảnh biểu tượng lặp lại"],
   "emotionalTone": "Sắc thái cảm xúc chủ đạo",
   "rhythm": "Nhịp điệu văn chương"
 }`;
@@ -328,53 +300,58 @@ TRẢ VỀ JSON:
     persistentDirectives: string = "",
     writingDNA?: WritingDNA
   ): string => {
-    const contentRating = nsfw ? NSFW_INSTRUCTION : "CHẾ ĐỘ AN TOÀN: BẬT. Không viết nội dung khiêu dâm, bạo lực quá mức (trừ khi cần thiết cho tính tàn khốc của chiến tranh).";
+    const contentRating = nsfw ? NSFW_INSTRUCTION : "CHẾ ĐỘ AN TOÀN: BẬT. Tránh nội dung phản cảm quá mức không phục vụ mạch truyện.";
     
     const systemInstructionText = hasSystem 
-        ? "✅ CHẾ ĐỘ HỆ THỐNG (SYSTEM/LITRPG): BẬT. Được phép hiển thị bảng trạng thái (Status Window), Nhiệm vụ (Quest), Thông báo (Notification) và Cấp độ. Hãy tích hợp các yếu tố Game vào trần thuật."
-        : "⛔ CHẾ ĐỘ HỆ THỐNG (SYSTEM/LITRPG): TẮT. Tuyệt đối KHÔNG hiển thị bảng trạng thái xanh, cấp độ kiểu game, tiếng 'Ding', hay các thông báo hệ thống. Viết theo phong cách văn học truyền thống, tả thực.";
+        ? "✅ CHẾ ĐỘ HỆ THỐNG (SYSTEM/LITRPG): BẬT. Được phép hiển thị bảng trạng thái (Status Window), Nhiệm vụ (Quest), Thông báo hệ thống và chỉ số nhân vật phù hợp bối cảnh."
+        : "⛔ CHẾ ĐỘ HỆ THỐNG (SYSTEM/LITRPG): TẮT. Không tự ý chèn bảng trạng thái game, thông báo hệ thống hay hiệu ứng 'Ding!' nếu truyện không thuộc thể loại Hệ thống.";
 
     const dnaInstruction = writingDNA ? `
 [KÍCH HOẠT HỒN VĂN (WRITING DNA)]:
-AI phải nhập vai tác giả gốc với các thông số sau:
+Hãy viết bám sát dấu ấn văn phong đặc trưng của tác phẩm:
 - Giọng kể: ${writingDNA.narrativeVoice}
-- Từ vựng đặc trưng: ${writingDNA.vocabularyPalette.join(', ')} -> Hãy tìm cách chèn các từ này vào văn bản một cách tự nhiên.
+- Từ vựng đặc trưng: ${(writingDNA.vocabularyPalette || []).join(', ')}
 - Nhịp điệu: ${writingDNA.rhythm}
-- Cấu trúc: ${writingDNA.sentenceStructure}
-- YÊU CẦU: Văn bản tạo ra phải khiến người đọc tin rằng chính tác giả mẫu đã viết nó.` : "";
+- Cấu trúc câu: ${writingDNA.sentenceStructure}
+- Sắc thái cảm xúc: ${writingDNA.emotionalTone}` : "";
 
-    return `[GIAO THỨC TỐI THƯỢM - AETHERIA CORE V3.8 - MASTER ASOIAF ARCHIVIST]
-Bạn là một ĐẠI VĂN HÀO (như George R.R. Martin), SỬ GIA và BẬC THẦY CHÍNH TRỊ.
-Mục tiêu: Viết ra những chương truyện có chiều sâu triết lý, mưu mô thâm sâu, thế giới chân thực tàn khốc và tính nhất quán tuyệt đối.
+    const asoiafBlock = isAsoiafUniverse(genre, worldBible, mechanics, interactionRules) ? ASOIAF_KNOWLEDGE_MATRIX : "";
+    const languageToneRule = isModernOrContemporaryGenre(genre, worldBible)
+      ? "- TUÂN THỦ NGÔN NGỮ BỐI CẢNH HIỆN ĐẠI/CẬN ĐẠI: Lời thoại và trần thuật tự nhiên, tránh dùng từ cổ trang Hán-Việt gượng gạo ('bản tọa', 'ngươi-ta') trừ khi là biệt danh/trích dẫn."
+      : `- TUÂN THỦ NGÔN NGỮ ĐÚNG THỂ LOẠI (${genre || 'Tiểu thuyết'}): Tránh dùng từ ngữ lạc tông hoặc từ tiếng Anh hiện đại sáo rỗng ('OK', 'Hello', 'Bye') trong bối cảnh cổ đại/huyền huyễn.`;
+
+    return `[GIAO THỨC VIẾT TRUYỆN CHUYÊN NGHIỆP - AETHERIA LITERARY ENGINE]
+Bạn là một Nhà văn & Tổng biên tập tiểu thuyết kỳ cựu chuyên viết thể loại: ${genre || 'Tiểu thuyết'}.
+Mục tiêu: Tạo ra những chương truyện có mạch lạc chặt chẽ, tâm lý nhân vật có chiều sâu, nhất quán tuyệt đối với toàn bộ tác phẩm và trung thành với văn phong của bộ truyện.
 
 ${WRITING_COMMANDMENTS}
 ${TRUTH_KEEPER_PROTOCOL}
-${ASOIAF_KNOWLEDGE_MATRIX}
-${RATIONALITY_PROTOCOL}
+${asoiafBlock}
+${UNIVERSAL_RATIONALITY_PROTOCOL}
 ${dnaInstruction}
 
 [THIẾT LẬP THẾ GIỚI (WORLD BIBLE)]
-- Thể loại: ${genre} | Góc nhìn: ${pov}
-- Bối cảnh gốc: ${worldBible} 
-- Hệ thống/Cơ chế: ${mechanics}
+- Thể loại: ${genre || 'Tiểu thuyết'} | Góc nhìn (POV): ${pov || 'Ngôi thứ 3'}
+- Phong cách mong muốn: ${writingStyle || 'Tự nhiên, lôi cuốn, giàu hình ảnh'}
+- Bối cảnh thế giới: ${worldBible || '(Chưa thiết lập chi tiết)'}
+- Hệ thống sức mạnh / Cơ chế thế giới (Mechanics): ${mechanics || '(Không có quy tắc đặc biệt)'}
 
 [CẤU HÌNH HỆ THỐNG (LITRPG CONFIG)]
 ${systemInstructionText}
 
 [QUY TẮC XƯNG HÔ & TƯƠNG TÁC]
-${pronounStyle}
-${interactionRules}
+- Quy tắc xưng hô: ${pronounStyle || 'Nhất quán theo vai vế và bối cảnh truyện'}
+- Quy tắc tương tác: ${interactionRules || '(Không có ràng buộc thêm)'}
 
 [CHỈ THỊ BỀN VỮNG (LUÔN GHI NHỚ)]
-${persistentDirectives}
+${persistentDirectives || '(Không có)'}
 
 [ĐIỀU CẤM (NEGATIVE PROMPT)]
-${negativePrompt}
-- CẤM văn phong "AI hóa" (nhạt nhẽo, lặp từ).
-- CẤM tóm tắt sự kiện (Show, don't tell).
-- CẤM nhân vật hành động thiếu động cơ hoặc mâu thuẫn với tính cách (Out of Character).
-- CẤM SAI LỆCH SỰ KIỆN ĐÃ XẢY RA.
-- CẤM DÙNG TỪ NGỮ HIỆN ĐẠI (OK, Hello, Bye...).
+${negativePrompt || '(Không có)'}
+- CẤM văn phong sáo rỗng, lặp cấu trúc câu, kể lể thay vì miêu tả (Show, don't tell).
+- CẤM nhân vật hành động thiếu động cơ hoặc mâu thuẫn tính cách (OOC).
+- CẤM sai lệch các sự kiện, vật phẩm, thương tích và vị trí nhân vật đã xảy ra trước đó.
+${languageToneRule}
 
 ${contentRating}`;
   },
@@ -396,117 +373,170 @@ ${contentRating}`;
     previousChapterTime: string = "",
     currentTimeline: string = "",
     historicalContext: string = "",
-    canonContext: string = "" // Added
+    canonContext: string = "",
+    genre: string = "",
+    fandomName: string = ""
   ): string => {
     const hasExistingContent = immediateContext.trim().length > 10;
+    const isAsoiaf = isAsoiafUniverse(genre, worldBible, mechanics, fandomName);
     
-    // Tìm nhân vật chính để tập trung POV
     const mainChar = characters.find(c => c.role === 'Chính' || c.role === 'Main');
     const narrativeFocus = mainChar 
-        ? `[TIÊU ĐIỂM TƯỜNG THUẬT]: Hãy tập trung tuyệt đối vào trải nghiệm, cảm xúc và góc nhìn của "${mainChar.name}". Mọi mô tả thế giới phải thông qua lăng kính của nhân vật này.` 
+        ? `[TIÊU ĐIỂM TƯỜNG THUẬT]: Chú trọng góc nhìn, cảm xúc và mục tiêu hiện tại của nhân vật chính "${mainChar.name}".` 
         : "";
 
-    // Build Character Memory Block with Consistency Check
-    const charMemoryBlock = characters.map(c => `
-    - ${c.name} (${c.role} - ${c.species || 'Chủng tộc không rõ'}):
-      + [LOẠI HÌNH THỰC THỂ]: ${c.entityType === 'creature' ? 'Thú/Quái Vật/Rồng (Creature)' : c.entityType === 'spirit' ? 'Tinh Linh/Hồn (Spirit)' : c.entityType === 'object' ? 'Vật phẩm/Khí Linh (Object)' : 'Người/Nhân dạng (Humanoid)'}
-      + [VỊ TRÍ HIỆN TẠI]: ${c.currentLocation || "Chưa xác định"} (⚠️ CHÚ Ý: Nhân vật phải bắt đầu cảnh này tại đây).
-      + [TÌNH TRẠNG CƠ THỂ]: ${c.combatState || c.healthStatus || "Bình thường"} (⚠️ CHÚ Ý: Không được quên vết thương cũ).
-      + [TÂM LÝ/ĐỘNG CƠ]: ${c.name} đang mưu tính gì? (Dựa trên Matrix Tâm lý Gia tộc).
-      + [TRI THỨC ĐÃ CÓ]: ${c.knowledge || "Không có"}
-    `).join('\n');
+    const charMemoryBlock = characters.length > 0
+      ? formatCharacterRosterForPrompt(characters, 25)
+      : "(Chưa có hồ sơ nhân vật cụ thể — hãy dựa vào ngữ cảnh bản thảo)";
 
     const historicalBlock = historicalContext 
         ? `[DỮ LIỆU LỊCH SỬ THỰC TẾ (HISTORICAL GROUNDING)]:
-Dưới đây là thông tin thực tế về mốc thời gian "${currentTimeline}". Hãy sử dụng dữ liệu này để làm nền tảng cho sự kiện, không khí và các thế lực trong truyện (nếu phù hợp với bối cảnh):
-${historicalContext}
--> YÊU CẦU: Ưu tiên sự chính xác về lịch sử/xã hội nếu truyện có yếu tố dã sử/lịch sử.` 
+Mốc thời gian "${currentTimeline}":
+${historicalContext}` 
         : "";
 
     const canonBlock = canonContext
         ? `[TUÂN THỦ NGUYÊN TÁC (CANON COMPLIANCE PROTOCOL)]:
-⚠️ Dữ liệu gốc từ tác phẩm (Canon) đã được nạp. AI phải tuân thủ nghiêm ngặt các quy tắc sau:
-1. **Thiết lập thế giới:** Giữ nguyên tên địa danh, hệ thống phép thuật/sức mạnh và quy luật của vũ trụ gốc (trừ khi người dùng ra lệnh thay đổi cụ thể).
-2. **Nhân vật gốc (Original Characters):** Nếu xuất hiện nhân vật trong Canon, phải giữ đúng tính cách (In-Character), giọng điệu và hành động đặc trưng. KHÔNG OOC (Out of Character).
-3. **Logic sự kiện:** Tôn trọng các sự kiện lớn trong dòng thời gian gốc nếu chưa bị hiệu ứng cánh bướm thay đổi.
-
-[DỮ LIỆU CANON CHI TIẾT]:
+Giữ đúng thiết lập thế giới, tính cách nhân vật và quy luật vũ trụ gốc:
 ${canonContext}`
         : "";
 
-    return `[NHIỆM VỤ: KIẾN TẠO THỰC TẠI (FORGE PROTOCOL)]
+    return `[NHIỆM VỤ: VIẾT TIẾP / KIẾN TẠO MẠCH TRUYỆN NHẤT QUÁN]
 
-[BỐI CẢNH & DỮ LIỆU KIỂM CHỨNG]:
-- Báo cáo xác thực (Fact-Check): ${verificationReport}
-- Dàn ý chương hiện tại: ${chapterOutline}
-${hasExistingContent ? `- Ngữ cảnh liền trước (STM - SỰ THẬT BẤT BIẾN): "...${immediateContext.slice(-2500)}"` : "- Trạng thái: KHỞI TẠO CHƯƠNG MỚI"}
+[TÓM TẮT ĐỊNH HƯỚNG TỔNG THỂ (MASTER BLUEPRINT)]:
+${planning ? planning.slice(0, 3000) : "(Chưa có dàn ý tổng thể)"}
 
-[THIẾT LẬP THỜI GIAN & NIÊN ĐẠI]:
-- Timeline: "${currentTimeline || 'Không xác định'}"
-- Thời gian chương trước: "${previousChapterTime}" -> Thời gian hiện tại: "${currentChapterTime || 'Tiếp diễn'}" (Chú ý: Di chuyển ở Westeros mất nhiều thời gian).
+[BỐI CẢNH & TRI THỨC LIÊN QUAN]:
+${worldBible ? worldBible.slice(0, 6000) : "(Theo ngữ cảnh chương trước)"}
+${mechanics ? `\n- Quy tắc / Hệ thống sức mạnh: ${mechanics}` : ""}
+${interactionRules ? `\n- Quy tắc tương tác & Xưng hô (${pronounStyle}): ${interactionRules}` : (pronounStyle ? `\n- Quy tắc xưng hô: ${pronounStyle}` : "")}
+${persistentDirectives ? `\n- Chỉ thị bền vững: ${persistentDirectives}` : ""}
+${verificationReport ? `\n- Xác thực tri thức: ${verificationReport}` : ""}
+
+[NGỮ CẢNH CHƯƠNG HIỆN TẠI & LIỀN TRƯỚC]:
+- Dàn ý chương đang viết: ${chapterOutline || "(Tự triển khai nối tiếp tự nhiên từ diễn biến trước)"}
+${hasExistingContent ? `- Đoạn văn bản liền trước (BẮT BUỘC NỐI TIẾP LIỀN MẠCH KHÔNG LẶP LẠI):\n"""\n${immediateContext.slice(-3500)}\n"""` : "- Trạng thái: KHỞI TẠO PHÂN CẢNH MỞ ĐẦU CHƯƠNG MỚI"}
+
+[MỐC THỜI GIAN]:
+- Dòng thời gian truyện: "${currentTimeline || 'Không xác định'}"
+- Thời gian chương trước: "${previousChapterTime || 'Không rõ'}" -> Thời gian chương hiện tại: "${currentChapterTime || 'Tiếp diễn tự nhiên'}"
 
 ${historicalBlock}
 ${canonBlock}
-
 ${narrativeFocus}
 
-[QUÉT NHÂN VẬT & KIỂM TRA NHẤT QUÁN]:
+[HỒ SƠ NHÂN VẬT & TRẠNG THÁI HIỆN TẠI]:
 ${charMemoryBlock}
 
-[CHỈ ĐẠO CỦA TÁC GIẢ]:
-"${userInstruction || "Viết tiếp mạch truyện. Tập trung vào mưu mô, chiến thuật và bầu không khí."}"
+[CHỈ ĐẠO CỦA TÁC GIẢ CHO ĐOẠN NÀY]:
+"${userInstruction || "Viết tiếp mạch truyện một cách tự nhiên, nhất quán với tâm lý nhân vật, bối cảnh thế giới và các chi tiết đã xảy ra."}"
 
-[YÊU CẦU THỰC THI CHI TIẾT - CHẾ ĐỘ ASOIAF MASTER]:
-1. **SỬ DỤNG KNOWLEDGE MATRIX:**
-   - Nếu có các gia tộc nhỏ (Bolton, Frey, Hightower...): Hãy thể hiện đặc trưng của họ (lột da, thu phí, tri thức...).
-   - Nếu có tổ chức (Golden Company, Iron Bank...): Thể hiện sự chuyên nghiệp, tàn nhẫn và sức mạnh tài chính.
-   - Nếu có Rồng: Áp dụng vật lý rồng, nỗi sợ hãi của ngựa/người và sự hủy diệt.
-   
-2. **MÔ PHỎNG TƯ DUY & CẢM XÚC:**
-   - Cho thấy sự đấu tranh nội tâm (Duty vs Love).
-   - Hành động phải phù hợp với tính cách gia tộc (Stark thì cứng nhắc, Lannister thì thực dụng).
-   - **LƯU Ý VỀ PHÂN LOẠI THỰC THỂ:** Nếu nhân vật là Thú/Rồng (Creature), hãy mô tả hành động bản năng, tiếng gầm, chuyển động cơ thể thay vì lời nói (trừ khi biết nói). Nếu là Khí Linh (Spirit), hãy mô tả trạng thái trôi nổi, xuyên thấu.
+[YÊU CẦU THỰC THI]:
+1. **Nối tiếp liền mạch tuyệt đối:** Tiếp tục ngay từ điểm dừng cuối cùng, tôn trọng vị trí, vết thương, tri thức, xưng hô và vật phẩm của từng nhân vật.
+2. **Show, Don't Tell:** Tái hiện cảnh qua hành động, đối thoại có hồn, cảm giác trực tiếp và diễn biến tâm lý tinh tế; không tóm tắt sự kiện.
+3. **Phân biệt loại thực thể:** Nếu nhân vật là Thú/Sinh vật hoặc Tinh linh/Khí linh, hãy mô tả hành vi, giao tiếp và năng lực đúng bản chất chủng loài của thực thể đó.
+${isAsoiaf ? "4. **Hương vị Westeros/ASOIAF:** Giữ đúng bầu không khí chính trị thực tế, gia tộc và ngôn ngữ đặc trưng." : `4. **Độ dài & Nhịp điệu:** Viết khoảng ~${targetWordCount} từ với nhịp điệu chặt chẽ, phù hợp thể loại ${genre || 'của truyện'}.`}
 
-3. **CHIẾN THUẬT VIẾT (GRRM Style):**
-   - **Không khí (Atmosphere):** Mô tả kỹ lưỡng món ăn, huy hiệu gia tộc, thời tiết khắc nghiệt.
-   - **Show, Don't Tell.**
+BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN (Chỉ trả về phần văn bản truyện nối tiếp, không lặp lại đoạn cũ và không thêm lời bình luận):`;
+  },
 
-4. **ĐỘ DÀI & CẤU TRÚC:** Mục tiêu ~${targetWordCount} từ. 
+  buildChapterPlotWriteOrFixPrompt: (
+    chapter: Chapter,
+    story: Story,
+    options: { repairInstruction?: string; continuityNotes?: string } = {}
+  ): string => {
+    const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const idx = sortedChapters.findIndex(c => c.id === chapter.id);
+    const prevChapter = idx > 0 ? sortedChapters[idx - 1] : undefined;
+    const nextChapter = idx >= 0 && idx < sortedChapters.length - 1 ? sortedChapters[idx + 1] : undefined;
 
-BẮT ĐẦU KIẾN TẠO VĂN BẢN (Chỉ trả về nội dung truyện):`;
+    const currentDraft = chapter.content?.trim() ? chapter.content : (chapter.translatedContent || '');
+    const hasOriginalDraft = currentDraft.trim().length > 30;
+    const prevDraft = prevChapter ? (prevChapter.content?.trim() ? prevChapter.content : (prevChapter.translatedContent || '')) : '';
+
+    const activeKnowledge = (story.knowledgeLogs || [])
+      .filter(k => k.isActive)
+      .slice(-20)
+      .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
+      .join('\n') || '(Chưa có)';
+
+    const dnaBlock = story.writingDNA
+      ? `[HỒN VĂN TÁC GIẢ]: Giọng kể: ${story.writingDNA.narrativeVoice} | Nhịp: ${story.writingDNA.rhythm} | Sắc thái: ${story.writingDNA.emotionalTone} | Từ vựng đặc trưng: ${(story.writingDNA.vocabularyPalette || []).join(', ')}`
+      : '';
+
+    return `[NHIỆM VỤ: ${hasOriginalDraft ? 'SỬA CHỮA & HOÀN THIỆN BẢN THẢO CHƯƠNG THEO MẠCH LẠC TOÀN TRUYỆN' : 'SOẠN THẢO BẢN THẢO CHƯƠNG MỚI THEO CỐT TRUYỆN'}]
+Bạn là Đại biên tập và Nhà văn chủ bút của bộ truyện "${story.title}".
+
+[HỒ SƠ THẾ GIỚI & QUY TẮC CỐT LÕI]:
+- Thể loại: ${story.genre || 'Tiểu thuyết'} | Ngôi kể (POV): ${story.pov || 'Ngôi thứ ba'} | Xưng hô chuẩn: ${story.pronounStyle || 'Nhất quán theo vai vế'}
+- Dàn ý tổng thể (Master Blueprint): ${story.planning || '(Chưa thiết lập)'}
+- Bối cảnh (Setting): ${story.setting || '(Chưa thiết lập)'}
+- Hệ thống / Quy tắc thế giới (Mechanics): ${story.mechanics || '(Chưa thiết lập)'}
+- Quy tắc tương tác & Ràng buộc: ${story.interactionRules || '(Không có)'}
+- Chỉ thị bền vững: ${story.persistentDirectives || '(Không có)'}
+${story.negativePrompt ? `- Điều cấm (Negative Prompt): ${story.negativePrompt}` : ''}
+${dnaBlock}
+
+[TRI THỨC NỀN ĐÃ KHÓA]:
+${activeKnowledge}
+
+[DANH SÁCH NHÂN VẬT & TRẠNG THÁI]:
+${formatCharacterRosterForPrompt(story.characters || [], 30)}
+
+[NGỮ CẢNH LIỀN KỀ ĐỂ BẢO ĐẢM MẠCH LẠC]:
+- Chương trước: ${prevChapter ? `"${prevChapter.title}"\n  * Tóm tắt: ${prevChapter.summary || prevChapter.outline || '(Chưa có)'}\n  * Đoạn kết chương trước (điểm nối đầu chương này):\n"""\n${prevDraft.slice(-1800) || '(Trống)'}\n"""` : '(Đây là chương đầu tiên)'}
+- Chương kế tiếp: ${nextChapter ? `"${nextChapter.title}" — ${nextChapter.summary || nextChapter.outline || '(Chưa có tóm tắt/đề cương)'}` : '(Chưa có chương kế tiếp)'}
+
+[CHƯƠNG MỤC TIÊU: "${chapter.title}"]
+- Mốc thời gian: ${chapter.timeSetting || '(Tiếp nối tự nhiên)'}
+- Đề cương / Mục tiêu chương (Outline): ${chapter.outline || '(Chưa thiết lập đề cương — bám sát mạch truyện và diễn biến sẵn có)'}
+${chapter.summary ? `- Tóm tắt chương (Summary): ${chapter.summary}` : ''}
+${options.continuityNotes ? `- Vấn đề mạch lạc / logic cần vá:\n${options.continuityNotes}` : ''}
+${options.repairInstruction ? `- Yêu cầu sửa chữa cụ thể từ tác giả:\n${options.repairInstruction}` : ''}
+
+[BẢN THẢO HIỆN TẠI CỦA CHƯƠNG "${chapter.title}"]:
+${hasOriginalDraft ? currentDraft : '(Trống — Hãy viết mới hoàn toàn dựa trên đề cương và mạch truyện)'}
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[YÊU CẦU BẮT BUỘC]:
+1. ${hasOriginalDraft
+  ? 'BẢO TỒN 100% các chi tiết, tên nhân vật, lời thoại, vật phẩm và diễn biến hay trong bản thảo hiện tại; CHỈ sửa chữa những chỗ gãy mạch, mâu thuẫn logic, lệch xưng hô, lặp ý hoặc nâng cấp văn phong theo yêu cầu.'
+  : 'Bám sát Đề cương chương và điểm nối cuối chương trước để viết thành chương truyện hoàn chỉnh giàu chi tiết, lời thoại và tâm lý.'}
+2. Khớp nối mượt mà với đoạn kết chương trước và mở đường hợp lý sang chương kế tiếp.
+3. Tuyệt đối KHÔNG tóm tắt, KHÔNG rút gọn, KHÔNG viết chú thích của AI ở đầu hoặc cuối. Chỉ trả về toàn văn chương truyện hoàn chỉnh.`;
   },
 
   buildAdvancedOutlinePrompt: (chapter: Chapter, story: Story, userInstruction: string, longTermMemory: string, shortTermMemory: string): string => {
-    const characterList = story.characters.map(c => `- ${c.name}: ${c.role} (${c.species || 'Human'}) - Tại: ${c.currentLocation}`).join('\n');
+    const characterList = formatCharacterRosterForPrompt(story.characters || [], 25);
 
     const strategySection = userInstruction.trim()
-        ? `[CHIẾN LƯỢC: ƯU TIÊN CHỈ ĐẠO CỦA TÁC GIẢ]
-Chỉ đạo mới: "${userInstruction}"`
-        : `[CHIẾN LƯỢC: BÁM SÁT BLUEPRINT TỔNG]
-Dàn ý tổng: ${story.planning || "Tự do sáng tạo."}`;
+        ? `[CHIẾN LƯỢC: ƯU TIÊN CHỈ ĐẠO CỦA TÁC GIẢ]\nChỉ đạo mới: "${userInstruction}"`
+        : `[CHIẾN LƯỢC: BÁM SÁT BLUEPRINT TỔNG]\nDàn ý tổng: ${story.planning || "(Phát triển tự nhiên dựa trên bối cảnh và diễn biến hiện tại)"}`;
 
-    return `[NHIỆM VỤ: KIẾN TRÚC SƯ CỐT TRUYỆN - GIAO THỨC DÀN Ý CHUYÊN SÂU]
+    return `[NHIỆM VỤ: KIẾN TRÚC SƯ CỐT TRUYỆN - THIẾT KẾ DÀN Ý CHƯƠNG NHẤT QUÁN]
 Hãy thiết kế một dàn ý chi tiết (Beat Sheet) cho chương "${chapter.title}" của bộ truyện "${story.title}".
-Phong cách: Game of Thrones (Phức tạp, nhiều tầng lớp nghĩa, chú trọng đấu tranh quyền lực/tâm lý).
+Thể loại: ${story.genre || 'Tiểu thuyết'} | Phong cách viết: ${story.writingStyle || story.writingDNA?.narrativeVoice || 'Sâu sắc, logic, lôi cuốn'}.
 
 ${strategySection}
 
-[BỐI CẢNH & DỮ LIỆU]:
-- Timeline: ${story.currentTimeline}
-- LTM (Tóm tắt cũ): ${longTermMemory}
-- STM (Diễn biến mới): ${shortTermMemory}
-- Nhân vật & Vị trí: ${characterList}
+[BỐI CẢNH & DỮ LIỆU LIÊN TỤC]:
+- Thế giới & Quy tắc: ${story.setting || '(Chưa có)'} ${story.mechanics ? `| Cơ chế: ${story.mechanics}` : ''}
+- Dòng thời gian: ${story.currentTimeline || '(Không xác định)'}
+- LTM (Các chương trước): ${longTermMemory || '(Chưa có tóm tắt chương trước)'}
+- STM (Nội dung/Diễn biến gần nhất): ${shortTermMemory || '(Chưa có)'}
+- Hồ sơ nhân vật:\n${characterList}
 
 [YÊU CẦU CẤU TRÚC DÀN Ý]:
-1. **Mục tiêu cốt lõi (The Goal)**: Nhân vật muốn gì? (Quyền lực, thông tin, sự an toàn?)
-2. **Xung đột & Trở ngại (The Conflict)**: Ai/Cái gì ngăn cản? (Xung đột lợi ích, xung đột nội tâm).
-3. **Bối cảnh (Setting)**: Thời gian, địa điểm, thời tiết. (Tạo không khí: ảm đạm, nguy hiểm, xa hoa...)
-4. **Diễn biến (Scene Beats)**:
-   - Beat 1 (Hook): Mở đầu ấn tượng (nối tiếp logic chương trước).
-   - Beat 2 (Mưu mô/Hành động): Triển khai kế hoạch hoặc đối thoại đấu trí.
-   - Beat 3 (Climax/Twist): Đỉnh điểm mâu thuẫn hoặc một sự thật được hé lộ.
-   - Beat 4 (Hậu quả): Kết thúc để lại dư âm hoặc cliffhanger.
-5. **Logic Check (Quan trọng)**: Đảm bảo không có plot hole. Kiểm tra logic chiến thuật/chính trị và thời gian di chuyển.`;
+1. **Mục tiêu cốt lõi (The Goal)**: Mục tiêu và động cơ của các nhân vật xuất hiện trong chương.
+2. **Xung đột & Trở ngại (The Conflict)**: Mâu thuẫn nội tâm, xung đột lợi ích hoặc thế lực cản trở.
+3. **Bối cảnh & Không khí (Setting & Atmosphere)**: Thời gian, địa điểm, cảm giác chủ đạo phù hợp thể loại.
+4. **Diễn biến chi tiết (4 Scene Beats)**:
+   - Beat 1 (Hook): Nối tiếp mượt mà điểm kết chương trước.
+   - Beat 2 (Triển khai): Đấu trí, hành động hoặc khai phá chi tiết mới.
+   - Beat 3 (Cao trào/Bước ngoặt): Đỉnh điểm xung đột hoặc nút thắt bất ngờ nhưng hợp logic.
+   - Beat 4 (Dư âm/Chuyển tiếp): Hậu quả và móc nối sang chương sau.
+5. **Logic & Continuity Check**: Kiểm tra vị trí nhân vật, trạng thái vết thương, vật phẩm và tri thức để tránh plot hole.`;
   },
 
   buildComplianceGuardrailPrompt: (
@@ -518,27 +548,24 @@ ${strategySection}
     persistentDirectives: string,
     verificationReport: string
   ): string => {
-    return `[NHIỆM VỤ: BIÊN TẬP VIÊN KHẮC KHE - COMPLIANCE & CONSISTENCY CHECK]
-Bạn là chốt chặn kiểm duyệt chất lượng cao cấp. Hãy rà soát văn bản dưới đây để sửa lỗi logic và trau chuốt câu từ.
+    return `[NHIỆM VỤ: BIÊN TẬP VIÊN KIỂM SOÁT CHẤT LƯỢNG & NHẤT QUÁN]
+Hãy rà soát văn bản dưới đây để sửa lỗi logic, lỗi xưng hô và trau chuốt câu từ.
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
 [TIÊU CHÍ KIỂM DUYỆT ƯU TIÊN - TRUTH KEEPER]:
-1. **Bảo tồn chi tiết nguyên mẫu:** Giữ nguyên 100% tên nhân vật, vật phẩm, tình tiết, lời thoại và bối cảnh đã viết trong văn bản. TUYỆT ĐỐI KHÔNG xóa bỏ, cắt ngắn hay thay đổi danh tính nguyên mẫu.
-2. **Mâu thuẫn Sự kiện (Fact Check):** Có chi tiết nào mâu thuẫn với ngữ cảnh đã cung cấp không? -> Sửa lỗi mâu thuẫn nhưng giữ trọn các chi tiết hợp lý.
-3. **Logic Chiến thuật/Chính trị/Rồng:** Hành động có ngây thơ hoặc phi lý so với bối cảnh thế giới không?
-4. **Logic Nhân vật (OOC Check):** Nhân vật có hành động ngu ngốc trái với tính cách thiết lập không?
-5. **Từ vựng & Xưng hô:** ${pronounStyle}
-
-[DỮ LIỆU BỐI CẢNH]:
-${mechanics}
-${persistentDirectives}
-${verificationReport}
+1. **Bảo tồn chi tiết nguyên mẫu:** Giữ nguyên 100% tên nhân vật, vật phẩm, tình tiết, lời thoại và bối cảnh.
+2. **Mâu thuẫn Sự kiện (Fact Check):** Kiểm tra tính hợp lý với ngữ cảnh và diễn biến bên trong văn bản.
+3. **Logic Thế giới & Hệ thống:** ${mechanics || '(Không có quy tắc riêng)'}
+4. **Quy tắc tương tác & Điều cấm:** ${interactionRules || '(Không)'} | Cấm: ${negativePrompt || '(Không)'}
+5. **Từ vựng & Xưng hô:** ${pronounStyle || '(Nhất quán theo vai vế)'}
+6. **Chỉ thị bền vững:** ${persistentDirectives || '(Không)'}
+${verificationReport ? `7. **Xác thực:** ${verificationReport}` : ''}
 
 [VĂN BẢN CẦN RÀ SOÁT]:
 ${text}
 
-Hãy trả về bản văn đã hiệu chỉnh hoàn thiện (giữ nguyên độ dài hoặc dài hơn). TUYỆT ĐỐI KHÔNG CẮT NGẮN, KHÔNG TÓM TẮT. Chỉ sửa lỗi logic, trau chuốt và nâng cấp từ ngữ.`;
+Hãy trả về toàn văn bản đã hiệu chỉnh hoàn thiện (giữ nguyên độ dài hoặc dài hơn). TUYỆT ĐỐI KHÔNG CẮT NGẮN, KHÔNG TÓM TẮT.`;
   },
 
   buildKnowledgeVerificationPrompt: (entities: string, internalContext: string): string => {
@@ -559,99 +586,279 @@ DỮ LIỆU RA JSON:
     let writingStyle = "Chuẩn mực văn học";
     let characters: Character[] = [];
     let setting = "Chưa thiết lập";
+    let planning = "";
+    let mechanics = "";
+    let timeline = "";
 
     if (Array.isArray(storyOrChapters)) {
       chapters = storyOrChapters;
       title = storyTitle || "Tác phẩm";
     } else if (storyOrChapters && typeof storyOrChapters === 'object') {
       const story = storyOrChapters as Story;
-      chapters = story.chapters || [];
+      chapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       title = story.title || title;
       genre = story.genre || genre;
-      writingStyle = story.writingStyle || writingStyle;
+      writingStyle = story.writingStyle || story.writingDNA?.narrativeVoice || writingStyle;
       characters = story.characters || [];
       setting = story.setting || setting;
+      planning = story.planning || "";
+      mechanics = story.mechanics || "";
+      timeline = story.currentTimeline || "";
     }
 
-    const chapterSections = formatSmartChapterContext(chapters, { maxTotalChars: 36000 });
+    const chapterSections = formatSmartChapterContext(chapters, { maxTotalChars: 42000 });
 
-    return `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN DỰA TRÊN BẢN THẢO THỰC TẾ & BẢO TỒN VĂN PHONG]
-Bạn là Đại chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên tập Cao cấp (Principal Literary Plot & Manuscript Architect).
+    return `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN & PHÁT HIỆN VẤN ĐỀ CẦN SỬA CHỮA]
+Bạn là Chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên tập Cốt truyện (Principal Literary Plot & Continuity Architect).
 
 [THÔNG TIN TÁC PHẨM]:
 - Tên truyện: "${title}"
 - Thể loại: ${genre}
 - Phong cách viết / Giọng văn: ${writingStyle}
+- Dòng thời gian: ${timeline || '(Chưa thiết lập)'}
+- Dàn ý tổng thể (Planning): ${planning || '(Chưa thiết lập)'}
 - Thế giới & Bối cảnh: ${setting}
-- Nhân vật chính:
-${characters.map(c => `- ${c.name}: ${c.description || ""} (${c.role || "Nhân vật"})`).join('\n')}
+- Cơ chế / Quy tắc thế giới: ${mechanics || '(Chưa thiết lập)'}
+- Hồ sơ nhân vật:
+${formatCharacterRosterForPrompt(characters, 30)}
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
-[DỮ LIỆU CÁC CHƯƠNG TRUYỆN - GỒM BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
+[DỮ LIỆU CÁC CHƯƠNG TRUYỆN (${chapters.length} chương) - GỒM BẢN THẢO THỰC TẾ, TÓM TẮT & ĐỀ CƯƠNG]:
 ${chapterSections}
 
 [CHỈ THỊ PHÂN TÍCH BẮT BUỘC]:
-1. 📖 BẢN THẢO THỰC TẾ LÀ NGUYÊN MẪU DUY NHẤT: Bắt buộc phải đọc và phân tích chi tiết dựa trên từng câu chữ, lời thoại, hành động và tình huống trong [BẢN THẢO THỰC TẾ]. Tóm tắt (Summary) chỉ là tài liệu tham khảo phụ trợ. TUYỆT ĐỐI KHÔNG ĐƯỢC chỉ nhìn vào tóm tắt rồi phóng tác sai lệch sự thật và chi tiết của bản thảo!
-2. 🎭 TÔN TRỌNG TUYỆT ĐỐI VĂN PHONG VÀ ĐẶC TRƯNG TÁC GIẢ: Nhận diện chính xác giọng văn, nhịp điệu (pacing), các chi tiết ẩn dụ, cài cắm (foreshadowing) và phong cách hành văn của tác giả trong bản thảo gốc.
-3. 🔍 ĐÁNH GIÁ CHÍNH XÁC NÚT THẮT & LỖ HỔNG (Plot Holes & Chekhov's Guns): Tìm ra những chi tiết/đạo cụ/lời hứa/mối quan hệ đã xuất hiện cụ thể trong bản thảo nhưng chưa được giải quyết, hoặc các mâu thuẫn thời gian/hành vi giữa các chương.
-4. 💡 DỰ BÁO TƯƠNG LAI BÁM SÁT CHI TIẾT GỐC: Các hướng phát triển khả thi (Plot Twists) phải bắt nguồn trực tiếp từ các chi tiết thực tế của bản thảo gốc, phát triển tiếp văn phong tác giả chứ không dùng các motif khuôn sáo, rập khuôn.
+1. 📖 ĐỌC TRỰC TIẾP BẢN THẢO THỰC TẾ: Phân tích dựa trên tình tiết, lời thoại, hành động cụ thể trong từng chương; tuyệt đối không bịa chi tiết không tồn tại.
+2. 📊 BIỂU ĐỒ KỊCH TÍNH (pacingHeatmap): Trả về mảng số nguyên từ 0-100 tương ứng ĐÚNG thứ tự từng chương hiện có (${chapters.length} phần tử nếu có thể).
+3. 🔍 PHÁT HIỆN NỖI THẮT & LỖ HỔNG CỤ THỂ (unresolvedHooks & chapterIssues):
+   - Chỉ rõ những chi tiết đã cài cắm mà chưa giải quyết.
+   - Chỉ rõ từng chương có vấn đề về mạch lạc, nhảy cóc thời gian/địa điểm, mâu thuẫn tính cách nhân vật hoặc nhịp điệu rời rạc, KÈM ĐỀ XUẤT CÁCH SỬA CỤ THỂ để tác giả đưa thẳng vào Co-Edit sửa chữa.
+4. 👤 TỔNG QUAN TUYẾN NHÂN VẬT (characterArcSummary): Đánh giá sự phát triển, động cơ và độ nhất quán của dàn nhân vật xuyên suốt truyện.
+5. 💡 DỰ BÁO / HƯỚNG PHÁT TRIỂN TIẾP THEO (futurePredictions): 3 kịch bản đột phá bám sát các chi tiết gốc.
 
-TRẢ VỀ ĐÚNG ĐỊNH DẠNG JSON SAU (KHÔNG KÈM TEXT NGOÀI JSON):
+TRẢ VỀ ĐÚNG 1 JSON OBJECT HỢP LỆ (KHÔNG KÈM TEXT NGOÀI JSON):
 {
-  "arcAnalysis": "Phân tích sâu sắc cấu trúc 3 hồi/nhiều hồi, sự phát triển tâm lý nhân vật, nhịp độ kịch tính và đánh giá sự nhất quán văn phong dựa trên bản thảo thực tế của từng chương.",
-  "pacingHeatmap": [mảng số 0-100 đại diện cho chỉ số kịch tính/nhịp độ cao trào thực tế của từng chương từ chương 1 đến hết],
-  "unresolvedHooks": ["Danh sách các chi tiết cài cắm cụ thể (Chekhov's Gun / Plot Hooks / Bí mật) đã xuất hiện trong bản thảo mà chưa được giải quyết"],
-  "futurePredictions": ["3 kịch bản nút thắt/hướng phát triển đột phá khả thi, sâu sắc, bám sát bản thảo và phong cách viết của tác giả"]
+  "arcAnalysis": "Phân tích sâu sắc cấu trúc cốt truyện, diễn biến nhịp điệu, sự liên kết giữa các hồi/chương và chất lượng văn phong thực tế.",
+  "pacingHeatmap": [50],
+  "unresolvedHooks": ["Danh sách từng chi tiết cài cắm / bí mật / lời hứa chưa giải quyết (ghi rõ xuất hiện ở chương nào nếu thấy)"],
+  "futurePredictions": ["Kịch bản 1...", "Kịch bản 2...", "Kịch bản 3..."],
+  "chapterIssues": [
+    {
+      "chapterId": "ID hoặc số thứ tự chương nếu xác định được",
+      "chapterTitle": "Tên chương (Vd: Chương 3: ...)",
+      "issue": "Mô tả cụ thể lỗi mạch lạc, mâu thuẫn logic hoặc chỗ gãy nhịp trong chương này",
+      "fixSuggestion": "Hướng sửa chữa cụ thể giữ nguyên tinh thần tác phẩm"
+    }
+  ],
+  "characterArcSummary": "Đánh giá tổng quan sự nhất quán và tiến hóa tâm lý của các nhân vật chính/phụ trong bản thảo."
 }`;
   },
 
-  buildKnowledgeExtractionPrompt: (text: string, characters: Character[], categories: ExtractionCategory[]): string => {
-    return `[NHIỆM VỤ: CHIẾT TÁCH TRI THỨC & SUY LUẬN LOGIC]
-Phân tích văn bản và trích xuất thông tin mới.
-ĐẶC BIỆT: Hãy thực hiện "Suy Luận Ngược" (Back-propagation Inference) về trình độ tri thức dựa trên hoàn cảnh sống của nhân vật:
-- Nếu thấy mô tả: "Nhân vật ở nhà 5 năm/hikikomori/tự kỷ" -> Suy luận ngay vào trường Knowledge: "[Knowledge Gap] Thiếu hụt trầm trọng kiến thức xã hội, ngây ngô, dễ bị lừa, không biết giá cả thị trường".
-- Nếu thấy mô tả: "Xuyên không/Trọng sinh" -> Suy luận ngay: "[Knowledge Gap] Mù tịt về thường thức thế giới mới, không biết ngôn ngữ/chữ viết (nếu không có buff) NHƯNG [Advantage] Có tư duy hiện đại/khoa học".
-- Nếu thấy mô tả: "Học sinh/Sinh viên/Người thường" -> Suy luận ngay: "[Knowledge Limitation] Chỉ biết kiến thức giáo khoa cơ bản. KHÔNG BIẾT chế tạo vũ khí/thuốc nổ/công nghệ cao (trừ khi có trait 'Thiên tài' hoặc chuyên ngành). Mọi kiến thức phức tạp chỉ dừng ở mức 'Nghe qua' hoặc 'Xem trên phim', không thể thực hành ngay".
+  buildKnowledgeExtractionPrompt: (
+    text: string,
+    characters: Character[],
+    categories: ExtractionCategory[],
+    options: { isFullStoryScan?: boolean; storyTitle?: string; storyGenre?: string } = {}
+  ): string => {
+    const existingList = characters.length > 0
+      ? characters.map(c => `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Human'}, trạng thái: ${c.status || 'alive'})`).join('\n')
+      : '(Chưa có nhân vật nào trong hồ sơ)';
 
-[DỮ LIỆU HIỆN CÓ]:
-- Nhân vật: ${characters.map(c => `${c.name} (${c.species || 'Human'})`).join(', ')}
+    return `[NHIỆM VỤ: QUÉT TOÀN DIỆN NHÂN VẬT, BỐI CẢNH & TRI THỨC TỪ VĂN BẢN]
+${options.isFullStoryScan ? `Bạn đang quét tác phẩm "${options.storyTitle || 'Truyện'}" (${options.storyGenre || 'Chưa rõ thể loại'}) để xây dựng Hồ sơ Nhân vật & World Bible từ chính câu chữ trong truyện.` : 'Hãy phân tích văn bản bên dưới để chiết xuất nhân vật mới, cập nhật trạng thái nhân vật cũ, tri thức thế giới và quy luật.'}
 
-[VĂN BẢN MỚI]:
+[HƯỚNG DẪN CHI TIẾT]:
+1. **Nhân vật mới (newCharacters)**:
+   - Liệt kê TẤT CẢ các nhân vật có tên riêng hoặc thực thể quan trọng (người, sinh vật, tinh linh, thần thú, khí linh...) xuất hiện trong đoạn truyện mà CHƯA có trong [DANH SÁCH NHÂN VẬT HIỆN CÓ].
+   - Phân biệt đúng vai trò ('Chính', 'Phụ', 'Phản diện', 'Ẩn số'), loại thực thể (entityType: 'human' | 'creature' | 'spirit' | 'object'), chủng tộc (species), mô tả thân phận, ngoại hình, tính cách (traits), vị trí hiện tại (currentLocation), thực lực/cảnh giới (powerLevel), năng lực/kỹ năng (abilities), trạng thái (status: 'alive' | 'injured' | 'critical' | 'missing' | 'deceased' | 'sealed'), tri thức/bí mật họ nắm giữ (knowledge), người hướng dẫn/đồng minh (mentors), kẻ thù (enemies).
+   - Thực hiện suy luận hợp lý về giới hạn tri thức của nhân vật dựa theo xuất thân (Vd: người bình thường thời cổ đại không hiểu khái niệm khoa học hiện đại; người mới chuyển sinh còn xa lạ với phong tục địa phương).
+2. **Cập nhật nhân vật đã có (characterUpdates)**:
+   - Nếu nhân vật trong [DANH SÁCH HIỆN CÓ] có thay đổi vị trí, thương tích, sức mạnh, mối quan hệ, tri thức mới hoặc vai trò, ghi rõ vào đây với tên khớp chính xác tên cũ.
+3. **Bối cảnh & Quy luật (worldLore, mechanics)**:
+   - Chỉ trích xuất những địa danh, phe phái, sự kiện, vật phẩm quan trọng (nếu thuộc danh mục: ${categories.join(', ')}) và quy luật sức mạnh/xã hội cốt lõi.
+4. **Thông tin nền tảng đề xuất (synopsisSuggestion, genreSuggestion)**:
+   - Nếu đoạn văn cho thấy rõ thể loại hoặc cốt truyện nền tảng của tác phẩm, đề xuất ngắn gọn.
+
+[DANH SÁCH NHÂN VẬT HIỆN CÓ]:
+${existingList}
+
+[NỘI DUNG CẦN QUÉT]:
+"""
 ${text}
+"""
 
-TRẢ VỀ JSON:
+TRẢ VỀ DUY NHẤT 1 JSON OBJECT HỢP LỆ:
 {
-  "newCharacters": [ { "name": "Tên", "description": "Mô tả ngắn, vai trò, thực lực, chủng tộc" } ],
-  "characterUpdates": [ 
-    { 
-      "name": "Tên nhân vật cũ", 
-      "status": "alive/injured/dead...", 
-      "healthStatus": "Mô tả chấn thương mới nếu có", 
-      "combatState": "JSON string mô tả chi tiết: hp (%), stamina, wounds (list), buffs (list), debuffs (list)",
-      "currentLocation": "Tên địa điểm mới (nếu có di chuyển)",
-      "powerLevel": "Cảnh giới mới nếu có", 
-      "realizations": "Ngộ ra điều gì mới về triết lý/chiến thuật", 
-      "knowledge": "Ghi rõ: [SỞ HỮU] ... và [THIẾU HỤT] ... (Dựa trên suy luận hoàn cảnh). Vd: 'Là học sinh nên không biết chế bom'.",
-      "enemies": "Kẻ thù mới" 
-    } 
+  "newCharacters": [
+    {
+      "name": "Tên nhân vật",
+      "role": "Chính",
+      "entityType": "human",
+      "species": "Chủng tộc",
+      "description": "Thân phận, vai trò và tính cách cốt lõi trong truyện",
+      "appearance": "Mô tả ngoại hình nổi bật (nếu có trong văn bản)",
+      "traits": ["Tính cách 1", "Cách xưng hô / đặc điểm"],
+      "status": "alive",
+      "currentLocation": "Địa điểm xuất hiện gần nhất",
+      "powerLevel": "Thực lực / cảnh giới / chức vị (nếu có)",
+      "abilities": "Kỹ năng / vũ khí / sở trường",
+      "knowledge": "Những điều nhân vật biết hoặc chưa biết",
+      "mentors": "Sư phụ / đồng minh / gia tộc thân cận",
+      "enemies": "Kẻ thù / phe đối lập"
+    }
   ],
-  "worldLore": [ { "topic": "Tên sự kiện/Địa danh/Vật phẩm", "content": "Chi tiết" } ] (Chỉ trích xuất nếu thuộc danh mục: ${categories.join(', ')}),
-  "mechanics": [ { "rule": "Tên quy tắc", "detail": "Chi tiết" } ]
+  "characterUpdates": [
+    {
+      "name": "Tên chính xác của nhân vật cũ",
+      "status": "alive",
+      "healthStatus": "Thương tích hoặc trạng thái sức khỏe mới",
+      "combatState": "{\"hp\":\"100%\",\"injuries\":[],\"debuffs\":[]}",
+      "currentLocation": "Vị trí mới",
+      "powerLevel": "Thực lực mới",
+      "abilities": "Kỹ năng mới",
+      "realizations": "Chuyển biến tâm lý / nhận thức mới",
+      "knowledge": "Tri thức / bí mật mới",
+      "enemies": "Kẻ thù mới"
+    }
+  ],
+  "worldLore": [
+    { "topic": "Tên địa danh / phe phái / sự kiện / bảo vật", "content": "Mô tả súc tích chính xác theo truyện" }
+  ],
+  "mechanics": [
+    { "rule": "Tên quy tắc / hệ thống sức mạnh / luật xã hội", "detail": "Cách vận hành" }
+  ],
+  "genreSuggestion": "Thể loại phù hợp nhất (nếu nhận diện được)",
+  "synopsisSuggestion": "Tóm tắt 2-3 câu về cốt truyện nếu đọc từ mở đầu"
+}`;
+  },
+
+  buildAutoUpdateCharacterPrompt: (character: Character, storyContext: string): string => {
+    return `[NHIỆM VỤ: PHÂN TÍCH TIẾN HÓA & ĐỒNG BỘ HỒ SƠ NHÂN VẬT TỪ BẢN THẢO]
+Hãy đọc kỹ hồ sơ cũ và các trích đoạn chương truyện gần đây để cập nhật chính xác tình trạng mới nhất của nhân vật "${character.name}".
+
+[HỒ SƠ HIỆN TẠI CỦA "${character.name}"]:
+- Vai trò: ${character.role} | Chủng loại: ${character.species || 'Chưa rõ'} (${character.entityType || 'human'})
+- Trạng thái: ${character.status} | Thể trạng: ${character.healthStatus || 'Bình thường'}
+- Vị trí cũ: ${character.currentLocation || 'Chưa rõ'}
+- Thực lực cũ: ${character.powerLevel || 'Chưa rõ'} | Kỹ năng: ${character.abilities || 'Chưa rõ'}
+- Mô tả: ${character.description || 'Chưa có'}
+- Tri thức cũ: ${character.knowledge || 'Chưa có'}
+- Đồng minh/Dẫn dắt: ${character.mentors || 'Chưa có'} | Kẻ thù: ${character.enemies || 'Chưa có'}
+
+[DIỄN BIẾN & TRÍCH ĐOẠN TRONG TRUYỆN LIÊN QUAN]:
+${storyContext}
+
+[YÊU CẦU]:
+Chỉ cập nhật những thông tin thực sự có căn cứ trong diễn biến truyện bên trên; giữ nguyên ý đúng của hồ sơ cũ nếu chưa có sự kiện mới làm thay đổi.
+TRẢ VỀ JSON HỢP LỆ:
+{
+  "status": "alive | injured | critical | missing | deceased | sealed",
+  "healthStatus": "Mô tả tình trạng cơ thể/tinh thần hiện tại",
+  "combatState": "{\"hp\":\"...\",\"stamina\":\"...\",\"injuries\":[],\"debuffs\":[]}",
+  "currentLocation": "Vị trí mới nhất của nhân vật",
+  "powerLevel": "Cảnh giới / thực lực mới nhất",
+  "abilities": "Kỹ năng / trang bị mới nhất",
+  "knowledge": "Tổng hợp tri thức, bí mật hoặc nhận thức mới nhân vật đã thu thập",
+  "mentors": "Người dẫn dắt / đồng minh",
+  "enemies": "Kẻ thù / đối trọng",
+  "description": "Cập nhật mô tả tổng quan (ngắn gọn, súc tích)"
+}`;
+  },
+
+  buildRefineSelectionPrompt: (selection: string, prefix: string, suffix: string, story: Story, instruction: string): string => {
+    const activeChars = (story.characters || []).slice(0, 20).map(c => `- ${c.name} (${c.role}${c.traits?.length ? `: ${c.traits.join(', ')}` : ''})`).join('\n');
+    return `[NHIỆM VỤ: TINH CHỈNH ĐOẠN VĂN BẢN CHỌN LỌC NHẤT QUÁN VỚI TÁC PHẨM]
+Bạn là Biên tập viên văn học cao cấp của tác phẩm "${story.title}" (${story.genre || 'Tiểu thuyết'}).
+Hãy chỉnh sửa đoạn văn bản dưới đây theo yêu cầu của tác giả sao cho khớp nối hoàn hảo với toàn truyện.
+
+[THIẾT LẬP TÁC PHẨM]:
+- Ngôi kể (POV): ${story.pov || 'Ngôi thứ ba'} | Quy tắc xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}
+${story.setting ? `- Bối cảnh: ${story.setting.slice(0, 1200)}` : ''}
+${story.mechanics ? `- Quy tắc/Sức mạnh: ${story.mechanics.slice(0, 800)}` : ''}
+${story.writingDNA ? `- Giọng văn tác giả: ${story.writingDNA.narrativeVoice} (${story.writingDNA.emotionalTone})` : ''}
+${activeChars ? `- Nhân vật liên quan:\n${activeChars}` : ''}
+
+${ORIGINAL_FIDELITY_PROTOCOL}
+
+[BỐI CẢNH LIỀN TRƯỚC]:
+"...${prefix.slice(-900)}"
+
+[ĐOẠN VĂN NGUYÊN MẪU CẦN SỬA]:
+"""
+${selection}
+"""
+
+[BỐI CẢNH LIỀN SAU]:
+"${suffix.slice(0, 900)}..."
+
+[YÊU CẦU CHỈNH SỬA CỤ THỂ]:
+"${instruction || 'Trau chuốt văn phong mượt mà, giàu cảm xúc và sửa lỗi logic/xưng hô nếu có'}"
+
+[QUY TẮC BẮT BUỘC]:
+1. 🛡️ Giữ nguyên toàn bộ chi tiết cốt lõi, hành động, đồ vật, tên nhân vật và lời thoại (chỉ sửa khi được yêu cầu sửa lỗi logic/xưng hô).
+2. 🚫 Tuyệt đối không tóm tắt hay rút gọn làm mất cảnh.
+3. 🔗 Khớp nối mượt mà về thì, ngôi kể, xưng hô và không khí với đoạn trước & đoạn sau.
+4. 📝 Chỉ trả về duy nhất đoạn văn đã chỉnh sửa thay thế, không kèm lời giải thích hay chào hỏi.
+
+BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
+  },
+
+  buildBalanceLengthPrompt: (content: string, target: number, current: number, interactionRules: string, genre: string, negativePrompt: string): string => {
+    const mode = target >= current ? `MỞ RỘNG chi tiết (từ ~${current} từ lên khoảng ~${target} từ)` : `CÔ ĐỌNG nhịp văn (từ ~${current} từ xuống khoảng ~${target} từ) nhưng KHÔNG làm mất tình tiết cốt lõi`;
+    return `[NHIỆM VỤ: ĐIỀU CHỈNH ĐỘ DÀI & NHỊP VĂN CHƯƠNG TRUYỆN]
+Hãy ${mode} cho chương truyện thể loại "${genre || 'Tiểu thuyết'}" dưới đây.
+- Quy tắc tương tác & xưng hô: ${interactionRules || '(Theo nguyên bản)'}
+- Điều cấm: ${negativePrompt || '(Không)'}
+- Yêu cầu: Giữ nguyên toàn bộ tên nhân vật, sự kiện, lời thoại quan trọng và văn phong gốc. Nếu mở rộng, hãy bổ sung miêu tả tâm lý, ngũ quan, không khí và hành động hợp logic — tuyệt đối không lặp chữ vô nghĩa.
+
+[BẢN THẢO GỐC]:
+"""
+${content.slice(0, 32000)}
+"""
+
+TRẢ VỀ JSON HỢP LỆ:
+{ "edited_text": "Toàn bộ văn bản chương đã cân bằng độ dài..." }`;
+  },
+
+  buildVocabularyAnalysisPrompt: (content: string, interactionRules: string): string => {
+    return `[NHIỆM VỤ: PHÂN TÍCH TỪ VỰNG, LẶP TỪ & ĐỀ XUẤT TRAU CHUỐT VĂN CHƯƠNG]
+Hãy đọc kỹ văn bản dưới đây và tìm các từ/cụm từ bị lặp nhiều lần, từ dùng thô/thiếu tự nhiên (hoặc còn dấu vết convert/dịch máy), và gợi ý phương án thay thế hay hơn phù hợp ngữ cảnh.
+${interactionRules ? `Quy tắc văn phong/xưng hô cần tôn trọng: ${interactionRules}` : ''}
+
+[VĂN BẢN CẦN PHÂN TÍCH]:
+"""
+${sampleManuscript(content, 18000)}
+"""
+
+TRẢ VỀ JSON OBJECT VỚI MẢNG "insights" (tối đa 10 mục nổi bật nhất):
+{
+  "insights": [
+    {
+      "word": "Từ hoặc cụm từ bị lặp / cần trau chuốt",
+      "count": 4,
+      "suggestions": ["Phương án thay thế 1", "Phương án thay thế 2", "Phương án thay thế 3"],
+      "context": "Nhận xét ngắn gọn lý do và ngữ cảnh nên thay đổi"
+    }
+  ]
 }`;
   },
 
   buildStyleRuleExtractionPrompt: (text: string): string => {
     return `[NHIỆM VỤ: KHAI PHÁ QUY TẮC VĂN PHONG]
-Phân tích đoạn văn sau và rút ra một quy tắc viết (Stylistic Rule) cụ thể mà tác giả đã sử dụng (Ví dụ: 'Luôn dùng động từ mạnh thay vì phó từ', 'Miêu tả mùi vị khi nhân vật hồi tưởng', v.v.). Trả về quy tắc ngắn gọn.`;
+Phân tích đoạn văn sau và rút ra một quy tắc viết (Stylistic Rule) cụ thể, rõ ràng mà tác giả đã sử dụng (Ví dụ: 'Dùng động từ mạnh tả trạng thái thay vì kể cảm xúc', 'Ngắt câu ngắn khi cao trào'). Trả về quy tắc ngắn gọn trong 1-2 câu tiếng Việt.
+
+[ĐOẠN VĂN]:
+"""
+${text.slice(0, 4000)}
+"""`;
   },
 
   buildDeriveStylisticRulePrompt: (original: string, modified: string): string => {
     return `[NHIỆM VỤ: HỌC HỎI TỪ SỰ KHÁC BIỆT]
-So sánh bản gốc và bản sửa đổi sau đây để tìm ra quy tắc viết mà người dùng ưa thích.
-Bản gốc: "${original.substring(0, 200)}..."
-Bản sửa: "${modified.substring(0, 200)}..."
-Quy tắc rút ra (ngắn gọn):`;
+So sánh bản gốc và bản sửa đổi sau đây để rút ra 1 quy tắc viết ngắn gọn phản ánh gu biên tập của tác giả.
+Bản gốc: "${original.substring(0, 800)}"
+Bản sửa: "${modified.substring(0, 800)}"
+Quy tắc rút ra (1-2 câu tiếng Việt):`;
   },
 
   buildRefineChapterPrompt: (
@@ -671,19 +878,20 @@ Quy tắc rút ra (ngắn gọn):`;
   ): string => {
     const contentRating = nsfw ? NSFW_INSTRUCTION : "";
     return `[NHIỆM VỤ: TINH CHỈNH & ĐẠI TU VĂN BẢN CHUYÊN NGHIỆP]
-Bạn là một Đại biên tập viên và Đại văn hào. Nhiệm vụ của bạn là chỉnh sửa, nâng cấp và hoàn thiện bản thảo dưới đây theo yêu cầu của tác giả.
+Bạn là một Đại biên tập viên và Nhà văn chủ bút. Nhiệm vụ của bạn là chỉnh sửa, nâng cấp và vá lỗi mạch lạc/logic cho bản thảo dưới đây theo yêu cầu của tác giả.
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
 [DỮ LIỆU NỀN & THIẾT LẬP]:
-- Thể loại: ${genre} | Ngôi kể: ${pov}
-- Xưng hô & Quy tắc: ${pronounStyle}
-- Quy tắc thế giới: ${mechanics}
-- Chỉ thị bền vững: ${persistentDirectives}
-- Cấm (Negative Prompt): ${negativePrompt}
+- Thể loại: ${genre || 'Tiểu thuyết'} | Ngôi kể: ${pov || 'Ngôi thứ ba'} | Văn phong: ${writingStyle || 'Tự nhiên, sâu sắc'}
+- Xưng hô & Quy tắc: ${pronounStyle || '(Theo ngữ cảnh)'} ${interactionRules ? `| ${interactionRules}` : ''}
+- Bối cảnh & Tri thức liên quan: ${worldBible ? worldBible.slice(0, 5000) : '(Theo bản thảo)'}
+- Quy tắc thế giới (Mechanics): ${mechanics || '(Không có)'}
+- Chỉ thị bền vững: ${persistentDirectives || '(Không có)'}
+- Cấm (Negative Prompt): ${negativePrompt || '(Không có)'}
 ${styleReference ? `- Phong cách tham chiếu: ${styleReference}` : ''}
 
-${RATIONALITY_PROTOCOL}
+${UNIVERSAL_RATIONALITY_PROTOCOL}
 ${TRUTH_KEEPER_PROTOCOL}
 
 [VĂN BẢN NGUYÊN MẪU CẦN CHỈNH SỬA]:
@@ -692,12 +900,12 @@ ${content}
 """
 
 [CHỈ THỊ SỬA ĐỔI CỦA TÁC GIẢ]:
-"${customInstruction || 'Nâng cấp văn chương mượt mà, trau chuốt, giữ nguyên vẹn toàn bộ diễn biến và chi tiết nguyên mẫu.'}"
+"${customInstruction || 'Nâng cấp văn chương mượt mà, trau chuốt câu từ, sửa lỗi xưng hô/logic nếu có và giữ nguyên vẹn toàn bộ diễn biến nguyên mẫu.'}"
 
 [YÊU CẦU THỰC THI BẮT BUỘC]:
-1. 🛡️ **BẢO TỒN CHI TIẾT NGUYÊN MẪU 100%:** Giữ nguyên tất cả tên nhân vật, địa danh, đạo cụ/vật phẩm, từng dòng hội thoại, suy nghĩ nội tâm, và các diễn biến cụ thể trong bản gốc. Tuyệt đối không lược bỏ hoặc tóm tắt bất kỳ sự kiện nào.
-2. 💎 **NÂNG CẤP VĂN PHONG:** Sử dụng từ ngữ phong phú, trau chuốt câu từ, bổ sung miêu tả cảm giác/không khí, tăng tính gợi cảm và nhịp điệu văn học theo đúng phong cách yêu cầu.
-3. 🚫 **TUYỆT ĐỐI KHÔNG TÓM TẮT:** Bản sửa đổi phải chi tiết, sống động và có độ dài tương đương hoặc dài hơn bản nguyên mẫu.
+1. 🛡️ **BẢO TỒN CHI TIẾT NGUYÊN MẪU 100%:** Giữ nguyên tên nhân vật, địa danh, vật phẩm, lời thoại, suy nghĩ nội tâm và diễn biến cốt lõi trong bản gốc (chỉ điều chỉnh chỗ mâu thuẫn nếu có yêu cầu).
+2. 💎 **NÂNG CẤP VĂN PHONG & MẠCH LẠC:** Câu chữ giàu hình ảnh, cảm xúc, nhịp điệu mượt mà, thống nhất xưng hô.
+3. 🚫 **TUYỆT ĐỐI KHÔNG TÓM TẮT:** Bản sửa đổi phải giữ độ dài đầy đủ tương đương hoặc dài hơn bản nguyên mẫu.
 4. 📝 **ĐÚNG ĐỊNH DẠNG:** Chỉ trả về toàn bộ nội dung chương truyện hoàn chỉnh sau khi sửa, không thêm lời chào hay giải thích ngoài lề.
 ${contentRating}
 
@@ -705,18 +913,37 @@ BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
   },
 
   buildNextChapterSuggestionPrompt: (story: Story): string => {
-    const lastChapter = story.chapters[story.chapters.length - 1];
-    return `[NHIỆM VỤ: KIẾN TRÚC SƯ CỐT TRUYỆN]
-Dựa trên chương vừa rồi: "${lastChapter.title}" và tóm tắt: "${lastChapter.summary}".
-Hãy gợi ý ý tưởng cho chương tiếp theo. Ưu tiên các xung đột chính trị, mâu thuẫn lợi ích và phát triển nhân vật theo hướng thực tế (Game of Thrones style).
+    const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const lastChapter = sortedChapters.length > 0 ? sortedChapters[sortedChapters.length - 1] : undefined;
+    const recentSummaries = sortedChapters.slice(-4).map((c, idx) => {
+      const text = c.content?.trim() ? c.content : (c.translatedContent || '');
+      const excerpt = c.summary?.trim() || c.outline?.trim() || sampleManuscript(text, 600);
+      return `- ${c.title || `Chương ${idx + 1}`}: ${excerpt}`;
+    }).join('\n');
 
-TRẢ VỀ JSON:
+    const lastEnding = lastChapter
+      ? (lastChapter.content?.trim() || lastChapter.translatedContent?.trim() || '').slice(-1500)
+      : '';
+
+    return `[NHIỆM VỤ: KIẾN TRÚC SƯ CỐT TRUYỆN - GỢI Ý CHƯƠNG KẾ TIẾP]
+Hãy gợi ý ý tưởng chi tiết cho chương tiếp theo của tác phẩm "${story.title}" (${story.genre || 'Tiểu thuyết'}).
+- Văn phong chủ đạo: ${story.writingStyle || story.writingDNA?.narrativeVoice || 'Nhất quán với bản thảo hiện có'}
+- Dàn ý tổng thể: ${story.planning || '(Chưa thiết lập)'}
+- Bối cảnh & Quy tắc: ${story.setting || '(Chưa thiết lập)'} ${story.mechanics ? `| ${story.mechanics}` : ''}
+- Nhân vật hiện tại:\n${formatCharacterRosterForPrompt(story.characters || [], 20)}
+
+[DIỄN BIẾN GẦN NHẤT]:
+${recentSummaries || '(Đây là chương mở đầu của tác phẩm)'}
+${lastEnding ? `\n[ĐOẠN KẾT CHƯƠNG VỪA RỒI (${lastChapter?.title})]:\n"""\n${lastEnding}\n"""` : ''}
+
+Hãy bám sát mạch truyện, hậu quả từ chương vừa rồi, động cơ nhân vật và các nút thắt chưa giải quyết để đề xuất chương mới tự nhiên, kịch tính và logic.
+TRẢ VỀ JSON HỢP LỆ:
 {
   "title": "Tiêu đề chương mới",
-  "conflict": "Xung đột chính",
-  "emotionalGoal": "Mục tiêu cảm xúc",
-  "outline": "Dàn ý chi tiết 4 beat",
-  "logicCheck": "Lưu ý để tránh lỗi logic/sức mạnh ảo hoặc logic địa điểm/thời gian"
+  "conflict": "Xung đột chính và vấn đề cần giải quyết trong chương",
+  "emotionalGoal": "Mục tiêu cảm xúc và chuyển biến tâm lý nhân vật",
+  "outline": "Dàn ý chi tiết 4 beat nối tiếp mượt mà chương trước",
+  "logicCheck": "Lưu ý về vị trí nhân vật, vết thương, tri thức, thời gian và quy tắc thế giới để tránh plot hole"
 }`;
   },
 
@@ -791,13 +1018,9 @@ Nhiệm vụ của bạn là VIỆT HÓA VÀ BIÊN TẬP LẠI TOÀN BỘ VĂN B
 2. ⚡ ĐẶC TRỊ VĂN BẢN GỐC NGẮN / PHÂN ĐOẠN 300 - 500 KÝ TỰ (TUYỆT ĐỐI KHÔNG BỎ QUA):
    - Cho dù văn bản gốc rất ngắn (khoảng 300 - 500 ký tự hay thậm chí chỉ vài dòng), TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ ĐỘNG BỎ QUA, KHÔNG ĐƯỢC COI LÀ LỖI VÀ KHÔNG ĐƯỢC TỪ CHỐI DỊCH.
    - BẮT BUỘC dịch và trau chuốt 100% từng câu chữ từ đầu đến cuối sang tiếng Việt mượt mà.
-   - Kể cả nếu văn bản gốc là lời tựa, lời bạt, thơ từ thi ca, trích đoạn ngắn, bảng trạng thái nhân vật / hệ thống (LitRPG), hay lời nhắn của tác giả: VẪN PHẢI DỊCH ĐẦY ĐỦ 100%, TUYỆT ĐỐI KHÔNG ĐƯỢC LƯỢC BỎ.
-   - TUYỆT ĐỐI KHÔNG xuất ra văn bản trống, không xuất ra câu từ chối hay lời thông báo "Bỏ qua do văn bản quá ngắn".
 3. 🚫 TUYỆT ĐỐI CHỐNG TRÙNG LẶP NỘI DUNG (STRICT NO-DUPLICATION):
    - TUYỆT ĐỐI KHÔNG lặp lại bất kỳ câu, đoạn văn hay phân cảnh nào đã dịch.
-   - TUYỆT ĐỐI KHÔNG in lại văn bản gốc, KHÔNG xuất bản song ngữ (gốc - dịch xen kẽ).
-   - TUYỆT ĐỐI KHÔNG xuất lặp lại 2 lần cùng một đoạn văn hay cả chương truyện.
-   - Mỗi câu, mỗi phân cảnh chỉ được xuất hiện DUY NHẤT một lần theo đúng mạch diễn biến thời gian.
+   - TUYỆT ĐỐI KHÔNG in lại văn bản gốc, KHÔNG xuất bản song ngữ.
 
 [THIẾT LẬP TÁC PHẨM]:
 - Tiêu đề chương: ${chapterName}
@@ -812,36 +1035,9 @@ ${charactersContext}
 ${styleModeGuidance}
 ${customInst ? `\n- CHỈ THỊ RIÊNG CỦA TÁC GIẢ: "${customInst}"` : ''}
 
-[GIAO THỨC XÓA BỎ VĂN PHONG "THÔ RÁP / CONVERT / DỊCH MÁY"]:
-1. 🚫 TIÊU DIỆT CÁC CẤU TRÚC CÂU RẬP KHUÔN, SƯỢNG SÙNG:
-   * "trong lòng không khỏi..." / "không khỏi có chút..." ➔ SỬA THÀNH: "trong lòng dấy lên...", "bất giác thấy...", "không nén được một thoáng...", hoặc miêu tả thẳng cảm xúc.
-   * "nhịn không được..." / "nhịn không được mà..." ➔ SỬA THÀNH: "không kìm được...", "bất giác...", "buột miệng...", "vô thức...".
-   * "hung hăng trừng mắt một cái" / "hung hăng đánh tới" ➔ SỬA THÀNH: "trừng mắt dữ dội...", "nhìn chằm chằm đầy căm phẫn...", "tung đòn sấm sét...".
-   * "khóe miệng co quắp một trận" ➔ SỬA THÀNH: "khóe môi giật giật...", "cười gượng gạo...", "nét mặt méo xệch...".
-   * "chỉ thấy..." (lạm dụng ở đầu câu) ➔ SỬA THÀNH: lược bỏ từ thừa, miêu tả trực diện hình ảnh/hành động.
-   * "bất quá..." ➔ SỬA THÀNH: "thế nhưng...", "tuy nhiên...", "ngặt nỗi...", "có điều...".
-   * "một đạo thân ảnh" / "một đạo kiếm mang" ➔ SỬA THÀNH: "một bóng người...", "vệt kiếm quang xé gió...", "luồng hàn mang vụt lóe...".
-   * "sắc mặt biến đổi một trận" ➔ SỬA THÀNH: "sắc mặt thoắt biến ảo...", "vẻ mặt chợt sa sầm...", "nét mặt chuyển sang bàng hoàng...".
-   * "mang theo một cỗ..." ➔ SỬA THÀNH: "toát lên vẻ...", "cuộn trào luồng...", "pha lẫn chút...".
-   * "ngươi đây là muốn chết" ➔ SỬA THÀNH: "ngươi chán sống rồi sao?!", "mày muốn tìm cái chết à?!".
-   * "được nhìn thấy bởi..." / "bị hắn thu vào trong mắt" ➔ SỬA THÀNH câu chủ động tự nhiên tiếng Việt: "hắn đều thu trọn vào tầm mắt".
-   * Tránh lặp chủ ngữ liên tục (như 3 câu liền đều mở đầu bằng "Hắn...", "Hắn...", "Hắn...").
-
-2. 🎭 XƯNG HÔ TỰ NHIÊN & KHẨU KHÍ NHÂN VẬT:
-   * Xưng hô phải phù hợp hoàn cảnh, độ tuổi, cấp bậc và cảm xúc của nhân vật theo đúng thiết lập.
-   * Lời thoại phải có "khẩu khí": Lúc uy nghi phải hào sảng đanh thép; lúc tình cảm phải tha thiết dịu dàng; lúc mỉa mai phải sắc bén; lúc sợ hãi phải ngập ngừng run rẩy.
-
-3. 🌊 NHỊP ĐIỆU VĂN CHƯƠNG & VỐN TỪ THUẦN VIỆT:
-   * Câu văn phải có nhịp thở: Cảnh hành động dùng câu ngắn, dứt khoát; cảnh nội tâm, phong cảnh dùng câu phức giàu nhạc tính, từ láy, từ gợi hình, gợi cảm.
-   * Chấm câu thanh thoát, không viết câu lê thê dài dòng với quá nhiều liên từ thừa thãi.
-
-4. 🛡️ BẢO TỒN NGUYÊN TÁC 100%:
-   * Giữ nguyên các danh từ riêng, tên nhân vật, địa danh, tên chiêu thức, bảo vật, cảnh giới tu luyện đã định hình.
-
-5. 📜 ĐỊNH DẠNG ĐẦU RA BẮT BUỘC:
-   * Chỉ xuất DUY NHẤT toàn văn bản dịch tiếng Việt hoàn chỉnh từ dòng đầu đến dòng cuối.
-   * CẤM thêm bất kỳ lời mào đầu, lời chào, lời giải thích hay ký hiệu ngoài lề nào của AI.
-   * TUYỆT ĐỐI KHÔNG lặp lại bất kỳ đoạn văn nào.
+[XÓA BỎ VĂN PHONG "CONVERT / DỊCH MÁY"]:
+- Khử các cấu trúc sượng ("trong lòng không khỏi...", "nhịn không được...", "khóe miệng co quắp một trận", "một đạo thân ảnh", "sắc mặt biến đổi một trận", lặp "Hắn..." liên tục).
+- Đảm bảo xưng hô tự nhiên, khẩu khí nhân vật rõ ràng, giữ nguyên danh từ riêng đã định hình.
 
 ${nsfwRating}
 
@@ -850,7 +1046,7 @@ ${nsfwRating}
 ${content}
 """
 
-BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH:`;
+BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH (Chỉ xuất toàn văn tiếng Việt):`;
   },
 
   buildStoryAuditPrompt: (story: Story, focusChapterId?: string): string => {
@@ -877,25 +1073,7 @@ BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH:`;
       .map(e => `- ${e.learnedRule}`)
       .join('\n') || '(Chưa có)';
 
-    const charactersProfile = (story.characters || []).length > 0
-      ? story.characters.slice(0, 40).map(c => {
-          const details = [
-            `Vai trò: ${c.role || 'Chưa rõ'}`,
-            c.species ? `Chủng loài: ${c.species}` : '',
-            `Trạng thái: ${c.status || 'alive'}`,
-            c.currentLocation ? `Vị trí hiện tại: ${c.currentLocation}` : '',
-            c.healthStatus ? `Sức khỏe/Thương tích: ${c.healthStatus}` : '',
-            c.combatState ? `Trạng thái chiến đấu: ${c.combatState}` : '',
-            c.powerLevel ? `Cảnh giới/Sức mạnh: ${c.powerLevel}` : '',
-            c.abilities ? `Năng lực: ${c.abilities}` : '',
-            c.knowledge ? `Tri thức/Bí mật nắm giữ: ${c.knowledge}` : '',
-            c.traits?.length ? `Tính cách/Xưng hô: ${c.traits.join(', ')}` : '',
-            c.enemies ? `Kẻ thù: ${c.enemies}` : '',
-            c.description ? `Mô tả: ${c.description}` : ''
-          ].filter(Boolean).join(' | ');
-          return `- ${c.name}: ${details}`;
-        }).join('\n')
-      : '(Chưa có hồ sơ nhân vật)';
+    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], 40);
 
     return `[NHIỆM VỤ TỐI THƯỢNG: KIỂM TOÁN TÍNH NHẤT QUÁN TOÀN BỘ TÁC PHẨM (DEEP CONSISTENCY AUDIT)]
 Bạn là Tổng Biên Tập & Chuyên gia Kiểm toán Logic Văn học (Principal Story Continuity Auditor).
@@ -993,11 +1171,7 @@ Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG k�
       .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
       .join('\n') || '(Không có)';
 
-    const charactersProfile = (story.characters || []).length > 0
-      ? story.characters.slice(0, 30).map(c =>
-          `- ${c.name} (${c.role || 'Nhân vật'}, Trạng thái: ${c.status || 'alive'}${c.currentLocation ? `, Vị trí: ${c.currentLocation}` : ''}${c.healthStatus ? `, Thương tích: ${c.healthStatus}` : ''}${c.traits?.length ? `, Tính cách/Xưng hô: ${c.traits.join(', ')}` : ''}): ${c.description || ''}`
-        ).join('\n')
-      : '(Chưa có hồ sơ nhân vật)';
+    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], 30);
 
     const safeContent = content.length > 40000
       ? sampleManuscript(content, 40000)
@@ -1063,4 +1237,3 @@ Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG k�
 }`;
   }
 };
-

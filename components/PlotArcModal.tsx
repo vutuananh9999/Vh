@@ -26,7 +26,10 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         story,
         analyzeStoryPlotArc, 
         plotArcAnalysis, 
+        plotArcError,
         isAnalyzingPlotArc, 
+        scanStoryCharactersAndLore,
+        isScanningStory,
         summarizeChapter,
         isSummarizing,
         isSequentiallySummarizing,
@@ -41,10 +44,12 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         updateChapterSummary,
         activeChapterId,
         updateChapterContent,
+        setPendingEdit,
         bumpEditorSyncToken
     } = useStory();
 
     const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'debug'>('timeline');
+    const [focusedCoEditChapterId, setFocusedCoEditChapterId] = useState<string>('');
     const [debugErrorCount, setDebugErrorCount] = useState(0);
 
     useEffect(() => {
@@ -196,10 +201,15 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         }
     }, [toast]);
 
-    // Automatic plot arc analysis on change or tab switch
+    // Automatic plot arc analysis on change or tab switch (only when substantial text exists)
     useEffect(() => {
         if (!isOpen || activeTab !== 'intelligence' || !isAutoAnalyze) return;
         if (isSequentiallySummarizing) return;
+
+        const hasText = (chapters || []).some(
+            c => (c.content || c.translatedContent || c.summary || c.outline || '').trim().length >= 30
+        );
+        if (!hasText) return;
 
         const currentHash = (chapters || []).map(c => `${c.id}:${c.summary?.length || 0}:${c.content?.length || 0}`).join('|');
 
@@ -210,6 +220,14 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     }, [isOpen, activeTab, isAutoAnalyze, chapters, isAnalyzingPlotArc, isSequentiallySummarizing, analyzeStoryPlotArc]);
 
     const sortedChapters = useMemo(() => [...(chapters || [])].sort((a, b) => a.order - b.order), [chapters]);
+
+    useEffect(() => {
+        if (activeChapterId) {
+            setFocusedCoEditChapterId(activeChapterId);
+        } else if (sortedChapters.length > 0 && !focusedCoEditChapterId) {
+            setFocusedCoEditChapterId(sortedChapters[0].id);
+        }
+    }, [activeChapterId, sortedChapters, focusedCoEditChapterId]);
 
     const filteredChapters = useMemo(() => {
         if (!chapterSearch.trim()) return sortedChapters;
@@ -227,12 +245,12 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         return filteredChapters.slice(0, visibleChapterCount);
     }, [filteredChapters, visibleChapterCount]);
 
-    const handleSendChat = async (messageText?: string) => {
+    const handleSendChat = async (messageText?: string, overrideChapterId?: string) => {
         const textToSend = messageText || coEditInput;
         if (!textToSend.trim() || isPlotPlanning) return;
         
         if (!messageText) setCoEditInput('');
-        const focusedId = activeChapterId || Object.keys(expandedChapters).find(k => expandedChapters[k]);
+        const focusedId = overrideChapterId || focusedCoEditChapterId || activeChapterId || Object.keys(expandedChapters).find(k => expandedChapters[k]);
         await sendPlotChatMessage(textToSend, focusedId);
     };
 
@@ -456,21 +474,53 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
         handleSendChat(prompt);
     }, [handleSendChat]);
 
-    const activeProposals = useMemo(() => parseProposals(story?.plotChatHistory || []), [story?.plotChatHistory, chapters]);
+    const activeProposals = useMemo(() => parseProposals(story?.plotChatHistory || []), [story?.plotChatHistory, chapters, parseProposals]);
 
     const activeChapter = (chapters || []).find(c => c.id === activeChapterId);
+    const focusedChapter = (chapters || []).find(c => c.id === focusedCoEditChapterId) || activeChapter || sortedChapters[0];
+
+    const handleRepairIssueInCoEdit = useCallback(async (issue: { chapterTitle?: string; chapterOrder?: number; issue: string; fixSuggestion?: string }) => {
+        const target =
+            (issue.chapterOrder ? sortedChapters.find(c => c.order === issue.chapterOrder) : undefined) ||
+            (issue.chapterTitle ? resolveChapter(issue.chapterTitle) : undefined) ||
+            focusedChapter;
+
+        if (!target) return;
+        setFocusedCoEditChapterId(target.id);
+        setActiveTab('co-edit');
+        setCoEditSubTab('chat');
+
+        const prompt = `Tôi cần sửa lỗi mạch lạc ở chương "${target.title}" (ID: ${target.id}):
+- Vấn đề phát hiện: ${issue.issue}
+${issue.fixSuggestion ? `- Hướng xử lý tham khảo: ${issue.fixSuggestion}\n` : ''}
+Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và các chương liền kề để viết lại bản thảo hoàn chỉnh cho chương "${target.title}" khắc phục triệt để lỗi này nhưng vẫn giữ 100% văn phong và các tình tiết đúng đắn khác. Bọc toàn bộ bản thảo mới trong thẻ:
+[PROPOSAL_CONTENT_CHAPTER_${target.id}: <nội dung bản thảo chương đã sửa>]`;
+        await handleSendChat(prompt, target.id);
+    }, [sortedChapters, resolveChapter, focusedChapter, handleSendChat]);
+
+    const handlePreviewDiff = useCallback((prop: Proposal) => {
+        if (!prop.chapterId) return;
+        const currentCh = chapters?.find(c => c.id === prop.chapterId);
+        const orig = currentCh?.content?.trim() ? currentCh.content : (currentCh?.translatedContent || prop.originalContent || '');
+        setPendingEdit({
+            chapterId: prop.chapterId,
+            original: orig,
+            modified: prop.content
+        });
+        onClose();
+    }, [chapters, setPendingEdit, onClose]);
 
     if (!isOpen) return null;
 
     const promptPresets = [
-        { label: "🔍 Tìm lỗ hổng bản thảo", prompt: "Hãy phân tích toàn bộ [BẢN THẢO THỰC TẾ] của các chương truyện và chỉ ra các lỗ hổng cốt truyện (plot holes), chi tiết cài cắm chưa mở, hoặc mâu thuẫn thời gian/hành vi." },
-        ...(activeChapter ? [{
-            label: `✍️ Sửa bản thảo: ${activeChapter.title}`,
-            prompt: `Dựa trên [BẢN THẢO THỰC TẾ] của chương "${activeChapter.title}" (ID: ${activeChapter.id}), hãy chỉnh sửa và nâng cấp toàn diện bản thảo này theo đúng văn phong tác giả, bảo tồn 100% các chi tiết, tên nhân vật, đạo cụ, lời thoại và diễn biến gốc của nguyên mẫu (TUYỆT ĐỐI KHÔNG phóng tác từ tóm tắt làm mất chi tiết). Sau đó bọc toàn bộ nội dung hoàn chỉnh trong thẻ: [PROPOSAL_CONTENT_CHAPTER_${activeChapter.id}: <nội dung bản thảo mới đã sửa>]`
+        { label: "🔍 Quét lỗ hổng toàn truyện", prompt: "Hãy đối chiếu toàn bộ các chương, danh sách nhân vật và bối cảnh thế giới để chỉ ra các lỗ hổng mạch lạc (plot holes), chi tiết tiền hậu bất nhất, hoặc mâu thuẫn tính cách/thực lực." },
+        ...(focusedChapter ? [{
+            label: `🔧 Sửa mạch lạc: ${focusedChapter.title}`,
+            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]`
         }] : []),
-        { label: "🎭 Nút thắt kịch tính", prompt: "Dựa trên các chi tiết và cài cắm đã xuất hiện trong [BẢN THẢO THỰC TẾ], hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng hoàn toàn hợp logic để đẩy kịch tính lên cao trào." },
-        { label: "⚔️ Đẩy mâu thuẫn nhân vật", prompt: "Phân tích diễn biến tâm lý và các lời thoại trong [BẢN THẢO THỰC TẾ] để đề xuất cách làm sắc nét hơn xung đột hoặc mâu thuẫn của nhân vật chính." },
-        { label: "✨ Đề xuất bản chỉnh sửa dàn ý", prompt: "Dựa trên [BẢN THẢO THỰC TẾ] của các chương đã viết, hãy đề xuất một dàn ý phát triển tiếp theo hoàn chỉnh trong khối [PROPOSAL_PLANNING: ...] để tôi có thể áp dụng." }
+        { label: "🎭 Tạo nút thắt hợp logic", prompt: "Dựa trên các chi tiết đã cài cắm trong cốt truyện và tính cách nhân vật hiện tại, hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng logic để đẩy kịch tính lên cao trào." },
+        { label: "⚔️ Đồng bộ tâm lý & lời thoại", prompt: "Rà soát diễn biến tâm lý và thoại của các nhân vật ở chương đang chọn xem có bị OOC (lệch tính cách) hay thiếu động cơ không, và đề xuất cách chỉnh sửa." },
+        { label: "✨ Tối ưu Dàn ý tổng thể", prompt: "Dựa trên tiến trình hiện tại của truyện, hãy đề xuất dàn ý phát triển mạch lạc cho các chương tiếp theo trong khối [PROPOSAL_PLANNING: ...]." }
     ];
 
     return (
@@ -669,6 +719,14 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                         )}
                                     </button>
 
+                                    <button
+                                        onClick={scanStoryCharactersAndLore}
+                                        disabled={isScanningStory || isAnalyzingPlotArc}
+                                        className="flex items-center justify-center gap-2 px-4 py-3 bg-cyan-600/20 hover:bg-cyan-600/35 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-black uppercase tracking-wider shadow-lg transition-all active:scale-95 disabled:opacity-50 w-full sm:w-auto shrink-0"
+                                    >
+                                        {isScanningStory ? '⏳ Đang quét nhân vật...' : '🔍 Quét nhân vật & Lore'}
+                                    </button>
+
                                     <div className="flex bg-gray-950 rounded-xl p-1 border border-gray-800 w-full sm:w-auto shrink-0">
                                         <button 
                                             type="button"
@@ -841,7 +899,7 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                             </div>
                             
                             {/* Right Side: Analytical Outputs */}
-                            <div className="w-full md:w-96 bg-gray-900/40 p-4 sm:p-6 space-y-6 overflow-y-visible md:overflow-y-auto custom-scrollbar">
+                            <div className="w-full md:w-[440px] bg-gray-900/40 p-4 sm:p-6 space-y-6 overflow-y-visible md:overflow-y-auto custom-scrollbar">
                                 <div className="flex justify-between items-center">
                                     <h4 className="text-[10px] font-black text-purple-400 uppercase tracking-[0.2em] flex items-center gap-2">
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
@@ -852,21 +910,30 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                         disabled={isAnalyzingPlotArc}
                                         className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[9px] font-black uppercase tracking-widest shadow-lg transition-all disabled:opacity-30"
                                     >
-                                        {isAnalyzingPlotArc ? 'Analyzing...' : 'Refresh'}
+                                        {isAnalyzingPlotArc ? 'Đang phân tích...' : 'Phân tích lại'}
                                     </button>
                                 </div>
 
+                                {plotArcError && (
+                                    <div className="p-3.5 bg-rose-950/30 border border-rose-500/40 rounded-xl text-xs text-rose-200 space-y-2">
+                                        <div className="font-bold text-rose-400">⚠️ Không thể phân tích cốt truyện</div>
+                                        <p className="text-[11px] leading-relaxed">{plotArcError}</p>
+                                        <button onClick={analyzeStoryPlotArc} className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-[10px] font-bold">
+                                            Thử lại ngay
+                                        </button>
+                                    </div>
+                                )}
+
                                 {!plotArcAnalysis ? (
-                                    <div className="py-12 flex flex-col items-center justify-center text-center space-y-4 opacity-50 grayscale">
+                                    <div className="py-12 flex flex-col items-center justify-center text-center space-y-4 opacity-60">
                                         <div className="w-16 h-16 rounded-full border-2 border-dashed border-gray-700 flex items-center justify-center">
                                             <svg className="w-8 h-8 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                                         </div>
-                                        <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed max-w-[200px]">
-                                            Nhấn Refresh để AI phân tích mạch truyện của bạn
+                                        <p className="text-[11px] font-bold text-gray-400 leading-relaxed max-w-[240px]">
+                                            Nhấn "Phân tích lại" để AI rà soát cốt truyện, lỗ hổng mạch lạc và tuyến nhân vật.
                                         </p>
                                     </div>
                                 ) : (() => {
-                                    // Extremely defensive processing of the AI response to prevent application crashes
                                     const analysisObj = typeof plotArcAnalysis === 'object' && plotArcAnalysis !== null ? plotArcAnalysis : {};
                                     const arcAnalysis = typeof analysisObj.arcAnalysis === 'string' 
                                         ? analysisObj.arcAnalysis 
@@ -893,6 +960,9 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                             ? [rawFuturePredictions]
                                             : []);
 
+                                    const chapterIssues = Array.isArray(analysisObj.chapterIssues) ? analysisObj.chapterIssues : [];
+                                    const characterArcSummary = typeof analysisObj.characterArcSummary === 'string' ? analysisObj.characterArcSummary : '';
+
                                     return (
                                         <div className="space-y-6 animate-fadeIn">
                                             <div className="space-y-2">
@@ -901,6 +971,15 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                                     {arcAnalysis}
                                                 </p>
                                             </div>
+
+                                            {characterArcSummary && (
+                                              <div className="space-y-2">
+                                                  <label className="text-[9px] font-black text-cyan-400 uppercase tracking-widest">Tuyến Nhân vật & Động cơ</label>
+                                                  <p className="text-xs text-cyan-100/90 leading-relaxed bg-cyan-950/15 p-3 rounded-xl border border-cyan-500/20 whitespace-pre-wrap">
+                                                      {characterArcSummary}
+                                                  </p>
+                                              </div>
+                                            )}
 
                                             <div className="space-y-2">
                                                 <label className="text-[9px] font-black text-gray-500 uppercase tracking-widest">Biểu đồ kịch tính</label>
@@ -913,7 +992,7 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                                                     key={i} 
                                                                     className="flex-1 bg-emerald-500/50 rounded-t-sm hover:bg-emerald-400 transition-all cursor-help"
                                                                     style={{ height: `${Math.min(100, Math.max(5, numericVal))}%` }}
-                                                                    title={`Chapter ${i+1}: Intensity ${numericVal}%`}
+                                                                    title={`Chương ${i+1}: Nhịp ${numericVal}%`}
                                                                 ></div>
                                                             );
                                                         })}
@@ -922,6 +1001,42 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                                     <p className="text-[10px] text-gray-500 italic">Chưa thiết lập biểu đồ kịch tính.</p>
                                                 )}
                                             </div>
+
+                                            {chapterIssues.length > 0 && (
+                                                <div className="space-y-2.5 pt-2 border-t border-gray-800">
+                                                    <label className="text-[9px] font-black text-rose-400 uppercase tracking-widest block">
+                                                        Lỗ hổng Mạch lạc theo Chương ({chapterIssues.length})
+                                                    </label>
+                                                    <div className="space-y-2.5">
+                                                        {chapterIssues.map((item: any, idx: number) => (
+                                                            <div key={idx} className="p-3 bg-rose-950/20 border border-rose-500/30 rounded-xl space-y-2">
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <span className="text-[10px] font-black text-rose-300 truncate">
+                                                                        {item.chapterTitle || `Chương ${item.chapterOrder || idx + 1}`}
+                                                                    </span>
+                                                                    <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-rose-900/60 text-rose-200 border border-rose-500/30 shrink-0">
+                                                                        {item.severity || 'medium'}
+                                                                    </span>
+                                                                </div>
+                                                                <p className="text-[11px] text-gray-200 leading-relaxed">{item.issue}</p>
+                                                                {item.fixSuggestion && (
+                                                                    <p className="text-[10px] text-emerald-300/90 bg-emerald-950/20 p-2 rounded border border-emerald-500/20">
+                                                                        💡 Gợi ý sửa: {item.fixSuggestion}
+                                                                    </p>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleRepairIssueInCoEdit(item)}
+                                                                    disabled={isPlotPlanning}
+                                                                    className="w-full py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all shadow cursor-pointer disabled:opacity-40"
+                                                                >
+                                                                    🔧 Sửa chương này với AI (Co-Edit)
+                                                                </button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
 
                                             <div className="space-y-2">
                                                 <label className="text-[9px] font-black text-orange-400 uppercase tracking-widest">Cài cắm chưa giải quyết (Hooks)</label>
@@ -995,21 +1110,37 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                 <div className={`flex-1 flex flex-col h-full bg-gray-900/10 border-r border-gray-800/80 ${
                                     coEditSubTab === 'chat' ? 'flex' : 'hidden lg:flex'
                                 }`}>
-                                    {/* Chat Header Info */}
-                                    <div className="p-3 sm:p-4 bg-gray-950/50 border-b border-gray-800/60 flex justify-between items-center">
-                                        <div>
+                                    {/* Chat Header Info + Target Chapter Selector */}
+                                    <div className="p-3 sm:p-4 bg-gray-950/50 border-b border-gray-800/60 flex flex-wrap justify-between items-center gap-2">
+                                        <div className="min-w-0">
                                             <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
                                                 <span className="w-2 h-2 bg-rose-500 rounded-full animate-ping"></span>
-                                                Không gian Đồng Sáng Tạo Cốt Truyện
+                                                Không gian Đồng Sáng Tạo & Sửa Mạch Lạc
                                             </h3>
-                                            <p className="text-[9px] sm:text-[10px] text-gray-400">Thảo luận sửa chữa lỗi logic, nút thắt kịch tính cùng AI</p>
+                                            <p className="text-[9px] sm:text-[10px] text-gray-400">AI nắm toàn bộ nhân vật, bối cảnh & kiểm toán để cùng bạn sửa chương</p>
                                         </div>
-                                        <button 
-                                            onClick={clearPlotChat}
-                                            className="text-[9px] sm:text-[10px] bg-gray-850 hover:bg-gray-800 text-gray-400 hover:text-white px-2.5 py-1.5 rounded-lg border border-gray-750 transition-colors"
-                                        >
-                                            Xóa hội thoại
-                                        </button>
+                                        <div className="flex items-center gap-2">
+                                            {sortedChapters.length > 0 && (
+                                                <select
+                                                    value={focusedCoEditChapterId || focusedChapter?.id || ''}
+                                                    onChange={(e) => setFocusedCoEditChapterId(e.target.value)}
+                                                    className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-[10px] text-emerald-300 font-bold max-w-[160px] outline-none focus:border-emerald-500"
+                                                    title="Chọn chương trọng tâm để AI sửa chữa"
+                                                >
+                                                    {sortedChapters.map((c, idx) => (
+                                                        <option key={c.id} value={c.id}>
+                                                            {idx + 1}. {c.title}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            )}
+                                            <button 
+                                                onClick={clearPlotChat}
+                                                className="text-[9px] sm:text-[10px] bg-gray-850 hover:bg-gray-800 text-gray-400 hover:text-white px-2.5 py-1.5 rounded-lg border border-gray-750 transition-colors shrink-0"
+                                            >
+                                                Xóa hội thoại
+                                            </button>
+                                        </div>
                                     </div>
 
                                     {/* Message Log */}
@@ -1078,6 +1209,17 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
                                                                                 Áp dụng
                                                                             </button>
+                                                                            {/* Xem Diff trước khi áp dụng */}
+                                                                            {prop.type === 'content' && prop.chapterId && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handlePreviewDiff(prop)}
+                                                                                    className="px-2 py-1 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-indigo-100 font-bold text-xs shadow transition-all active:scale-95 cursor-pointer"
+                                                                                    title="Mở đối chiếu Diff từng dòng trong Trình soạn thảo trước khi lưu"
+                                                                                >
+                                                                                    👁️ Xem Diff
+                                                                                </button>
+                                                                            )}
                                                                             {/* Ghép nối tiếp */}
                                                                             {prop.type === 'content' && (
                                                                                 <button 
@@ -1158,29 +1300,31 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
 
                                     {/* Chat Input bar */}
                                     <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 space-y-2">
-                                        {/* Quick Continuation & Optimization Chips */}
-                                        {activeProposals.length > 0 && !isPlotPlanning && (
+                                        {/* Quick Presets Bar */}
+                                        {!isPlotPlanning && (
                                             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] custom-scrollbar">
-                                                <span className="text-gray-500 text-[10px] font-bold uppercase tracking-wider shrink-0">Hành động nhanh:</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const latestProp = activeProposals[activeProposals.length - 1];
-                                                        handleContinueWritingProposal(latestProp);
-                                                    }}
-                                                    className="px-2.5 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/30 shrink-0 flex items-center gap-1 transition-all cursor-pointer"
-                                                >
-                                                    ⚡ Viết tiếp phần còn lại
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        handleSendChat("Hãy trau chuốt câu từ thêm phần sắc nét, giữ nguyên 100% tình tiết, xưng hô chuẩn xác và tăng cường chiều sâu tâm lý nhân vật.");
-                                                    }}
-                                                    className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 shrink-0 transition-all cursor-pointer"
-                                                >
-                                                    ✨ Trau chuốt văn phong
-                                                </button>
+                                                {promptPresets.map((preset, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        type="button"
+                                                        onClick={() => handleSendChat(preset.prompt)}
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-800/90 hover:bg-purple-900/50 text-gray-200 border border-gray-700 hover:border-purple-500/40 shrink-0 transition-all cursor-pointer font-semibold"
+                                                    >
+                                                        {preset.label}
+                                                    </button>
+                                                ))}
+                                                {activeProposals.length > 0 && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const latestProp = activeProposals[activeProposals.length - 1];
+                                                            handleContinueWritingProposal(latestProp);
+                                                        }}
+                                                        className="px-2.5 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/30 shrink-0 flex items-center gap-1 transition-all cursor-pointer"
+                                                    >
+                                                        ⚡ Viết tiếp phần còn lại
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
 
@@ -1280,6 +1424,16 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
                                                                 >
                                                                     Áp dụng
                                                                 </button>
+                                                                {isContent && proposal.chapterId && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handlePreviewDiff(proposal)}
+                                                                        className="text-[9px] bg-indigo-700 hover:bg-indigo-600 text-indigo-100 font-bold px-1.5 py-1 rounded-lg transition-all active:scale-95 shadow-md shrink-0 cursor-pointer"
+                                                                        title="So sánh Diff chi tiết"
+                                                                    >
+                                                                        👁️ Diff
+                                                                    </button>
+                                                                )}
                                                                 {isContent && (
                                                                     <button 
                                                                         type="button"
