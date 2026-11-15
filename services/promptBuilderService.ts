@@ -669,13 +669,13 @@ ${options.isFullStoryScan ? `Bạn đang quét tác phẩm "${options.storyTitle
 
 [HƯỚNG DẪN CHI TIẾT]:
 1. **Nhân vật mới (newCharacters)**:
-   - Liệt kê TẤT CẢ các nhân vật có tên riêng hoặc thực thể quan trọng (người, sinh vật, tinh linh, thần thú, khí linh...) xuất hiện trong đoạn truyện mà CHƯA có trong [DANH SÁCH NHÂN VẬT HIỆN CÓ].
-   - Phân biệt đúng vai trò ('Chính', 'Phụ', 'Phản diện', 'Ẩn số'), loại thực thể (entityType: 'human' | 'creature' | 'spirit' | 'object'), chủng tộc (species), mô tả thân phận, ngoại hình, tính cách (traits), vị trí hiện tại (currentLocation), thực lực/cảnh giới (powerLevel), năng lực/kỹ năng (abilities), trạng thái (status: 'alive' | 'injured' | 'critical' | 'missing' | 'deceased' | 'sealed'), tri thức/bí mật họ nắm giữ (knowledge), người hướng dẫn/đồng minh (mentors), kẻ thù (enemies).
-   - Thực hiện suy luận hợp lý về giới hạn tri thức của nhân vật dựa theo xuất thân (Vd: người bình thường thời cổ đại không hiểu khái niệm khoa học hiện đại; người mới chuyển sinh còn xa lạ với phong tục địa phương).
+   - Liệt kê tối đa 15 nhân vật có tên riêng hoặc thực thể quan trọng nhất (người, sinh vật, tinh linh, thần thú, khí linh...) xuất hiện trong đoạn truyện mà CHƯA có trong [DANH SÁCH NHÂN VẬT HIỆN CÓ]. Bỏ qua nhân vật quần chúng vô danh.
+   - Viết SÚC TÍCH (1-2 câu ngắn gọn mỗi trường): vai trò ('Chính', 'Phụ', 'Phản diện', 'Ẩn số'), loại thực thể (entityType: 'human' | 'creature' | 'spirit' | 'object'), chủng tộc (species), mô tả thân phận, ngoại hình, tính cách (traits: 2-4 từ khóa ngắn), vị trí hiện tại (currentLocation), thực lực (powerLevel), kỹ năng (abilities), trạng thái (status: 'alive' | 'injured' | 'critical' | 'missing' | 'deceased' | 'sealed'), tri thức/bí mật họ nắm giữ (knowledge), đồng minh (mentors), kẻ thù (enemies).
+   - Thực hiện suy luận hợp lý về giới hạn tri thức của nhân vật dựa theo xuất thân (Vd: người bình thường thời cổ đại không hiểu khoa học hiện đại).
 2. **Cập nhật nhân vật đã có (characterUpdates)**:
-   - Nếu nhân vật trong [DANH SÁCH HIỆN CÓ] có thay đổi vị trí, thương tích, sức mạnh, mối quan hệ, tri thức mới hoặc vai trò, ghi rõ vào đây với tên khớp chính xác tên cũ.
+   - Chỉ ghi nhận khi nhân vật trong [DANH SÁCH HIỆN CÓ] có thay đổi rõ rệt về vị trí, thương tích, sức mạnh, mối quan hệ hoặc tri thức mới; giữ tên khớp chính xác tên cũ.
 3. **Bối cảnh & Quy luật (worldLore, mechanics)**:
-   - Chỉ trích xuất những địa danh, phe phái, sự kiện, vật phẩm quan trọng (nếu thuộc danh mục: ${categories.join(', ')}) và quy luật sức mạnh/xã hội cốt lõi.
+   - Chỉ trích xuất tối đa 10 địa danh/phe phái/sự kiện/bảo vật nổi bật nhất (thuộc danh mục: ${categories.join(', ')}) và tối đa 8 quy luật sức mạnh/xã hội cốt lõi. Mỗi mục giải thích ngắn gọn trong 1-2 câu.
 4. **Thông tin nền tảng đề xuất (synopsisSuggestion, genreSuggestion)**:
    - Nếu đoạn văn cho thấy rõ thể loại hoặc cốt truyện nền tảng của tác phẩm, đề xuất ngắn gọn.
 

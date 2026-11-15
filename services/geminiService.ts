@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
 import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext, sampleManuscript } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
@@ -843,60 +843,363 @@ async function safeGenerateContent(params: { model: string, contents: any, confi
   throw lastError;
 }
 
-function safeJsonParse<T>(rawText: string | null | undefined, fallback: T): T {
-  if (!rawText || typeof rawText !== 'string') return fallback;
-  let cleaned = rawText.trim();
-  // Remove markdown JSON code fences if a model emits them despite responseMimeType
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+const CREATIVE_SAFETY_SETTINGS = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+];
+
+function extractResponseText(response: any): string {
+  if (!response) return "";
   try {
-    return JSON.parse(cleaned) as T;
+    const directText = response.text;
+    if (typeof directText === 'string' && directText.trim().length > 0) {
+      return directText;
+    }
   } catch {
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      try {
-        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
-      } catch {
-        // Fallback below
+    // response.text getter may throw if candidate was blocked or only contains thought parts
+  }
+
+  const parts = response?.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.length > 0) {
+    const nonThoughtText = parts
+      .filter((p: any) => p && typeof p.text === 'string' && !p.thought)
+      .map((p: any) => p.text)
+      .join('');
+    if (nonThoughtText.trim().length > 0) return nonThoughtText;
+
+    const anyText = parts
+      .filter((p: any) => p && typeof p.text === 'string')
+      .map((p: any) => p.text)
+      .join('');
+    if (anyText.trim().length > 0) return anyText;
+  }
+
+  return "";
+}
+
+function getResponseFinishReason(response: any): string {
+  return (
+    response?.candidates?.[0]?.finishReason ||
+    response?.promptFeedback?.blockReason ||
+    'UNKNOWN'
+  );
+}
+
+function sanitizeJsonControlChars(str: string): string {
+  let out = '';
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inStr) {
+      if (esc) {
+        out += ch;
+        esc = false;
+      } else if (ch === '\\') {
+        out += ch;
+        esc = true;
+      } else if (ch === '"') {
+        out += ch;
+        inStr = false;
+      } else if (ch === '\n') {
+        out += '\\n';
+      } else if (ch === '\r') {
+        out += '\\r';
+      } else if (ch === '\t') {
+        out += '\\t';
+      } else {
+        out += ch;
+      }
+    } else {
+      if (ch === '"') inStr = true;
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function closeOpenJsonDelimiters(str: string): string {
+  const stack: string[] = [];
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+      } else if (ch === '\\') {
+        esc = true;
+      } else if (ch === '"') {
+        inStr = false;
+      }
+    } else {
+      if (ch === '"') {
+        inStr = true;
+      } else if (ch === '{') {
+        stack.push('}');
+      } else if (ch === '[') {
+        stack.push(']');
+      } else if ((ch === '}' || ch === ']') && stack.length > 0 && stack[stack.length - 1] === ch) {
+        stack.pop();
       }
     }
-    return fallback;
   }
+  let result = str;
+  if (inStr) {
+    if (esc) result = result.slice(0, -1);
+    result += '"';
+  }
+  result = result.replace(/,\s*$/g, '');
+  while (stack.length > 0) {
+    result += stack.pop();
+  }
+  return result.replace(/,\s*([}\]])/g, '$1');
+}
+
+function repairTruncatedJson(candidate: string): string | null {
+  let s = sanitizeJsonControlChars(candidate).trim();
+  if (!s) return null;
+
+  // Determine whether EOF occurs inside a string and whether that string is a key or value
+  let inStr = false;
+  let esc = false;
+  let lastQuoteStart = -1;
+  let lastTokenBeforeQuote = '';
+  let lastStructuralCommaOrOpen = -1;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+      } else if (ch === '\\') {
+        esc = true;
+      } else if (ch === '"') {
+        inStr = false;
+      }
+    } else {
+      if (ch === '"') {
+        inStr = true;
+        lastQuoteStart = i;
+        // Look backward for last non-whitespace char
+        let j = i - 1;
+        while (j >= 0 && /\s/.test(s[j])) j--;
+        lastTokenBeforeQuote = j >= 0 ? s[j] : '';
+      } else if (ch === ',' || ch === '{' || ch === '[') {
+        lastStructuralCommaOrOpen = i;
+      }
+    }
+  }
+
+  if (inStr) {
+    if (esc) s = s.slice(0, -1);
+    if (lastTokenBeforeQuote === '{' || (lastTokenBeforeQuote === ',' && lastQuoteStart > 0)) {
+      // Check if we are in an object expecting a key vs array element
+      // Peek at the enclosing delimiter before lastQuoteStart
+      const stackCheck: string[] = [];
+      let str2 = false;
+      let esc2 = false;
+      for (let i = 0; i < lastQuoteStart; i++) {
+        const c = s[i];
+        if (str2) {
+          if (esc2) esc2 = false;
+          else if (c === '\\') esc2 = true;
+          else if (c === '"') str2 = false;
+        } else {
+          if (c === '"') str2 = true;
+          else if (c === '{' || c === '[') stackCheck.push(c);
+          else if (c === '}' || c === ']') stackCheck.pop();
+        }
+      }
+      const enclosing = stackCheck[stackCheck.length - 1];
+      if (enclosing === '{') {
+        // Incomplete object key -> drop back to comma or '{'
+        s = s.slice(0, lastQuoteStart).replace(/,\s*$/, '');
+      } else {
+        s += '"';
+      }
+    } else {
+      s += '"';
+    }
+  } else {
+    // Strip trailing dangling colon + key, or incomplete primitive tokens
+    s = s.replace(/,\s*$/, '');
+    if (/:\s*$/.test(s)) {
+      s = s.replace(/,?\s*"(?:[^"\\]|\\.)*"\s*:\s*$/, '');
+    } else if (/[:,{\[]\s*[a-zA-Z0-9_.-]+$/.test(s) && !/[:,{\[]\s*(?:true|false|null|-?\d+(?:\.\d+)?)$/.test(s)) {
+      if (lastStructuralCommaOrOpen >= 0) {
+        const prefix = s.slice(0, lastStructuralCommaOrOpen + 1);
+        s = prefix.replace(/,\s*$/, '');
+      }
+    }
+  }
+
+  const repaired = closeOpenJsonDelimiters(s);
+  return repaired;
+}
+
+function safeJsonParse<T>(rawText: string | null | undefined, fallback: T): T {
+  if (!rawText || typeof rawText !== 'string') return fallback;
+  let cleaned = rawText
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .trim();
+
+  // Remove markdown JSON code fences (including unclosed leading fence when truncated)
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  if (!cleaned) return fallback;
+
+  const tryParse = (str: string): T | null => {
+    try {
+      return JSON.parse(str) as T;
+    } catch {
+      try {
+        const noTrailing = sanitizeJsonControlChars(str).replace(/,\s*([}\]])/g, '$1');
+        return JSON.parse(noTrailing) as T;
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  const direct = tryParse(cleaned);
+  if (direct !== null) return direct;
+
+  const firstObj = cleaned.indexOf('{');
+  const firstArr = cleaned.indexOf('[');
+  const startIdx =
+    firstObj !== -1 && (firstArr === -1 || firstObj <= firstArr)
+      ? firstObj
+      : firstArr;
+
+  if (startIdx === -1) return fallback;
+
+  const slicedFromStart = cleaned.slice(startIdx);
+  const lastBrace = Math.max(slicedFromStart.lastIndexOf('}'), slicedFromStart.lastIndexOf(']'));
+
+  if (lastBrace > 0) {
+    const exactSpan = tryParse(slicedFromStart.slice(0, lastBrace + 1));
+    if (exactSpan !== null) return exactSpan;
+  }
+
+  // Attempt repair of truncated JSON (e.g., cut off at MAX_TOKENS mid-object or mid-array)
+  const repaired = repairTruncatedJson(slicedFromStart);
+  if (repaired) {
+    const parsedRepaired = tryParse(repaired);
+    if (parsedRepaired !== null) return parsedRepaired;
+  }
+
+  // Last resort: cut back to the last complete `},` before truncation point and close containers
+  const lastObjEnd = slicedFromStart.lastIndexOf('},');
+  if (lastObjEnd > 0) {
+    const trimmedToLastObj = closeOpenJsonDelimiters(slicedFromStart.slice(0, lastObjEnd + 1));
+    const parsedFallback = tryParse(trimmedToLastObj);
+    if (parsedFallback !== null) return parsedFallback;
+  }
+
+  return fallback;
 }
 
 async function generateAuditJsonWithFallback(prompt: string, responseSchema: any): Promise<any> {
+  const isAuthOrQuotaError = (err: any) => {
+    const msg = String(err?.message || err || '').toLowerCase();
+    return (
+      msg.includes('429') ||
+      msg.includes('hạn mức') ||
+      msg.includes('api key') ||
+      msg.includes('api_key_invalid') ||
+      msg.includes('xác thực api key')
+    );
+  };
+
+  let lastResponse: any = null;
+
+  // Attempt 1: Strict responseSchema + permissive safety + generous maxOutputTokens + light thinking
   try {
-    return await safeGenerateContent({
+    const res1 = await safeGenerateContent({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         responseMimeType: "application/json",
         responseSchema,
-        temperature: 0.3,
-        thinkingConfig: { thinkingBudget: 2048 }
+        temperature: 0.2,
+        maxOutputTokens: 32768,
+        safetySettings: CREATIVE_SAFETY_SETTINGS,
+        thinkingConfig: { thinkingBudget: 512 }
       }
     });
+    lastResponse = res1;
+    const text1 = extractResponseText(res1);
+    const parsed1 = safeJsonParse<any>(text1, null);
+    if (parsed1 && typeof parsed1 === 'object') {
+      return {
+        text: text1,
+        usageMetadata: res1?.usageMetadata,
+        candidates: res1?.candidates,
+        promptFeedback: res1?.promptFeedback,
+        _parsed: parsed1
+      };
+    }
+    console.warn(
+      `Attempt 1 (responseSchema) trả về JSON không hợp lệ hoặc rỗng (finishReason=${getResponseFinishReason(res1)}, len=${text1.length}). Thử fallback không schema...`
+    );
   } catch (err: any) {
-    const msg = String(err?.message || err || '').toLowerCase();
-    const isAuthOrQuota =
-      msg.includes('429') ||
-      msg.includes('hạn mức') ||
-      msg.includes('api key') ||
-      msg.includes('api_key_invalid') ||
-      msg.includes('xác thực api key');
-    if (isAuthOrQuota) throw err;
+    if (isAuthOrQuotaError(err)) throw err;
+    console.warn("Audit attempt 1 with responseSchema failed, retrying without schema...", err);
+  }
 
-    // Fallback without responseSchema in case a fallback model rejects strict schema syntax
-    console.warn("Audit with responseSchema failed, retrying with JSON mimeType only...", err);
-    return await safeGenerateContent({
+  // Attempt 2: JSON mimeType WITHOUT responseSchema & WITHOUT thinkingConfig (avoids schema rejection & thinking token overhead)
+  const strictJsonPrompt = `${prompt}\n\n[LƯU Ý ĐỊNH DẠNG]: CHỈ trả về DUY NHẤT 1 JSON object hợp lệ khớp các trường yêu cầu. Không thêm markdown, không lời dẫn hay giải thích.`;
+  try {
+    const res2 = await safeGenerateContent({
       model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ parts: [{ text: strictJsonPrompt }] }],
       config: {
         responseMimeType: "application/json",
-        temperature: 0.3
+        temperature: 0.2,
+        maxOutputTokens: 32768,
+        safetySettings: CREATIVE_SAFETY_SETTINGS
       }
     });
+    lastResponse = res2;
+    const text2 = extractResponseText(res2);
+    const parsed2 = safeJsonParse<any>(text2, null);
+    if (parsed2 && typeof parsed2 === 'object') {
+      return {
+        text: text2,
+        usageMetadata: res2?.usageMetadata,
+        candidates: res2?.candidates,
+        promptFeedback: res2?.promptFeedback,
+        _parsed: parsed2
+      };
+    }
+    console.warn(
+      `Attempt 2 (JSON mimeType only) trả về JSON không hợp lệ (finishReason=${getResponseFinishReason(res2)}, len=${text2.length}). Thử fallback raw JSON...`
+    );
+  } catch (err: any) {
+    if (isAuthOrQuotaError(err)) throw err;
+    console.warn("Audit attempt 2 with JSON mimeType failed, retrying raw prompt...", err);
   }
+
+  // Attempt 3: Plain text JSON generation (no responseMimeType / no safetySettings in case model/proxy rejects them)
+  const res3 = await safeGenerateContent({
+    model: getFlash(),
+    contents: [{ parts: [{ text: strictJsonPrompt }] }],
+    config: {
+      temperature: 0.15,
+      maxOutputTokens: 32768
+    }
+  });
+  const text3 = extractResponseText(res3) || extractResponseText(lastResponse);
+  const parsed3 = safeJsonParse<any>(text3, null);
+  return {
+    text: text3,
+    usageMetadata: res3?.usageMetadata || lastResponse?.usageMetadata,
+    candidates: res3?.candidates || lastResponse?.candidates,
+    promptFeedback: res3?.promptFeedback || lastResponse?.promptFeedback,
+    _parsed: parsed3
+  };
 }
 
 // Helper for safe streaming content generation with fallback
@@ -1381,15 +1684,9 @@ export const geminiService = {
     text: string,
     story: Story,
     categories: ExtractionCategory[] = ['characters', 'world', 'mechanics'],
-    options: { isFullStoryScan?: boolean; extraKnownCharacters?: Character[] } = {}
+    options: { isFullStoryScan?: boolean; extraKnownCharacters?: Character[]; maxTextChars?: number } = {}
   ): Promise<any> {
     const knownCharacters = options.extraKnownCharacters || story.characters || [];
-    const safeText = sampleManuscript(text, 38000);
-    const prompt = promptBuilderService.buildKnowledgeExtractionPrompt(safeText, knownCharacters, categories, {
-      isFullStoryScan: options.isFullStoryScan,
-      storyTitle: story.title,
-      storyGenre: story.genre
-    });
 
     const knowledgeSchema = {
       type: Type.OBJECT,
@@ -1464,24 +1761,69 @@ export const geminiService = {
       required: ["newCharacters", "characterUpdates", "worldLore", "mechanics"]
     };
 
-    const response = await requestThrottleService.enqueuePromise(
-      () => generateAuditJsonWithFallback(prompt, knowledgeSchema),
-      { name: `Quét tri thức & nhân vật: ${story.title}`, type: 'plot_analysis', priority: 'high' }
-    );
+    const runExtractionPass = async (charLimit: number) => {
+      const safeText = sampleManuscript(text, charLimit);
+      const prompt = promptBuilderService.buildKnowledgeExtractionPrompt(safeText, knownCharacters, categories, {
+        isFullStoryScan: options.isFullStoryScan,
+        storyTitle: story.title,
+        storyGenre: story.genre
+      });
 
-    const parsed = safeJsonParse<any>(response?.text, null);
-    if (!parsed || typeof parsed !== 'object') {
-      throw new Error("AI không trả về dữ liệu JSON trích xuất tri thức hợp lệ.");
+      const response = await requestThrottleService.enqueuePromise(
+        () => generateAuditJsonWithFallback(prompt, knowledgeSchema),
+        { name: `Quét tri thức & nhân vật: ${story.title}`, type: 'plot_analysis', priority: 'high' }
+      );
+
+      let parsed = response?._parsed || safeJsonParse<any>(extractResponseText(response), null);
+      if (Array.isArray(parsed)) {
+        parsed = { newCharacters: parsed, characterUpdates: [], worldLore: [], mechanics: [] };
+      }
+      return { response, parsed };
+    };
+
+    const primaryLimit = options.maxTextChars || 20000;
+    let { response, parsed } = await runExtractionPass(primaryLimit);
+
+    if ((!parsed || typeof parsed !== 'object') && text.length > 9000) {
+      console.warn(`extractKnowledge lần 1 (${primaryLimit} ký tự) không ra JSON hợp lệ, thử rút gọn xuống 8500 ký tự...`);
+      const retry = await runExtractionPass(8500);
+      response = retry.response;
+      parsed = retry.parsed;
     }
+
+    if (!parsed || typeof parsed !== 'object') {
+      const finishReason = getResponseFinishReason(response);
+      throw new Error(`AI không trả về dữ liệu JSON trích xuất tri thức hợp lệ (Trạng thái: ${finishReason}). Vui lòng thử lại hoặc quét từng chương ngắn hơn.`);
+    }
+
+    const normalizeChars = (arr: any[]) =>
+      arr
+        .filter((c: any) => c && typeof c === 'object' && String(c.name || '').trim())
+        .map((c: any) => ({
+          ...c,
+          name: String(c.name).trim(),
+          description: String(c.description || '').trim(),
+          traits: Array.isArray(c.traits)
+            ? c.traits.map((t: any) => String(t).trim()).filter(Boolean)
+            : typeof c.traits === 'string' && c.traits.trim()
+              ? c.traits.split(/[,;]/).map((t: string) => t.trim()).filter(Boolean)
+              : []
+        }));
 
     return {
       data: {
-        newCharacters: Array.isArray(parsed.newCharacters) ? parsed.newCharacters : [],
-        characterUpdates: Array.isArray(parsed.characterUpdates) ? parsed.characterUpdates : [],
-        worldLore: Array.isArray(parsed.worldLore) ? parsed.worldLore : [],
-        mechanics: Array.isArray(parsed.mechanics) ? parsed.mechanics : [],
-        genreSuggestion: parsed.genreSuggestion ? String(parsed.genreSuggestion) : undefined,
-        synopsisSuggestion: parsed.synopsisSuggestion ? String(parsed.synopsisSuggestion) : undefined
+        newCharacters: Array.isArray(parsed.newCharacters) ? normalizeChars(parsed.newCharacters) : [],
+        characterUpdates: Array.isArray(parsed.characterUpdates)
+          ? parsed.characterUpdates.filter((u: any) => u && String(u.name || '').trim())
+          : [],
+        worldLore: Array.isArray(parsed.worldLore)
+          ? parsed.worldLore.filter((l: any) => l && String(l.topic || '').trim() && String(l.content || '').trim())
+          : [],
+        mechanics: Array.isArray(parsed.mechanics)
+          ? parsed.mechanics.filter((m: any) => m && String(m.rule || '').trim() && String(m.detail || '').trim())
+          : [],
+        genreSuggestion: parsed.genreSuggestion ? String(parsed.genreSuggestion).trim() : undefined,
+        synopsisSuggestion: parsed.synopsisSuggestion ? String(parsed.synopsisSuggestion).trim() : undefined
       },
       usageMetadata: response?.usageMetadata
     };
@@ -1503,17 +1845,17 @@ export const geminiService = {
       throw new Error("Truyện hiện chưa có nội dung chương đủ dài để quét nhân vật và bối cảnh.");
     }
 
-    // Group chapters into ~24,000 char batches, capped at 5 representative batches for very massive books
+    // Group chapters into compact ~12,000 char batches to prevent JSON output truncation, capped at 6 evenly spaced batches
     const allBatches: { label: string; text: string }[] = [];
     let currentTitles: string[] = [];
     let currentTexts: string[] = [];
     let currentLen = 0;
 
     for (const ch of sortedChapters) {
-      const chBlock = `=== ${ch.title} ===\n${ch.text.length > 20000 ? sampleManuscript(ch.text, 20000) : ch.text}`;
-      if (currentLen + chBlock.length > 24000 && currentTexts.length > 0) {
+      const chBlock = `=== ${ch.title} ===\n${ch.text.length > 10000 ? sampleManuscript(ch.text, 10000) : ch.text}`;
+      if (currentLen + chBlock.length > 12000 && currentTexts.length > 0) {
         allBatches.push({
-          label: `${currentTitles[0]} → ${currentTitles[currentTitles.length - 1]}`,
+          label: currentTitles.length > 1 ? `${currentTitles[0]} → ${currentTitles[currentTitles.length - 1]}` : currentTitles[0],
           text: currentTexts.join('\n\n')
         });
         currentTitles = [];
@@ -1531,10 +1873,16 @@ export const geminiService = {
       });
     }
 
-    // If > 5 batches (huge novel), pick evenly distributed batches across start, middle, and end
     let selectedBatches = allBatches;
-    if (allBatches.length > 5) {
-      const indices = new Set<number>([0, 1, Math.floor(allBatches.length / 2), allBatches.length - 2, allBatches.length - 1]);
+    if (allBatches.length > 6) {
+      const indices = new Set<number>([
+        0,
+        1,
+        Math.floor(allBatches.length * 0.35),
+        Math.floor(allBatches.length * 0.65),
+        allBatches.length - 2,
+        allBatches.length - 1
+      ]);
       selectedBatches = Array.from(indices).sort((a, b) => a - b).map(idx => allBatches[idx]);
     }
 
@@ -1551,6 +1899,8 @@ export const geminiService = {
 
     const totalSteps = selectedBatches.length + (story.writingDNA ? 0 : 1);
     let stepIdx = 0;
+    let successCount = 0;
+    let firstBatchError: any = null;
 
     for (const batch of selectedBatches) {
       stepIdx++;
@@ -1570,63 +1920,83 @@ export const geminiService = {
         }))
       ];
 
-      const res = await this.extractKnowledge(batch.text, story, ['characters', 'world', 'mechanics'], {
-        isFullStoryScan: true,
-        extraKnownCharacters: knownList
-      });
+      try {
+        const res = await this.extractKnowledge(batch.text, story, ['characters', 'world', 'mechanics'], {
+          isFullStoryScan: true,
+          extraKnownCharacters: knownList,
+          maxTextChars: 13000
+        });
 
-      const d = res?.data;
-      if (d) {
-        if (!genreSuggestion && d.genreSuggestion) genreSuggestion = d.genreSuggestion;
-        if (!synopsisSuggestion && d.synopsisSuggestion) synopsisSuggestion = d.synopsisSuggestion;
+        successCount++;
+        const d = res?.data;
+        if (d) {
+          if (!genreSuggestion && d.genreSuggestion) genreSuggestion = d.genreSuggestion;
+          if (!synopsisSuggestion && d.synopsisSuggestion) synopsisSuggestion = d.synopsisSuggestion;
 
-        for (const nc of (d.newCharacters || [])) {
-          const key = String(nc?.name || '').trim().toLowerCase();
-          if (!key) continue;
-          if (existingNamesMap.has(key)) {
-            characterUpdatesMap.set(key, {
-              name: existingNamesMap.get(key)!.name,
-              ...characterUpdatesMap.get(key),
-              status: nc.status,
-              currentLocation: nc.currentLocation,
-              powerLevel: nc.powerLevel,
-              abilities: nc.abilities,
-              knowledge: nc.knowledge,
-              enemies: nc.enemies
-            });
-          } else {
-            const prev = discoveredNewCharsMap.get(key) || {};
-            discoveredNewCharsMap.set(key, {
-              ...prev,
-              ...nc,
-              traits: Array.from(new Set([...(prev.traits || []), ...(nc.traits || [])])),
-              description: nc.description && (!prev.description || nc.description.length > prev.description.length) ? nc.description : prev.description
-            });
+          for (const nc of (d.newCharacters || [])) {
+            const key = String(nc?.name || '').trim().toLowerCase();
+            if (!key) continue;
+            if (existingNamesMap.has(key)) {
+              characterUpdatesMap.set(key, {
+                name: existingNamesMap.get(key)!.name,
+                ...characterUpdatesMap.get(key),
+                status: nc.status,
+                currentLocation: nc.currentLocation,
+                powerLevel: nc.powerLevel,
+                abilities: nc.abilities,
+                knowledge: nc.knowledge,
+                enemies: nc.enemies
+              });
+            } else {
+              const prev = discoveredNewCharsMap.get(key) || {};
+              discoveredNewCharsMap.set(key, {
+                ...prev,
+                ...nc,
+                traits: Array.from(new Set([...(prev.traits || []), ...(nc.traits || [])])),
+                description: nc.description && (!prev.description || nc.description.length > prev.description.length) ? nc.description : prev.description
+              });
+            }
+          }
+
+          for (const upd of (d.characterUpdates || [])) {
+            const key = String(upd?.name || '').trim().toLowerCase();
+            if (!key) continue;
+            if (discoveredNewCharsMap.has(key)) {
+              const prev = discoveredNewCharsMap.get(key);
+              discoveredNewCharsMap.set(key, { ...prev, ...upd, name: prev.name });
+            } else {
+              const prevUpd = characterUpdatesMap.get(key) || {};
+              characterUpdatesMap.set(key, { ...prevUpd, ...upd });
+            }
+          }
+
+          for (const lore of (d.worldLore || [])) {
+            const key = String(lore?.topic || '').trim().toLowerCase();
+            if (key && lore.content) worldLoreMap.set(key, lore);
+          }
+
+          for (const mech of (d.mechanics || [])) {
+            const key = String(mech?.rule || '').trim().toLowerCase();
+            if (key && mech.detail) mechanicsMap.set(key, mech);
           }
         }
+      } catch (batchErr: any) {
+        const msg = String(batchErr?.message || batchErr || '').toLowerCase();
+        const isCriticalAuthOrQuota =
+          msg.includes('429') ||
+          msg.includes('hạn mức') ||
+          msg.includes('api key') ||
+          msg.includes('api_key_invalid') ||
+          msg.includes('xác thực api key');
+        if (isCriticalAuthOrQuota) throw batchErr;
 
-        for (const upd of (d.characterUpdates || [])) {
-          const key = String(upd?.name || '').trim().toLowerCase();
-          if (!key) continue;
-          if (discoveredNewCharsMap.has(key)) {
-            const prev = discoveredNewCharsMap.get(key);
-            discoveredNewCharsMap.set(key, { ...prev, ...upd, name: prev.name });
-          } else {
-            const prevUpd = characterUpdatesMap.get(key) || {};
-            characterUpdatesMap.set(key, { ...prevUpd, ...upd });
-          }
-        }
-
-        for (const lore of (d.worldLore || [])) {
-          const key = String(lore?.topic || '').trim().toLowerCase();
-          if (key && lore.content) worldLoreMap.set(key, lore);
-        }
-
-        for (const mech of (d.mechanics || [])) {
-          const key = String(mech?.rule || '').trim().toLowerCase();
-          if (key && mech.detail) mechanicsMap.set(key, mech);
-        }
+        if (!firstBatchError) firstBatchError = batchErr;
+        console.warn(`Lỗi quét batch "${batch.label}", bỏ qua batch này để tiếp tục:`, batchErr);
       }
+    }
+
+    if (successCount === 0 && firstBatchError) {
+      throw firstBatchError;
     }
 
     if (!writingDNA && selectedBatches[0]) {
