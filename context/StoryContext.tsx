@@ -1881,28 +1881,70 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const auditStory = async () => {
-    if (!storyRef.current) return;
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+
+    const hasAnyContent =
+      (currentStory.chapters || []).some(
+        ch => Boolean(ch.content?.trim() || ch.translatedContent?.trim() || ch.outline?.trim() || ch.summary?.trim())
+      ) ||
+      Boolean(currentStory.planning?.trim() || currentStory.setting?.trim()) ||
+      (currentStory.characters || []).length > 0;
+
+    if (!hasAnyContent) {
+      alert("Truyện hiện chưa có đủ dữ liệu (nội dung chương, dàn ý hoặc hồ sơ nhân vật) để kiểm toán.");
+      return;
+    }
+
     setIsAuditing(true);
     try {
-        const report = await geminiService.auditStoryConsistency(storyRef.current);
-        if (report) {
+        const report = await geminiService.auditStoryConsistency(currentStory, activeChapterId || undefined);
+        if (report?.data) {
             recordUsage(report.usageMetadata);
             setAuditReport(report.data);
         }
-    } catch (e) { } finally { setIsAuditing(false); }
+    } catch (e: any) {
+        console.error("Story audit failed:", e);
+        alert(`Lỗi khi kiểm toán toàn truyện: ${e?.message || 'Không thể kết nối AI. Vui lòng kiểm tra lại API Key.'}`);
+    } finally {
+        setIsAuditing(false);
+    }
   };
 
   const auditActiveChapter = async () => {
-    if (!storyRef.current || !activeChapterId) return;
+    const currentStory = storyRef.current;
+    if (!currentStory || !activeChapterId) return;
+    const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
+    if (!chapter) return;
+
+    const targetContent =
+      editorVersion === 'translation' && chapter.translatedContent?.trim()
+        ? chapter.translatedContent
+        : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+
+    const targetTitle =
+      editorVersion === 'translation' && chapter.translatedTitle?.trim()
+        ? chapter.translatedTitle
+        : chapter.title;
+
+    if (!targetContent || targetContent.trim().length < 20) {
+      alert("Chương hiện tại chưa có đủ nội dung để kiểm toán logic.");
+      return;
+    }
+
     setIsAuditingChapter(true);
-    const chapter = storyRef.current.chapters.find(c => c.id === activeChapterId)!;
     try {
-        const report = await geminiService.auditChapterLogic(chapter.content, chapter.title, storyRef.current);
-        if (report) {
+        const report = await geminiService.auditChapterLogic(targetContent, targetTitle, currentStory, chapter.id);
+        if (report?.data) {
             recordUsage(report.usageMetadata);
             setChapterAuditReport(report.data);
         }
-    } catch (e) { } finally { setIsAuditingChapter(false); }
+    } catch (e: any) {
+        console.error("Chapter logic audit failed:", e);
+        alert(`Lỗi khi kiểm toán logic chương: ${e?.message || 'Không thể kết nối AI. Vui lòng kiểm tra lại API Key.'}`);
+    } finally {
+        setIsAuditingChapter(false);
+    }
   };
 
   const analyzeActiveChapterQuality = async () => {

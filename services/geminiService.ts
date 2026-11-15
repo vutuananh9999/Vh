@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
 import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
@@ -841,6 +841,62 @@ async function safeGenerateContent(params: { model: string, contents: any, confi
     }
   }
   throw lastError;
+}
+
+function safeJsonParse<T>(rawText: string | null | undefined, fallback: T): T {
+  if (!rawText || typeof rawText !== 'string') return fallback;
+  let cleaned = rawText.trim();
+  // Remove markdown JSON code fences if a model emits them despite responseMimeType
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
+      } catch {
+        // Fallback below
+      }
+    }
+    return fallback;
+  }
+}
+
+async function generateAuditJsonWithFallback(prompt: string, responseSchema: any): Promise<any> {
+  try {
+    return await safeGenerateContent({
+      model: getFlash(),
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema,
+        temperature: 0.3,
+        thinkingConfig: { thinkingBudget: 2048 }
+      }
+    });
+  } catch (err: any) {
+    const msg = String(err?.message || err || '').toLowerCase();
+    const isAuthOrQuota =
+      msg.includes('429') ||
+      msg.includes('hạn mức') ||
+      msg.includes('api key') ||
+      msg.includes('api_key_invalid') ||
+      msg.includes('xác thực api key');
+    if (isAuthOrQuota) throw err;
+
+    // Fallback without responseSchema in case a fallback model rejects strict schema syntax
+    console.warn("Audit with responseSchema failed, retrying with JSON mimeType only...", err);
+    return await safeGenerateContent({
+      model: getFlash(),
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.3
+      }
+    });
+  }
 }
 
 // Helper for safe streaming content generation with fallback
@@ -1691,24 +1747,182 @@ BẮT ĐẦU ĐOẠN VĂN ĐÃ CHỈNH SỬA:`;
     for await (const chunk of stream) yield chunk;
   },
 
-  async auditStoryConsistency(story: Story): Promise<any> {
-    const prompt = `Kiểm toán toàn diện truyện "${story.title}". Đối chiếu Chapters với World Bible. Trả về JSON.`;
-    const response = await ai.models.generateContent({
-      model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }],
-      config: { responseMimeType: "application/json" }
-    });
-    return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+  async auditStoryConsistency(story: Story, focusChapterId?: string): Promise<any> {
+    const prompt = promptBuilderService.buildStoryAuditPrompt(story, focusChapterId);
+    const storyAuditSchema = {
+      type: Type.OBJECT,
+      properties: {
+        overallScore: { type: Type.NUMBER },
+        characterArcs: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              character: { type: Type.STRING },
+              analysis: { type: Type.STRING },
+              issues: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["character", "analysis", "issues"]
+          }
+        },
+        worldBuildingGaps: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              topic: { type: Type.STRING },
+              issue: { type: Type.STRING },
+              fix: { type: Type.STRING }
+            },
+            required: ["topic", "issue", "fix"]
+          }
+        },
+        plotCoherence: {
+          type: Type.OBJECT,
+          properties: {
+            summary: { type: Type.STRING },
+            plotHoles: { type: Type.ARRAY, items: { type: Type.STRING } },
+            blueprintAlignment: { type: Type.STRING }
+          },
+          required: ["summary", "plotHoles", "blueprintAlignment"]
+        }
+      },
+      required: ["overallScore", "characterArcs", "worldBuildingGaps", "plotCoherence"]
+    };
+
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, storyAuditSchema),
+      {
+        name: `Kiểm toán toàn truyện: ${story.title}`,
+        type: 'plot_analysis',
+        priority: 'high'
+      }
+    );
+
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("AI không trả về dữ liệu JSON kiểm toán hợp lệ. Vui lòng thử lại.");
+    }
+
+    const rawScore = Number(parsed.overallScore);
+    const overallScore = Number.isFinite(rawScore) ? Math.max(0, Math.min(100, Math.round(rawScore))) : 0;
+
+    const characterArcs = Array.isArray(parsed.characterArcs)
+      ? parsed.characterArcs.map((arc: any) => ({
+          character: String(arc?.character || "Nhân vật"),
+          analysis: String(arc?.analysis || ""),
+          issues: Array.isArray(arc?.issues) ? arc.issues.map((x: any) => String(x)).filter(Boolean) : []
+        }))
+      : [];
+
+    const worldBuildingGaps = Array.isArray(parsed.worldBuildingGaps)
+      ? parsed.worldBuildingGaps.map((gap: any) => ({
+          topic: String(gap?.topic || "Thế giới & Quy tắc"),
+          issue: String(gap?.issue || ""),
+          fix: String(gap?.fix || "")
+        }))
+      : [];
+
+    const plotCoherence = {
+      summary: String(parsed.plotCoherence?.summary || "Chưa có tổng quan cốt truyện."),
+      plotHoles: Array.isArray(parsed.plotCoherence?.plotHoles)
+        ? parsed.plotCoherence.plotHoles.map((x: any) => String(x)).filter(Boolean)
+        : [],
+      blueprintAlignment: String(parsed.plotCoherence?.blueprintAlignment || "Chưa có dữ liệu đối chiếu Blueprint.")
+    };
+
+    return {
+      data: { overallScore, characterArcs, worldBuildingGaps, plotCoherence },
+      usageMetadata: response?.usageMetadata
+    };
   },
 
-  async auditChapterLogic(content: string, title: string, story: Story): Promise<any> {
-    const prompt = `Kiểm toán logic chương "${title}". Tìm lỗi xưng hô, vật lý hoặc mâu thuẫn nhân vật. JSON.`;
-    const response = await ai.models.generateContent({
-      model: getFlash(),
-      contents: [{ parts: [{ text: prompt }] }],
-      config: { responseMimeType: "application/json" }
-    });
-    return { data: JSON.parse(response.text || "{}"), usageMetadata: response.usageMetadata };
+  async auditChapterLogic(content: string, title: string, story: Story, chapterId?: string): Promise<any> {
+    const prompt = promptBuilderService.buildChapterLogicAuditPrompt(content, title, story, chapterId);
+    const chapterAuditSchema = {
+      type: Type.OBJECT,
+      properties: {
+        internalConsistency: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              issue: { type: Type.STRING },
+              suggestion: { type: Type.STRING }
+            },
+            required: ["issue", "suggestion"]
+          }
+        },
+        characterLogic: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              character: { type: Type.STRING },
+              issue: { type: Type.STRING },
+              suggestion: { type: Type.STRING }
+            },
+            required: ["character", "issue", "suggestion"]
+          }
+        },
+        worldRuleViolations: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              rule: { type: Type.STRING },
+              issue: { type: Type.STRING }
+            },
+            required: ["rule", "issue"]
+          }
+        },
+        pacingAnalysis: { type: Type.STRING }
+      },
+      required: ["internalConsistency", "characterLogic", "worldRuleViolations", "pacingAnalysis"]
+    };
+
+    const response = await requestThrottleService.enqueuePromise(
+      () => generateAuditJsonWithFallback(prompt, chapterAuditSchema),
+      {
+        name: `Kiểm toán logic: ${title}`,
+        type: 'plot_analysis',
+        priority: 'high'
+      }
+    );
+
+    const parsed = safeJsonParse<any>(response?.text, null);
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("AI không trả về dữ liệu JSON kiểm toán chương hợp lệ. Vui lòng thử lại.");
+    }
+
+    const internalConsistency = Array.isArray(parsed.internalConsistency)
+      ? parsed.internalConsistency.map((item: any) => ({
+          issue: String(item?.issue || ""),
+          suggestion: String(item?.suggestion || "")
+        })).filter((item: any) => item.issue)
+      : [];
+
+    const characterLogic = Array.isArray(parsed.characterLogic)
+      ? parsed.characterLogic.map((item: any) => ({
+          character: String(item?.character || "Nhân vật"),
+          issue: String(item?.issue || ""),
+          suggestion: String(item?.suggestion || "")
+        })).filter((item: any) => item.issue)
+      : [];
+
+    const worldRuleViolations = Array.isArray(parsed.worldRuleViolations)
+      ? parsed.worldRuleViolations.map((item: any) => ({
+          rule: String(item?.rule || "Quy tắc thế giới"),
+          issue: String(item?.issue || "")
+        })).filter((item: any) => item.issue)
+      : [];
+
+    const pacingAnalysis = String(parsed.pacingAnalysis || "").trim() || "Nhịp điệu chương ổn định, chưa ghi nhận bất thường đáng kể.";
+
+    return {
+      data: { internalConsistency, characterLogic, worldRuleViolations, pacingAnalysis },
+      usageMetadata: response?.usageMetadata
+    };
   },
 
   async analyzeVocabulary(content: string, interactionRules: string): Promise<any> {

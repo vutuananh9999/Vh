@@ -851,5 +851,216 @@ ${content}
 """
 
 BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH:`;
+  },
+
+  buildStoryAuditPrompt: (story: Story, focusChapterId?: string): string => {
+    const sortedChapters = [...(story.chapters || [])]
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map(ch => ({
+        ...ch,
+        content: ch.content?.trim() ? ch.content : (ch.translatedContent || '')
+      }));
+
+    const chapterContext = sortedChapters.length > 0
+      ? formatSmartChapterContext(sortedChapters, { maxTotalChars: 48000, focusChapterId })
+      : '(Chưa có chương truyện nào được viết)';
+
+    const activeKnowledge = (story.knowledgeLogs || [])
+      .filter(k => k.isActive)
+      .slice(-25)
+      .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
+      .join('\n') || '(Chưa có tri thức trích xuất)';
+
+    const activeEvolution = (story.evolutionLogs || [])
+      .filter(e => e.isActive)
+      .slice(-15)
+      .map(e => `- ${e.learnedRule}`)
+      .join('\n') || '(Chưa có)';
+
+    const charactersProfile = (story.characters || []).length > 0
+      ? story.characters.slice(0, 40).map(c => {
+          const details = [
+            `Vai trò: ${c.role || 'Chưa rõ'}`,
+            c.species ? `Chủng loài: ${c.species}` : '',
+            `Trạng thái: ${c.status || 'alive'}`,
+            c.currentLocation ? `Vị trí hiện tại: ${c.currentLocation}` : '',
+            c.healthStatus ? `Sức khỏe/Thương tích: ${c.healthStatus}` : '',
+            c.combatState ? `Trạng thái chiến đấu: ${c.combatState}` : '',
+            c.powerLevel ? `Cảnh giới/Sức mạnh: ${c.powerLevel}` : '',
+            c.abilities ? `Năng lực: ${c.abilities}` : '',
+            c.knowledge ? `Tri thức/Bí mật nắm giữ: ${c.knowledge}` : '',
+            c.traits?.length ? `Tính cách/Xưng hô: ${c.traits.join(', ')}` : '',
+            c.enemies ? `Kẻ thù: ${c.enemies}` : '',
+            c.description ? `Mô tả: ${c.description}` : ''
+          ].filter(Boolean).join(' | ');
+          return `- ${c.name}: ${details}`;
+        }).join('\n')
+      : '(Chưa có hồ sơ nhân vật)';
+
+    return `[NHIỆM VỤ TỐI THƯỢNG: KIỂM TOÁN TÍNH NHẤT QUÁN TOÀN BỘ TÁC PHẨM (DEEP CONSISTENCY AUDIT)]
+Bạn là Tổng Biên Tập & Chuyên gia Kiểm toán Logic Văn học (Principal Story Continuity Auditor).
+Hãy đọc kỹ TẤT CẢ dữ liệu World Bible, Hồ sơ nhân vật, Blueprint cốt truyện và Nội dung các chương dưới đây để thực hiện cuộc kiểm toán thực chất, khách quan và chính xác tuyệt đối.
+
+[QUY TẮC KIỂM TOÁN BẮT BUỘC]:
+1. 🔍 CHỈ BÁO CÁO DỰA TRÊN BẰNG CHỨNG THỰC TẾ: Mọi nhận xét, mâu thuẫn hoặc lỗ hổng logic PHẢI dẫn chiếu cụ thể tên chương (Vd: Chương 3), tên nhân vật, sự kiện hoặc quy tắc thế giới có trong dữ liệu bên dưới. KHÔNG bịa đặt chi tiết không tồn tại.
+2. 👤 ĐỐI CHIẾU NHÂN VẬT & ARCS: Kiểm tra xem hành động, tính cách (OOC), xưng hô, vết thương/trạng thái sống-chết, vị trí địa lý và tri thức của từng nhân vật xuất hiện trong các chương có khớp với Hồ sơ nhân vật và diễn biến chương trước hay không.
+3. 📜 ĐỐI CHIẾU CỐT TRUYỆN & BLUEPRINT: Tìm lỗ hổng logic (plot holes), lỗi dòng thời gian (timeline), sự kiện bị bỏ quên (unresolved hooks), chi tiết dịch thô/lặp đoạn nghiêm trọng (nếu có), và đánh giá mức độ bám sát với Dàn ý tổng (Blueprint).
+4. 🌍 ĐỐI CHIẾU THẾ GIỚI & QUY TẮC: Kiểm tra mâu thuẫn về hệ thống sức mạnh/phép thuật (Mechanics), quy tắc tương tác, địa lý, hậu cần/kinh tế hoặc thiết lập bối cảnh.
+5. 📊 CHẤM ĐIỂM THỰC CHẤT (overallScore từ 0 đến 100):
+   - 85-100: Rất chặt chẽ, gần như không có lỗi logic nghiêm trọng.
+   - 65-84: Tốt, có vài hạt sạn nhỏ về chi tiết, nhịp điệu hoặc chưa giải thích rõ.
+   - 40-64: Có một số mâu thuẫn đáng chú ý về nhân vật, timeline hoặc quy tắc thế giới.
+   - Dưới 40: Mâu thuẫn nghiêm trọng hoặc rời rạc lớn với World Bible.
+
+[HỒ SƠ TÁC PHẨM & WORLD BIBLE]:
+- Tên tác phẩm: "${story.title}"
+- Thể loại: ${story.genre || 'Chưa rõ'} | Góc nhìn (POV): ${story.pov || 'Chưa rõ'} | Xưng hô chuẩn: ${story.pronounStyle || 'Chưa rõ'}
+- Tóm tắt cốt truyện (Synopsis): ${story.synopsis || '(Chưa có)'}
+- Dàn ý tổng thể (Master Blueprint / Planning): ${story.planning || '(Chưa thiết lập)'}
+- Bối cảnh & Địa lý (Setting): ${story.setting || '(Chưa thiết lập)'}
+- Dòng thời gian hiện tại (Timeline): ${story.currentTimeline || '(Chưa thiết lập)'}
+- Quy tắc & Hệ thống sức mạnh (Mechanics): ${story.mechanics || '(Chưa thiết lập)'}
+- Quy tắc tương tác & Ràng buộc (Interaction Rules): ${story.interactionRules || '(Chưa thiết lập)'}
+- Chỉ thị bền vững (Persistent Directives): ${story.persistentDirectives || '(Không có)'}
+${story.logistics ? `- Hậu cần (Logistics): ${story.logistics}` : ''}
+${story.economy || story.trade ? `- Kinh tế & Thương mại: ${[story.economy, story.trade].filter(Boolean).join(' | ')}` : ''}
+${story.maps || story.officials ? `- Bản đồ & Quan chức/Thế lực: ${[story.maps, story.officials].filter(Boolean).join(' | ')}` : ''}
+
+[TRI THỨC ĐÃ KHÓA TRONG BỘ NHỚ (KNOWLEDGE LOGS)]:
+${activeKnowledge}
+
+[QUY TẮC TÁC GIẢ ĐÃ HỌC (EVOLUTION LOGS)]:
+${activeEvolution}
+
+[HỒ SƠ NHÂN VẬT HIỆN TẠI (${(story.characters || []).length} nhân vật)]:
+${charactersProfile}
+
+[NỘI DUNG CÁC CHƯƠNG TRUYỆN (${sortedChapters.length} chương)]:
+${chapterContext}
+
+[ĐỊNH DẠNG ĐẦU RA JSON BẮT BUỘC]:
+Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG kèm markdown ngoài JSON):
+{
+  "overallScore": 78,
+  "characterArcs": [
+    {
+      "character": "Tên nhân vật",
+      "analysis": "Đánh giá tổng quan tuyến phát triển, động cơ và tính nhất quán của nhân vật qua các chương.",
+      "issues": ["Liệt kê cụ thể mâu thuẫn (kèm tên chương), hoặc mảng rỗng [] nếu nhất quán"]
+    }
+  ],
+  "worldBuildingGaps": [
+    {
+      "topic": "Chủ đề (Vd: Hệ thống phép thuật / Địa lý / Thời gian / Kinh tế)",
+      "issue": "Mô tả cụ thể lỗ hổng hoặc sự vi phạm quy tắc đã phát hiện",
+      "fix": "Đề xuất cách chỉnh sửa cụ thể để vá lỗ hổng"
+    }
+  ],
+  "plotCoherence": {
+    "summary": "Đánh giá tổng quan mạch truyện hiện tại qua các chương đã viết.",
+    "plotHoles": ["Danh sách từng lỗ hổng logic / mâu thuẫn tình tiết cụ thể phát hiện được (hoặc [] nếu không có)"],
+    "blueprintAlignment": "Đánh giá chi tiết mức độ bám sát Dàn ý tổng thể (Blueprint) và các điểm đã chệch hướng (nếu có)."
+  }
+}`;
+  },
+
+  buildChapterLogicAuditPrompt: (content: string, title: string, story: Story, chapterId?: string): string => {
+    const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const currentIdx = chapterId
+      ? sortedChapters.findIndex(c => c.id === chapterId)
+      : sortedChapters.findIndex(c => c.title === title);
+
+    const activeChapter = currentIdx >= 0 ? sortedChapters[currentIdx] : undefined;
+    const prevChapter = currentIdx > 0 ? sortedChapters[currentIdx - 1] : undefined;
+    const nextChapter = currentIdx >= 0 && currentIdx < sortedChapters.length - 1 ? sortedChapters[currentIdx + 1] : undefined;
+
+    const prevContent = prevChapter
+      ? (prevChapter.content?.trim() || prevChapter.translatedContent?.trim() || '')
+      : '';
+    const prevContext = prevChapter
+      ? `- Chương trước (${prevChapter.title}):
+  * Tóm tắt: ${prevChapter.summary || prevChapter.outline || '(Chưa có)'}
+  * Đoạn kết chương trước (để đối chiếu điểm nối): ${prevContent ? prevContent.slice(-1500) : '(Trống)'}`
+      : '- Đây là chương đầu tiên hoặc chưa có chương liền trước.';
+
+    const nextContext = nextChapter
+      ? `- Chương kế tiếp (${nextChapter.title}): ${nextChapter.summary || nextChapter.outline || '(Chưa có tóm tắt/đề cương)'}`
+      : '';
+
+    const activeKnowledge = (story.knowledgeLogs || [])
+      .filter(k => k.isActive)
+      .slice(-15)
+      .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
+      .join('\n') || '(Không có)';
+
+    const charactersProfile = (story.characters || []).length > 0
+      ? story.characters.slice(0, 30).map(c =>
+          `- ${c.name} (${c.role || 'Nhân vật'}, Trạng thái: ${c.status || 'alive'}${c.currentLocation ? `, Vị trí: ${c.currentLocation}` : ''}${c.healthStatus ? `, Thương tích: ${c.healthStatus}` : ''}${c.traits?.length ? `, Tính cách/Xưng hô: ${c.traits.join(', ')}` : ''}): ${c.description || ''}`
+        ).join('\n')
+      : '(Chưa có hồ sơ nhân vật)';
+
+    const safeContent = content.length > 40000
+      ? sampleManuscript(content, 40000)
+      : content;
+
+    return `[NHIỆM VỤ: KIỂM TOÁN LOGIC & VĂN PHONG CHUYÊN SÂU CHO CHƯƠNG TRUYỆN]
+Bạn là Biên Tập Viên Pháp Y Văn Học (Forensic Story Editor). Hãy kiểm toán kỹ lưỡng từng phân đoạn trong chương dưới đây đối chiếu với chính nội dung chương đó, chương liền kề, hồ sơ nhân vật và quy tắc thế giới.
+
+[THÔNG TIN TÁC PHẨM & CHƯƠNG]:
+- Tác phẩm: "${story.title}" | Thể loại: ${story.genre || 'Chưa rõ'}
+- Góc nhìn (POV): ${story.pov || 'Chưa rõ'} | Quy tắc xưng hô chuẩn: ${story.pronounStyle || 'Chưa rõ'}
+- Tên chương đang kiểm toán: "${title}"
+${activeChapter?.timeSetting ? `- Mốc thời gian của chương: ${activeChapter.timeSetting}` : ''}
+${activeChapter?.outline ? `- Đề cương dự kiến của chương: ${activeChapter.outline}` : ''}
+- Bối cảnh & Luật thế giới: ${story.setting || '(Chưa thiết lập)'}
+- Cơ chế sức mạnh / Thuật ngữ (Mechanics): ${story.mechanics || '(Chưa thiết lập)'}
+- Quy tắc tương tác (Interaction Rules): ${story.interactionRules || '(Chưa thiết lập)'}
+${story.persistentDirectives ? `- Chỉ thị phong cách bền vững: ${story.persistentDirectives}` : ''}
+
+[NGỮ CẢNH LIỀN KỀ]:
+${prevContext}
+${nextContext}
+
+[TRI THỨC ĐÃ KHÓA]:
+${activeKnowledge}
+
+[NHÂN VẬT LIÊN QUAN]:
+${charactersProfile}
+
+[NỘI DUNG ĐẦY ĐỦ CỦA CHƯƠNG "${title}" (${content.length.toLocaleString()} ký tự)]:
+"""
+${safeContent}
+"""
+
+[TIÊU CHÍ KIỂM TOÁN BẮT BUỘC]:
+1. **internalConsistency (Mâu thuẫn Nội tại)**:
+   - Kiểm tra lỗi vật lý/không gian/thời gian (đang ở nơi A bỗng xuất hiện ở B không chuyển cảnh, ngày/đêm đảo lộn, vật phẩm biến mất/xuất hiện vô lý, vết thương bỗng lành).
+   - Kiểm tra sự nối tiếp với đoạn kết chương trước.
+   - Kiểm tra lỗi biên tập/dịch thuật nghiêm trọng (đoạn văn bị lặp, câu cụt nghĩa, đổi ngôi kể bất thường).
+   - Nếu không có lỗi, trả về mảng rỗng [].
+2. **characterLogic (Nhân vật / OOC / Xưng hô)**:
+   - Kiểm tra hành vi trái tính cách/động cơ (Out of Character), biết thông tin lẽ ra chưa biết, hoặc lỗi XƯNG HÔ bất nhất (Vd: lúc gọi "ngươi-ta", lúc nhảy sang "cậu-tớ" hay sai thứ bậc vai vế).
+   - Nếu hợp lý hoàn toàn, trả về mảng rỗng [].
+3. **worldRuleViolations (Vi phạm Quy tắc Thế giới)**:
+   - Kiểm tra việc sử dụng phép thuật/cảnh giới/công nghệ/văn hóa trái với Mechanics, Setting hoặc Knowledge Logs đã khóa.
+   - Nếu tuân thủ hoàn toàn, trả về mảng rỗng [].
+4. **pacingAnalysis (Phân tích Nhịp điệu & Pacing)**:
+   - Đánh giá ngắn gọn, súc tích, thực tế (3-5 câu) về nhịp truyện, sự cân bằng giữa thoại/hành động/miêu tả, điểm mạnh và chỗ còn lê thê hoặc vội vàng trong chính chương này.
+
+[ĐỊNH DẠNG ĐẦU RA JSON BẮT BUỘC]:
+Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG kèm markdown ngoài JSON):
+{
+  "internalConsistency": [
+    { "issue": "Mô tả lỗi nội tại cụ thể (trích dẫn chi tiết trong chương)", "suggestion": "Cách sửa cụ thể" }
+  ],
+  "characterLogic": [
+    { "character": "Tên nhân vật", "issue": "Lỗi tính cách / tri thức / xưng hô cụ thể", "suggestion": "Cách điều chỉnh cụ thể" }
+  ],
+  "worldRuleViolations": [
+    { "rule": "Tên quy tắc / thiết lập bị vi phạm", "issue": "Chi tiết vi phạm trong chương" }
+  ],
+  "pacingAnalysis": "Nhận xét chi tiết về nhịp điệu, cao trào và chất lượng hành văn của chương này."
+}`;
   }
 };
+
