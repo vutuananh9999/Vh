@@ -5,6 +5,7 @@ import { PRONOUN_STYLES, compilePronounStyle } from '../constants';
 import { Character, EntityType } from '../types';
 import { TokenUsageMeter } from './TokenUsageMeter';
 import { calculateWizardMetrics } from '../services/tokenEstimator';
+import { geminiService } from '../services/geminiService';
 import { parseEpubFile } from '../utils/epubHelper';
 
 const SUGGESTED_GENRES = [
@@ -105,9 +106,9 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
   // Active Model State for Token Calculation & Preview
   const [activeModel, setActiveModel] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash';
+      return geminiService.getFlash();
     }
-    return 'gemini-3.8-flash';
+    return 'gemini-4-hydrogen';
   });
 
   const handleModelChange = (newModelId: string) => {

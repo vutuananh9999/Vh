@@ -84,7 +84,7 @@ class TokenTrackerService {
 
   private getModelType(modelId: string): 'pro' | 'flash' {
     const id = modelId.toLowerCase();
-    if (id.includes('pro')) {
+    if (id.includes('pro') || id.includes('argon') || id.includes('carbon')) {
       return 'pro';
     }
     return 'flash'; // Default to flash for anything else

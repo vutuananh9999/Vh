@@ -242,8 +242,8 @@ class PlotDebugLoggerService {
 1. Nguyên nhân: Model "${item.model}" trên máy chủ Google đang bị quá tải đột biến do lượng truy cập toàn cầu quá lớn. Request bị xếp hàng đợi quá lâu (40-90 giây) dẫn đến lỗi UNAVAILABLE.
 2. Tại sao Preview không bị?: Preview trên AI Studio có hạ tầng ưu tiên riêng. Khi chạy trên domain Netlify, request qua Google Free API sẽ bị nghẽn nếu model đó đang hot (như 3.7 Flash).
 3. Giải pháp Khắc phục tức thì:
-• Chuyển sang model 'gemini-2.5-flash' hoặc 'gemini-2.0-flash' trong Cài đặt ⚙️ (phản hồi siêu tốc trong 0.5s - 1s, cực kỳ ổn định, không bị nghẽn 503).
-• Tạm thời không sử dụng 'gemini-3.7-flash' cho đến khi Google mở rộng thêm hạ tầng.`;
+• Chuyển sang model 'gemini-4-hydrogen' hoặc 'gemini-3.1-flash-lite' trong Cài đặt ⚙️ (phản hồi siêu tốc, ổn định, ít bị nghẽn 503).
+• Hoặc thử model 'gemini-3.8-flash' / 'gemini-flash-latest' trong danh sách dự phòng.`;
     } else if (errLower.includes('429') || errLower.includes('resource_exhausted') || errLower.includes('quota')) {
       status = 'rate_limit_429';
       statusCode = 429;
@@ -251,7 +251,7 @@ class PlotDebugLoggerService {
 1. Nguyên nhân: Key "${item.keyMask}" đã chạm hạn mức Tần suất (15 RPM) hoặc Dung lượng Token/phút (TPM) của Google.
 2. Tại sao Preview không bị?: Preview chạy trên container AI Studio nội bộ có quota chuyên biệt. Khi deploy lên Netlify, request gọi trực tiếp từ trình duyệt qua Key cá nhân nên tuân thủ nghiêm ngặt Free Quota của Google.
 3. Giải pháp:
-• Chuyển sang model 'gemini-2.5-flash' hoặc 'gemini-2.0-flash' (có TPM cao hơn nhiều so với 3.7/Pro).
+• Chuyển sang model 'gemini-4-hydrogen' hoặc 'gemini-3.1-flash-lite' (có TPM cao hơn nhiều so với dòng Pro/Argon/Carbon).
 • Thêm các Key từ tài khoản Google khác nhau (không cùng Project) vào Cài đặt ⚙️.
 • Chờ 30-60s để Google tự động giải phóng hạn mức.`;
     } else if (errLower.includes('403') || errLower.includes('permission_denied')) {

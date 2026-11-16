@@ -14,8 +14,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [expandedStatsIndex, setExpandedStatsIndex] = useState<number | null>(null);
     const [bulkText, setBulkText] = useState("");
     const [showBulkInput, setShowBulkInput] = useState(false);
-    const [modelPro, setModelPro] = useState("gemini-3.1-pro-preview");
-    const [modelFlash, setModelFlash] = useState("gemini-3.8-flash");
+    const [modelPro, setModelPro] = useState("gemini-4-argon");
+    const [modelFlash, setModelFlash] = useState("gemini-4-hydrogen");
     const [testingIndex, setTestingIndex] = useState<number | null>(null);
     const [testResults, setTestResults] = useState<{ [key: number]: { success: boolean; message: string } }>({});
     const [isFetchingAllStatuses, setIsFetchingAllStatuses] = useState(false);
@@ -60,8 +60,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     }
                 }
             }
-            setModelPro(localStorage.getItem('aetheria_model_pro') || "gemini-3.1-pro-preview");
-            setModelFlash(localStorage.getItem('aetheria_model_flash') || "gemini-3.8-flash");
+            setModelPro(geminiService.getPro());
+            setModelFlash(geminiService.getFlash());
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
@@ -218,8 +218,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             localStorage.removeItem('aetheria_api_key');
         }
         
-        localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-3.1-pro-preview');
-        localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-3.8-flash');
+        localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-4-argon');
+        localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-4-hydrogen');
         
         // Reset flags for models
         geminiService.resetProModelFailed();
@@ -813,7 +813,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                                                 {/* Flash stats */}
                                                                 <div className="space-y-1">
                                                                     <div className="flex justify-between text-[10px]">
-                                                                        <span className="text-gray-400 font-medium">Model Flash (gemini-3.7-flash)</span>
+                                                                        <span className="text-gray-400 font-medium">Model Flash ({modelFlash})</span>
                                                                         <span className="text-gray-400 font-mono">{(1500 - stats.rpdUsed)} / 1,500 RPD</span>
                                                                     </div>
                                                                     <div className="w-full bg-gray-900 rounded-full h-1 overflow-hidden">
@@ -831,7 +831,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                                                 {/* Pro stats */}
                                                                 <div className="space-y-1 pt-1">
                                                                     <div className="flex justify-between text-[10px]">
-                                                                        <span className="text-gray-400 font-medium">Model Pro (gemini-3.1-pro-preview)</span>
+                                                                        <span className="text-gray-400 font-medium">Model Pro ({modelPro})</span>
                                                                         <span className="text-gray-400 font-mono">{(50 - stats.rpdUsed)} / 50 RPD</span>
                                                                     </div>
                                                                     <div className="w-full bg-gray-900 rounded-full h-1 overflow-hidden">
@@ -879,18 +879,19 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     value={modelPro}
                                     onChange={(e) => setModelPro(e.target.value)}
                                 >
-                                    <optgroup label="Dòng Pro (Suy luận sâu & Cốt truyện phức tạp)">
-                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 - Mới nhất, suy luận sâu & tối ưu cốt truyện)</option>
+                                    <optgroup label="Dòng Pro & Deep Reasoning (4.0 Mới nhất → 3.1)">
+                                        <option value="gemini-4-argon">gemini-4-argon (Pro 4 Argon - Mới nhất, viết & suy luận logic đỉnh cao)</option>
+                                        <option value="gemini-4-carbon">gemini-4-carbon (Carbon 4 - Suy luận sâu đa tầng, kiểm toán & kiến trúc)</option>
                                         <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6 - Suy luận chuyên sâu)</option>
-                                        <option value="gemini-2.5-pro">gemini-2.5-pro (Pro 2.5 - Cốt truyện ổn định)</option>
+                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 Preview - Suy luận cốt truyện)</option>
                                     </optgroup>
-                                    <optgroup label="Dòng Flash (Tốc độ cao & Hạn mức rộng)">
-                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Mới nhất, tốc độ cao & hỗ trợ mọi Key)</option>
+                                    <optgroup label="Dòng Flash (4.0 Mới nhất → 3.1)">
+                                        <option value="gemini-4-hydrogen">gemini-4-hydrogen (Flash 4 Hydrogen - Mới nhất, nhanh & hỗ trợ mọi Key)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao & ổn định)</option>
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Hybrid reasoning)</option>
+                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 tốt nhất)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
-                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5 - Dự phòng)</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -906,18 +907,19 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     value={modelFlash}
                                     onChange={(e) => setModelFlash(e.target.value)}
                                 >
-                                    <optgroup label="Dòng Flash (Khuyên dùng)">
-                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Mặc định Flash 3.8 - Mới nhất, tốc độ cao & hỗ trợ mọi Key)</option>
+                                    <optgroup label="Dòng Flash Khuyên Dùng (4.0 Mới nhất → 3.1)">
+                                        <option value="gemini-4-hydrogen">gemini-4-hydrogen (Mặc định Flash 4 Hydrogen - Mới nhất, hỗ trợ mọi Key)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao & ổn định)</option>
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Xử lý ngữ cảnh nhanh, thinking)</option>
+                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 cực tốt)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
-                                        <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6)</option>
-                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5)</option>
                                     </optgroup>
-                                    <optgroup label="Dòng Pro (Nếu muốn Chat bằng model mạnh hơn)">
-                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 - Suy luận sâu nhất)</option>
+                                    <optgroup label="Dòng Pro & Deep Reasoning (4.0 Mới nhất → 3.1)">
+                                        <option value="gemini-4-argon">gemini-4-argon (Pro 4 Argon - Suy luận sâu dòng 4)</option>
+                                        <option value="gemini-4-carbon">gemini-4-carbon (Carbon 4 - Deep Reasoning tối đa)</option>
                                         <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6)</option>
-                                        <option value="gemini-2.5-pro">gemini-2.5-pro (Pro 2.5)</option>
+                                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 Preview)</option>
                                     </optgroup>
                                 </select>
                             </div>

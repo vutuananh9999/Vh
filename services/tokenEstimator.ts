@@ -7,19 +7,33 @@ export interface ModelContextDef {
 }
 
 export const MODEL_CONTEXT_LIMITS: Record<string, ModelContextDef> = {
+  'gemini-4-hydrogen': {
+    id: 'gemini-4-hydrogen',
+    name: 'Gemini 4 Hydrogen (Flash 4)',
+    contextLimit: 1048576, // 1M tokens
+    tpmFreeLimit: 1000000,
+    description: '1,048,576 tokens (~1M). Thế hệ 4 mới nhất, cân bằng tốc độ & tư duy sâu, hỗ trợ mọi Key.'
+  },
+  'gemini-4-argon': {
+    id: 'gemini-4-argon',
+    name: 'Gemini 4 Argon (Pro 4)',
+    contextLimit: 2097152, // 2M tokens
+    tpmFreeLimit: 32000,
+    description: '2,097,152 tokens (~2M). Dòng Pro thế hệ 4: suy luận phức tạp, viết & biên tập chuyên sâu.'
+  },
+  'gemini-4-carbon': {
+    id: 'gemini-4-carbon',
+    name: 'Gemini 4 Carbon (Deep Reasoning)',
+    contextLimit: 2097152, // 2M tokens
+    tpmFreeLimit: 32000,
+    description: '2,097,152 tokens (~2M). Suy luận đa tầng sâu nhất dòng 4 cho kiến trúc cốt truyện & kiểm toán logic.'
+  },
   'gemini-3.8-flash': {
     id: 'gemini-3.8-flash',
     name: 'Gemini 3.8 Flash',
     contextLimit: 1048576, // 1M tokens
     tpmFreeLimit: 1000000,
-    description: '1,048,576 tokens (~1M). Thế hệ mới nhất, tốc độ cao, tư duy sắc bén & hỗ trợ mọi Key.'
-  },
-  'gemini-3.1-pro-preview': {
-    id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro Preview',
-    contextLimit: 2097152, // 2M tokens
-    tpmFreeLimit: 32000,
-    description: '2,097,152 tokens (~2M). Suy luận logic sâu nhất & kiến tạo cốt truyện phức tạp.'
+    description: '1,048,576 tokens (~1M). Thế hệ 3.8 tốc độ cao, ổn định & hỗ trợ mọi Key.'
   },
   'gemini-3.7-flash': {
     id: 'gemini-3.7-flash',
@@ -27,6 +41,27 @@ export const MODEL_CONTEXT_LIMITS: Record<string, ModelContextDef> = {
     contextLimit: 1048576,
     tpmFreeLimit: 1000000,
     description: '1,048,576 tokens (~1M). Xử lý ngữ cảnh cực nhanh, hybrid reasoning.'
+  },
+  'gemini-3.6-pro': {
+    id: 'gemini-3.6-pro',
+    name: 'Gemini 3.6 Pro',
+    contextLimit: 2097152, // 2M tokens
+    tpmFreeLimit: 32000,
+    description: '2,097,152 tokens (~2M). Suy luận chuyên sâu dòng 3.6.'
+  },
+  'gemini-3.6-flash': {
+    id: 'gemini-3.6-flash',
+    name: 'Gemini 3.6 Flash',
+    contextLimit: 1048576,
+    tpmFreeLimit: 1000000,
+    description: '1,048,576 tokens (~1M). Ổn định & tương thích cao.'
+  },
+  'gemini-3.1-pro-preview': {
+    id: 'gemini-3.1-pro-preview',
+    name: 'Gemini 3.1 Pro Preview',
+    contextLimit: 2097152, // 2M tokens
+    tpmFreeLimit: 32000,
+    description: '2,097,152 tokens (~2M). Suy luận logic sâu dòng 3.1.'
   },
   'gemini-3.1-flash-lite': {
     id: 'gemini-3.1-flash-lite',
@@ -41,38 +76,10 @@ export const MODEL_CONTEXT_LIMITS: Record<string, ModelContextDef> = {
     contextLimit: 1048576,
     tpmFreeLimit: 1000000,
     description: '1,048,576 tokens (~1M). Luôn tự động trỏ về phiên bản Flash mới nhất của Google.'
-  },
-  'gemini-3.6-pro': {
-    id: 'gemini-3.6-pro',
-    name: 'Gemini 3.6 Pro',
-    contextLimit: 2097152, // 2M tokens
-    tpmFreeLimit: 32000,
-    description: '2,097,152 tokens (~2M). Suy luận chuyên sâu (Free Tier: 32k TPM).'
-  },
-  'gemini-3.6-flash': {
-    id: 'gemini-3.6-flash',
-    name: 'Gemini 3.6 Flash',
-    contextLimit: 1048576,
-    tpmFreeLimit: 1000000,
-    description: '1,048,576 tokens (~1M). Ổn định & tương thích cao.'
-  },
-  'gemini-2.5-flash': {
-    id: 'gemini-2.5-flash',
-    name: 'Gemini 2.5 Flash',
-    contextLimit: 1048576,
-    tpmFreeLimit: 1000000,
-    description: '1,048,576 tokens (~1M). Hạn mức dự phòng ổn định.'
-  },
-  'gemini-2.5-pro': {
-    id: 'gemini-2.5-pro',
-    name: 'Gemini 2.5 Pro',
-    contextLimit: 2097152,
-    tpmFreeLimit: 32000,
-    description: '2,097,152 tokens (~2M). Dự phòng suy luận sâu.'
   }
 };
 
-export const DEFAULT_MODEL_DEF = MODEL_CONTEXT_LIMITS['gemini-3.8-flash'];
+export const DEFAULT_MODEL_DEF = MODEL_CONTEXT_LIMITS['gemini-4-hydrogen'];
 
 /**
  * Estimates token count for a string with accurate weights for Vietnamese, English, and punctuation.
@@ -152,7 +159,7 @@ export function calculateWizardMetrics(
     planning: string;
     currentStep: number;
   },
-  modelId = 'gemini-3.8-flash'
+  modelId = 'gemini-4-hydrogen'
 ): WizardPromptMetrics {
   const model = MODEL_CONTEXT_LIMITS[modelId] || DEFAULT_MODEL_DEF;
 
@@ -305,8 +312,8 @@ export function calculateWizardMetrics(
   }
 
   // Check if Pro model has Free Tier TPM quota issue (32k tokens/min on Free Tier)
-  if (model.id.includes('pro') && totalTokens > model.tpmFreeLimit) {
-    tpmFreeWarning = `💡 Lưu ý Free Tier: Gói Pro miễn phí của Google chỉ cho phép 32,000 Token/phút (TPM). Tổng thiết lập hiện tại (~${totalTokens.toLocaleString()} tokens) có thể gây lỗi 429 nếu gọi liên tục bằng Model Pro. Nên chọn ${MODEL_CONTEXT_LIMITS['gemini-3.8-flash'].name} (1,000,000 TPM) để vận hành mượt mà.`;
+  if ((model.id.includes('pro') || model.id.includes('argon') || model.id.includes('carbon')) && totalTokens > model.tpmFreeLimit) {
+    tpmFreeWarning = `💡 Lưu ý Free Tier: Gói Pro miễn phí của Google chỉ cho phép 32,000 Token/phút (TPM). Tổng thiết lập hiện tại (~${totalTokens.toLocaleString()} tokens) có thể gây lỗi 429 nếu gọi liên tục bằng Model Pro. Nên chọn ${MODEL_CONTEXT_LIMITS['gemini-4-hydrogen'].name} (1,000,000 TPM) để vận hành mượt mà.`;
   }
 
   return {

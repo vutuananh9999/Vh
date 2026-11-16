@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, GenerateContentResponse, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Type, HarmCategory, HarmBlockThreshold, ThinkingLevel } from "@google/genai";
 import { Character, ChatMessage, Story, Chapter, ExtractionCategory, WebInspiration, WritingDNA } from "../types.ts";
 import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterContext, sampleManuscript } from "./promptBuilderService.ts";
 import { tokenTracker } from "./tokenTracker.ts";
@@ -61,7 +61,8 @@ function markKeyRateLimited(key: string, cooldownMs: number = 25000, model?: str
   const cleanK = cleanKey(key);
   if (model) {
     keyCooldowns.set(`${cleanK}:${model}`, Date.now() + cooldownMs);
-    if (model.includes('pro') || model === getPro()) {
+    const lowerModel = model.toLowerCase();
+    if (lowerModel.includes('pro') || lowerModel.includes('argon') || lowerModel.includes('carbon') || model === getPro()) {
       proModelFailedUntil = Date.now() + 180000;
     }
   } else {
@@ -245,50 +246,72 @@ function createGenAI(apiKey: string): GoogleGenAI {
 let proModelFailed = false;
 let proModelFailedUntil = 0;
 
+const DEFAULT_FLASH_MODEL = 'gemini-4-hydrogen';
+const DEFAULT_PRO_MODEL = 'gemini-4-argon';
+
 const VALID_MODELS = new Set([
+  'gemini-4-hydrogen',
+  'gemini-4-argon',
+  'gemini-4-carbon',
   'gemini-3.8-flash',
-  'gemini-3.1-pro-preview',
   'gemini-3.7-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-flash-latest',
   'gemini-3.6-pro',
   'gemini-3.6-flash',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro'
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest'
 ]);
 
 function normalizeModel(modelName: string | null | undefined, fallback: string): string {
   if (!modelName) return fallback;
   const clean = modelName.trim().toLowerCase();
   if (VALID_MODELS.has(clean)) return clean;
+  if (clean.includes('hydrogen') || (clean.includes('4') && !clean.includes('argon') && !clean.includes('carbon'))) return 'gemini-4-hydrogen';
+  if (clean.includes('argon')) return 'gemini-4-argon';
+  if (clean.includes('carbon')) return 'gemini-4-carbon';
   if (clean.includes('3.8')) return 'gemini-3.8-flash';
-  if (clean.includes('3.1') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
-  if (clean.includes('3.1') && (clean.includes('lite') || clean.includes('flash'))) return 'gemini-3.1-flash-lite';
-  if (clean.includes('latest')) return 'gemini-flash-latest';
   if (clean.includes('3.7')) return 'gemini-3.7-flash';
   if (clean.includes('3.6') && clean.includes('pro')) return 'gemini-3.6-pro';
   if (clean.includes('3.6')) return 'gemini-3.6-flash';
-  if (clean.includes('pro')) return 'gemini-3.1-pro-preview';
-  if (clean.includes('2.5') && clean.includes('pro')) return 'gemini-2.5-pro';
-  if (clean.includes('2.5')) return 'gemini-2.5-flash';
-  if (clean.includes('2.0')) return 'gemini-3.8-flash'; // Convert deprecated 2.0 to 3.8
+  if (clean.includes('3.1') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
+  if (clean.includes('3.1') && (clean.includes('lite') || clean.includes('flash'))) return 'gemini-3.1-flash-lite';
+  if (clean.includes('latest')) return 'gemini-flash-latest';
+  if (clean.includes('2.5') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
+  if (clean.includes('2.5') || clean.includes('2.0')) return 'gemini-4-hydrogen';
+  if (clean.includes('pro')) return 'gemini-4-argon';
   return fallback;
 }
 
-const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), 'gemini-3.8-flash');
+const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), DEFAULT_FLASH_MODEL);
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return normalizeModel(localStorage.getItem('aetheria_model_pro'), 'gemini-3.1-pro-preview');
+  return normalizeModel(localStorage.getItem('aetheria_model_pro'), DEFAULT_PRO_MODEL);
 };
 
 function getModelCascade(requestedModel: string): string[] {
   const normalized = normalizeModel(requestedModel, getFlash());
-  const allProModels = ['gemini-3.1-pro-preview', 'gemini-3.8-flash', 'gemini-3.6-pro', 'gemini-3.7-flash', 'gemini-2.5-pro', 'gemini-3.1-flash-lite'];
-  const allFlashModels = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'];
-  
-  if (normalized.includes('pro')) {
+  const allProModels = [
+    'gemini-4-argon',
+    'gemini-4-carbon',
+    'gemini-3.1-pro-preview',
+    'gemini-3.6-pro',
+    'gemini-4-hydrogen',
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.1-flash-lite'
+  ];
+  const allFlashModels = [
+    'gemini-4-hydrogen',
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.6-flash'
+  ];
+
+  if (normalized.includes('pro') || normalized.includes('argon') || normalized.includes('carbon')) {
     return Array.from(new Set([normalized, ...allProModels]));
   }
   return Array.from(new Set([normalized, ...allFlashModels]));
@@ -297,7 +320,43 @@ function getModelCascade(requestedModel: string): string[] {
 function cleanConfigForModel(config: any, targetModel: string): any {
   if (!config) return config;
   const newConfig = { ...config };
-  const supportsThinking = targetModel.includes('3.8') || targetModel.includes('3.7') || targetModel.includes('3.1-pro') || targetModel.includes('2.5-pro');
+  const isGemini4 = targetModel.startsWith('gemini-4-');
+
+  if (isGemini4) {
+    delete newConfig.temperature;
+    delete newConfig.topP;
+    delete newConfig.topK;
+    delete newConfig.candidateCount;
+
+    if (newConfig.thinkingConfig) {
+      const budget = newConfig.thinkingConfig.thinkingBudget;
+      const existingLevel = newConfig.thinkingConfig.thinkingLevel;
+      let nextLevel: ThinkingLevel | undefined = existingLevel;
+
+      if (!nextLevel && typeof budget === 'number') {
+        if (budget <= 512) nextLevel = ThinkingLevel.LOW;
+        else if (budget <= 1500) nextLevel = ThinkingLevel.MEDIUM;
+        else nextLevel = ThinkingLevel.HIGH;
+      }
+
+      if (nextLevel === ThinkingLevel.MINIMAL) {
+        nextLevel = ThinkingLevel.LOW;
+      }
+
+      if (nextLevel) {
+        newConfig.thinkingConfig = { thinkingLevel: nextLevel };
+      } else {
+        delete newConfig.thinkingConfig;
+      }
+    }
+    return newConfig;
+  }
+
+  const supportsThinking =
+    targetModel.includes('3.8') ||
+    targetModel.includes('3.7') ||
+    targetModel.includes('3.6-pro') ||
+    targetModel.includes('3.1-pro');
   if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
@@ -437,8 +496,13 @@ class DynamicAI {
                   }
                 }
 
-                if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
-                  console.warn(`Model ${currentModelId} không tồn tại trên endpoint, chuyển sang model kế tiếp...`);
+                if (
+                  msg.includes("404") ||
+                  msg.includes("not found") ||
+                  msg.includes("NOT_FOUND") ||
+                  (is403 && !hasSearch)
+                ) {
+                  console.warn(`Model ${currentModelId} không khả dụng hoặc không có quyền trên endpoint (${msg.slice(0, 80)}), chuyển sang model kế tiếp...`);
                   break;
                 }
 
@@ -560,8 +624,13 @@ class DynamicAI {
                   }
                 }
 
-                if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
-                  console.warn(`Model ${currentModelId} không tồn tại trên stream, thử model tiếp theo...`);
+                if (
+                  msg.includes("404") ||
+                  msg.includes("not found") ||
+                  msg.includes("NOT_FOUND") ||
+                  (is403 && !hasSearch)
+                ) {
+                  console.warn(`Model ${currentModelId} không khả dụng trên stream, thử model tiếp theo...`);
                   break;
                 }
 
@@ -811,19 +880,19 @@ class DynamicAI {
 }
 const ai = new DynamicAI() as unknown as GoogleGenAI;
 
-const MODEL_EMBEDDING = 'gemini-embedding-2-preview';
+const MODEL_EMBEDDING = 'gemini-embedding-2';
 const MODEL_VEO = 'veo-3.1-lite-generate-preview';
 
 // Helper for safe content generation with fallback
 async function safeGenerateContent(params: { model: string, contents: any, config?: any }): Promise<any> {
   const fallbackModels = [
     params.model,
+    'gemini-4-hydrogen',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.1-flash-lite',
     'gemini-flash-latest',
-    'gemini-3.6-flash',
-    'gemini-2.5-flash'
+    'gemini-3.6-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -1206,12 +1275,12 @@ async function generateAuditJsonWithFallback(prompt: string, responseSchema: any
 async function* safeGenerateContentStream(params: { model: string, contents: any, config?: any }): AsyncGenerator<GenerateContentResponse, void, unknown> {
   const fallbackModels = [
     params.model,
+    'gemini-4-hydrogen',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.1-flash-lite',
     'gemini-flash-latest',
-    'gemini-3.6-flash',
-    'gemini-2.5-flash'
+    'gemini-3.6-flash'
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
@@ -1265,11 +1334,11 @@ export const geminiService = {
     try {
       const testAI = createGenAI(key.trim());
       
-      // Thử thực tế generateContent trước bằng gemini-3.8-flash để kiểm tra xem key có bị dính 429 / hết hạn mức không.
+      // Thử thực tế generateContent trước bằng gemini-4-hydrogen để kiểm tra xem key có bị dính 429 / hết hạn mức không.
       // (Vì models.list() chỉ kiểm tra xác thực signature của key chứ không kiểm tra được hạn mức sinh văn bản thực tế).
       try {
         const response = await testAI.models.generateContent({
-          model: "gemini-3.8-flash",
+          model: "gemini-4-hydrogen",
           contents: "Hi",
           config: { maxOutputTokens: 2 }
         });
@@ -1311,7 +1380,7 @@ export const geminiService = {
       }
 
       // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash", "gemini-2.5-flash"];
+      const modelsToTry = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash"];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {

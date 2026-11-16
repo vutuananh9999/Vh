@@ -10,6 +10,7 @@ import { BilingualReviewModal } from './BilingualReviewModal.tsx';
 import { TranslationSettingsModal } from './TranslationSettingsModal.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { tokenTracker } from '../services/tokenTracker.ts';
+import { geminiService } from '../services/geminiService.ts';
 
 type EditorTab = 'refine' | 'sensory' | 'transform' | 'critique';
 
@@ -97,8 +98,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
   const [localContent, setLocalContent] = useState('');
   const [localTitle, setLocalTitle] = useState('');
   
-  const [proStatus, setProStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash'));
+  const [proStatus, setProStatus] = useState(() => tokenTracker.getModelStatus(geminiService.getPro()));
+  const [flashStatus, setFlashStatus] = useState(() => tokenTracker.getModelStatus(geminiService.getFlash()));
   const [showTokenDetails, setShowTokenDetails] = useState(false);
   const [showLegendModal, setShowLegendModal] = useState(false);
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
@@ -157,8 +158,8 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
 
   useEffect(() => {
     const update = () => {
-      setProStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_pro') || 'gemini-3.1-pro-preview'));
-      setFlashStatus(tokenTracker.getModelStatus(localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash'));
+      setProStatus(tokenTracker.getModelStatus(geminiService.getPro()));
+      setFlashStatus(tokenTracker.getModelStatus(geminiService.getFlash()));
     };
     update();
     const unsubscribe = tokenTracker.subscribe(update);
@@ -1931,11 +1932,25 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-4-hydrogen');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
+                                  flashStatus.modelId === 'gemini-4-hydrogen'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                4 Hydrogen
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   localStorage.setItem('aetheria_model_flash', 'gemini-3.8-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
-                                  (localStorage.getItem('aetheria_model_flash') || 'gemini-3.8-flash') === 'gemini-3.8-flash'
+                                  flashStatus.modelId === 'gemini-3.8-flash'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
                                 }`}
@@ -1945,25 +1960,11 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
-                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
-                                }}
-                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
-                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.1-flash-lite'
-                                    ? 'bg-emerald-600 text-white font-bold shadow'
-                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
-                                }`}
-                              >
-                                3.1 Lite
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
                                   localStorage.setItem('aetheria_model_flash', 'gemini-3.7-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
-                                  localStorage.getItem('aetheria_model_flash') === 'gemini-3.7-flash'
+                                  flashStatus.modelId === 'gemini-3.7-flash'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
                                 }`}
@@ -1973,16 +1974,16 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-2.5-flash');
+                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
-                                  localStorage.getItem('aetheria_model_flash') === 'gemini-2.5-flash'
+                                  flashStatus.modelId === 'gemini-3.1-flash-lite'
                                     ? 'bg-emerald-600 text-white font-bold shadow'
                                     : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
                                 }`}
                               >
-                                2.5 Flash
+                                3.1 Lite
                               </button>
                             </div>
                             <p className="text-[8px] text-gray-400 italic pt-1">
