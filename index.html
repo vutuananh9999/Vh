@@ -15,7 +15,7 @@
     <!-- Preload fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Merriweather:wght@300;400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600;700&family=Merriweather:wght@300;400;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -38,6 +38,8 @@
             fontFamily: {
               serif: ['Merriweather', 'serif'],
               sans: ['Inter', 'sans-serif'],
+              display: ['Plus Jakarta Sans', 'Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
             },
             animation: {
               'bounce-slight': 'bounce-slight 2s infinite',
@@ -118,27 +120,33 @@
         scrollbar-width: none;
       }
 
+      .ios-scroll {
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-y: contain;
+        touch-action: pan-y;
+      }
+
       .custom-scrollbar {
         scrollbar-width: thin;
-        scrollbar-color: #6366f1 #0b1120;
+        scrollbar-color: #475569 #090d16;
         scrollbar-gutter: stable;
+        -webkit-overflow-scrolling: touch;
       }
       .custom-scrollbar::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
       }
       .custom-scrollbar::-webkit-scrollbar-track {
-        background: #0b1120;
+        background: #090d16;
         border-radius: 9999px;
-        border: 1px solid rgba(51, 65, 85, 0.35);
       }
       .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: linear-gradient(180deg, #4f46e5 0%, #6366f1 100%);
+        background: #334155;
         border-radius: 9999px;
-        border: 1px solid #0b1120;
+        border: 1.5px solid #090d16;
       }
       .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: linear-gradient(180deg, #6366f1 0%, #818cf8 100%);
+        background: #6366f1;
       }
 
       .glass-panel {

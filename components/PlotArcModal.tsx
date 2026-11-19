@@ -525,7 +525,7 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
 
     return (
         <div className="fixed inset-0 z-[140] flex items-center justify-center sm:p-4 bg-black/95 backdrop-blur-md animate-fadeIn" onClick={onClose}>
-            <div className="bg-gray-900 border border-gray-850 sm:border-gray-800 rounded-none sm:rounded-3xl w-full max-w-6xl h-full sm:h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-fadeIn border-t-4 border-t-emerald-500" onClick={e => e.stopPropagation()}>
+            <div className="bg-gray-900 border border-gray-850 sm:border-gray-800 rounded-none sm:rounded-3xl w-full max-w-6xl h-full sm:h-[90vh] pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] sm:pt-0 sm:pb-0 flex flex-col shadow-2xl overflow-hidden animate-fadeIn border-t sm:border-t-2 border-t-emerald-500/80" onClick={e => e.stopPropagation()}>
                 
                 {/* Responsive Compact Header */}
                 <div className="p-2.5 sm:p-3 border-b border-gray-800 flex flex-col md:flex-row md:justify-between md:items-center gap-2.5 bg-gray-850/50 shrink-0 relative pr-10 sm:pr-14">
