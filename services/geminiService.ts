@@ -5,6 +5,7 @@ import { promptBuilderService, ORIGINAL_FIDELITY_PROTOCOL, formatSmartChapterCon
 import { tokenTracker } from "./tokenTracker.ts";
 import { plotDebugLogger, PlotDebugLogItem } from "./plotDebugLogger.ts";
 import { requestThrottleService } from "./requestThrottleService.ts";
+import { externalProviderService } from "./externalProviderService.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -61,15 +62,23 @@ function markKeyRateLimited(key: string, cooldownMs: number = 25000, model?: str
   const cleanK = cleanKey(key);
   if (model) {
     keyCooldowns.set(`${cleanK}:${model}`, Date.now() + cooldownMs);
-    const lowerModel = model.toLowerCase();
-    if (lowerModel.includes('pro') || lowerModel.includes('argon') || lowerModel.includes('carbon') || model === getPro()) {
-      proModelFailedUntil = Date.now() + 180000;
-    }
   } else {
     keyCooldowns.set(cleanK, Date.now() + cooldownMs);
   }
   const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
   console.warn(`[Network Layer API Key Rotation] API Key (${masked}) trên model (${model || 'chung'}) đã chạm 429. Hồi chiêu ${cooldownMs / 1000}s.`);
+}
+
+function markKeyTransientFailure(key: string, cooldownMs: number = 12000, model?: string) {
+  if (!key) return;
+  const cleanK = cleanKey(key);
+  if (model) {
+    keyCooldowns.set(`${cleanK}:${model}`, Date.now() + cooldownMs);
+  } else {
+    keyCooldowns.set(cleanK, Date.now() + cooldownMs);
+  }
+  const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
+  console.warn(`[Network Layer API Key Rotation] API Key (${masked}) trên model (${model || 'chung'}) gặp 503/tạm gián đoạn. Tạm nghỉ ${cooldownMs / 1000}s để xoay key.`);
 }
 
 function cleanKey(val: string): string {
@@ -225,6 +234,53 @@ function isQuotaError(err: any): boolean {
   return hasQuotaKeyword;
 }
 
+function extractHttpStatusCode(err: any): number | null {
+  if (!err) return null;
+  const direct = err.status ?? err.code ?? err.statusCode ?? err.error?.status ?? err.error?.code;
+  if (typeof direct === 'number' && direct >= 400 && direct < 600) return direct;
+  const msg = String(err?.message || '');
+  const match = msg.match(/\b(500|502|503|504|429|404|403|401|400)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isTransientServerError(err: any): boolean {
+  if (!err) return false;
+  const status = extractHttpStatusCode(err);
+  if (status === 503 || status === 502 || status === 504 || status === 500) {
+    return true;
+  }
+
+  let errMsg = err?.message ? String(err.message) : '';
+  try {
+    errMsg += ' ' + JSON.stringify(err);
+  } catch {
+    errMsg += ' ' + String(err);
+  }
+  errMsg = errMsg.toLowerCase();
+
+  return (
+    errMsg.includes('503') ||
+    errMsg.includes('service unavailable') ||
+    errMsg.includes('high demand') ||
+    errMsg.includes('overloaded') ||
+    errMsg.includes('temporarily unavailable') ||
+    errMsg.includes('unavailable') ||
+    errMsg.includes('502') ||
+    errMsg.includes('bad gateway') ||
+    errMsg.includes('504') ||
+    errMsg.includes('gateway timeout') ||
+    errMsg.includes('500') ||
+    errMsg.includes('internal error') ||
+    errMsg.includes('deadline_exceeded') ||
+    errMsg.includes('failed to fetch') ||
+    errMsg.includes('networkerror') ||
+    errMsg.includes('network request failed') ||
+    errMsg.includes('econnreset') ||
+    errMsg.includes('etimedout') ||
+    errMsg.includes('timeout')
+  );
+}
+
 function logKeyChange(key: string, isSystem: boolean) {
   if (typeof window !== 'undefined' && key !== lastLoggedKey) {
     lastLoggedKey = key;
@@ -292,7 +348,9 @@ const VALID_MODELS = new Set([
   'gemini-3.6-flash',
   'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite',
-  'gemini-flash-latest'
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite'
 ]);
 
 function normalizeModel(modelName: string | null | undefined, fallback: string): string {
@@ -308,9 +366,11 @@ function normalizeModel(modelName: string | null | undefined, fallback: string):
   if (clean.includes('3.6')) return 'gemini-3.6-flash';
   if (clean.includes('3.1') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
   if (clean.includes('3.1') && (clean.includes('lite') || clean.includes('flash'))) return 'gemini-3.1-flash-lite';
-  if (clean.includes('latest')) return 'gemini-flash-latest';
+  if (clean.includes('2.5') && clean.includes('lite')) return 'gemini-2.5-flash-lite';
   if (clean.includes('2.5') && clean.includes('pro')) return 'gemini-3.1-pro-preview';
-  if (clean.includes('2.5') || clean.includes('2.0')) return 'gemini-4-hydrogen';
+  if (clean.includes('2.5')) return 'gemini-2.5-flash';
+  if (clean.includes('latest')) return 'gemini-flash-latest';
+  if (clean.includes('2.0')) return 'gemini-2.5-flash';
   if (clean.includes('pro')) return 'gemini-4-argon';
   return fallback;
 }
@@ -447,6 +507,13 @@ function handleApiError(err: any, modelId?: string): Error {
     );
   }
   
+  if (isTransientServerError(err)) {
+    const code = extractHttpStatusCode(err) || 503;
+    return new Error(
+      `Lỗi máy chủ AI (${code} / Quá tải tạm thời): Hệ thống đã giữ nguyên model (${modelId || 'Gemini'}) và xoay vòng qua toàn bộ API Key khả dụng nhưng máy chủ hiện đang bận.\n\n• Vui lòng thử lại sau vài giây.`
+    );
+  }
+
   return err instanceof Error ? err : new Error(msg);
 }
 
@@ -556,6 +623,14 @@ function extractChunkTextSafe(chunk: any): string {
   return "";
 }
 
+function resolveTaskTier(requestedModel: string): 'pro' | 'flash' {
+  const lower = (requestedModel || '').toLowerCase();
+  if (lower.includes('pro') || lower.includes('argon') || lower.includes('carbon')) {
+    return 'pro';
+  }
+  return 'flash';
+}
+
 class DynamicAI {
   get models() {
     return {
@@ -568,14 +643,15 @@ class DynamicAI {
 
         const externalLogId: string | undefined = params?.config?._debugLogId;
         const dbgCtx = inferDebugContext(params, 'generate');
-        const initialKey = keys.length > 0 ? keys[lastKeyIndex % keys.length] : getApiKey();
+        const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+        const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
         const ownsLog = !externalLogId;
         const logId = externalLogId || plotDebugLogger.startLog({
           type: dbgCtx.type,
           title: dbgCtx.title,
           model: requestedModel,
           apiKey: initialKey,
-          keyIndex: (lastKeyIndex % Math.max(1, keys.length)) + 1,
+          keyIndex: initialCursor + 1,
           totalKeys: keysCount,
           keySource: keys.length > 0 ? 'localStorage' : 'env',
           systemInstruction: dbgCtx.systemInstruction,
@@ -587,27 +663,641 @@ class DynamicAI {
         let attemptCounter = 0;
 
         try {
-          for (const currentModelId of modelCascade) {
+          const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
+          if (extProfiles.length > 0) {
+            try {
+              return await externalProviderService.executeWithPool(extProfiles, params, {
+                logId,
+                ownsLog,
+                extractText: extractResponseText
+              });
+            } catch (extErr: any) {
+              const routing = externalProviderService.getRoutingConfig();
+              if (!routing.fallbackToGemini || keys.length === 0) {
+                throw extErr;
+              }
+              plotDebugLogger.updateAttempt(logId, {
+                model: requestedModel,
+                phase: `Key ngoài gặp lỗi (${String(extErr?.message || extErr).slice(0, 60)}) — tự động dự phòng về Gemini...`
+              });
+            }
+          }
+
+          for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+            const currentModelId = modelCascade[mIdx];
+            const isFirstModel = mIdx === 0;
             let currentParams = {
               ...params,
               model: currentModelId,
               config: cleanConfigForModel(params.config, currentModelId)
             };
 
-            for (let round = 0; round < 2; round++) {
-              if (round > 0) {
+            const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+            const maxPassAttempts = keys.length === 1 ? 2 : keysCount;
+            let triedAnyOnModel = false;
+            let modelUnavailable = false;
+
+            for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+              if (keys.length === 1 && attempt > 0) {
                 plotDebugLogger.updateAttempt(logId, {
                   model: currentModelId,
-                  phase: `Chờ 1s thử lại lượt ${round + 1} trên ${currentModelId}...`
+                  phase: `Chỉ có 1 Key — chờ 1s thử lại trên ${currentModelId}...`
                 });
                 await sleep(1000);
               }
 
-              for (let attempt = 0; attempt < keysCount; attempt++) {
-                const keyIdx = keys.length > 0 ? (lastKeyIndex + attempt) % keys.length : 0;
-                const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
-                if (isKeyCoolingDown(key, currentModelId)) {
+              const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
+              const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
+
+              // On first pass skip keys in cooldown; if every key was cooling on primary model, force-try at the end
+              const cooling = isKeyCoolingDown(key, currentModelId);
+              if (cooling && !(isFirstModel && !triedAnyOnModel && attempt === maxPassAttempts - 1)) {
+                continue;
+              }
+
+              triedAnyOnModel = true;
+              if (keys.length > 0) {
+                lastKeyIndex = (keyIdx + 1) % keys.length;
+              }
+
+              attemptCounter++;
+              plotDebugLogger.updateAttempt(logId, {
+                model: currentModelId,
+                apiKey: key,
+                keyIndex: keyIdx + 1,
+                totalKeys: keysCount,
+                status: 'pending',
+                attemptCount: attemptCounter,
+                phase: `Đang gọi ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
+              });
+
+              const rawModels = createGenAI(key).models;
+              const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+
+              try {
+                const res = await rawModels.generateContent(currentParams);
+                if (res && res.usageMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    res.usageMetadata.promptTokenCount || 0,
+                    res.usageMetadata.candidatesTokenCount || 0,
+                    res.usageMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                if (ownsLog) {
+                  plotDebugLogger.completeSuccess(logId, {
+                    fullResponse: extractResponseText(res),
+                    usageMetadata: res?.usageMetadata
+                  });
+                }
+                return res;
+              } catch (err: any) {
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = err;
+
+                if (isQuotaError(err)) {
+                  markKeyRateLimited(key, 25000, currentModelId);
+                  plotDebugLogger.updateAttempt(logId, {
+                    status: 'rate_limit_429',
+                    phase: `Key #${keyIdx + 1}/${keysCount} chạm 429 trên ${currentModelId} — xoay Key tiếp theo...`
+                  });
                   continue;
+                }
+
+                if (isTransientServerError(err)) {
+                  const errCode = extractHttpStatusCode(err) || 503;
+                  markKeyTransientFailure(key, 12000, currentModelId);
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Key #${keyIdx + 1}/${keysCount} gặp ${errCode}/quá tải trên ${currentModelId} — xoay Key tiếp theo...`
+                  });
+                  continue;
+                }
+
+                const msg = err?.message || String(err);
+                const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+                const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
+
+                if (is403 && hasSearch) {
+                  currentParams.config = stripGoogleSearch(currentParams.config);
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Bỏ Google Search Grounding trên ${currentModelId} và thử lại...`
+                  });
+                  try {
+                    const res = await rawModels.generateContent(currentParams);
+                    if (res && res.usageMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        res.usageMetadata.promptTokenCount || 0,
+                        res.usageMetadata.candidatesTokenCount || 0,
+                        res.usageMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    if (ownsLog) {
+                      plotDebugLogger.completeSuccess(logId, {
+                        fullResponse: extractResponseText(res),
+                        usageMetadata: res?.usageMetadata
+                      });
+                    }
+                    return res;
+                  } catch (retryErr: any) {
+                    lastErr = retryErr;
+                    if (isQuotaError(retryErr)) {
+                      markKeyRateLimited(key, 25000, currentModelId);
+                      continue;
+                    }
+                    if (isTransientServerError(retryErr)) {
+                      markKeyTransientFailure(key, 12000, currentModelId);
+                      continue;
+                    }
+                  }
+                }
+
+                if (
+                  msg.includes("404") ||
+                  msg.includes("not found") ||
+                  msg.includes("NOT_FOUND") ||
+                  (is403 && !hasSearch)
+                ) {
+                  modelUnavailable = true;
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Model ${currentModelId} không khả dụng — chuyển model dự phòng...`
+                  });
+                  console.warn(`Model ${currentModelId} không khả dụng hoặc không có quyền trên endpoint (${msg.slice(0, 80)}), chuyển sang model kế tiếp...`);
+                  break;
+                }
+
+                if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                  markKeyTransientFailure(key, 60000);
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Key #${keyIdx + 1}/${keysCount} không hợp lệ — xoay sang Key tiếp theo...`
+                  });
+                  continue;
+                }
+
+                throw handleApiError(err, currentModelId);
+              }
+            }
+
+            // Keep the exact requested model; only step down cascade if the model endpoint itself returned 404/403
+            if (!modelUnavailable) {
+              break;
+            }
+          }
+
+          throw handleApiError(lastErr || new Error('Toàn bộ API Key đều đang trong thời gian hạ nhiệt.'), requestedModel);
+        } catch (fatalErr: any) {
+          if (ownsLog) {
+            plotDebugLogger.recordFailure(logId, fatalErr);
+          }
+          throw fatalErr;
+        }
+      },
+
+      generateContentStream: async function* (params: any) {
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
+        const requestedModel = params.model || getFlash();
+        const modelCascade = getModelCascade(requestedModel);
+        let lastErr: any = null;
+
+        const externalLogId: string | undefined = params?.config?._debugLogId;
+        const dbgCtx = inferDebugContext(params, 'stream');
+        const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+        const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
+        const ownsLog = !externalLogId;
+        const logId = externalLogId || plotDebugLogger.startLog({
+          type: dbgCtx.type,
+          title: dbgCtx.title,
+          model: requestedModel,
+          apiKey: initialKey,
+          keyIndex: initialCursor + 1,
+          totalKeys: keysCount,
+          keySource: keys.length > 0 ? 'localStorage' : 'env',
+          systemInstruction: dbgCtx.systemInstruction,
+          message: dbgCtx.message,
+          historyTurns: dbgCtx.historyTurns,
+          currentPhase: `Đang mở luồng Stream tới ${requestedModel}...`
+        });
+
+        let attemptCounter = 0;
+
+        try {
+          const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
+          if (extProfiles.length > 0) {
+            let extYielded = false;
+            try {
+              for await (const chunk of externalProviderService.executeStreamWithPool(extProfiles, params, {
+                logId,
+                ownsLog
+              })) {
+                extYielded = true;
+                yield chunk as GenerateContentResponse;
+              }
+              return;
+            } catch (extErr: any) {
+              const routing = externalProviderService.getRoutingConfig();
+              if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
+                throw extErr;
+              }
+              plotDebugLogger.updateAttempt(logId, {
+                model: requestedModel,
+                phase: `Stream Key ngoài lỗi — tự động dự phòng về Gemini...`
+              });
+            }
+          }
+
+          for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+            const currentModelId = modelCascade[mIdx];
+            const isFirstModel = mIdx === 0;
+            let currentParams = {
+              ...params,
+              model: currentModelId,
+              config: cleanConfigForModel(params.config, currentModelId)
+            };
+
+            const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+            const maxPassAttempts = keys.length === 1 ? 2 : keysCount;
+            let triedAnyOnModel = false;
+            let modelUnavailable = false;
+
+            for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+              if (keys.length === 1 && attempt > 0) {
+                plotDebugLogger.updateAttempt(logId, {
+                  model: currentModelId,
+                  phase: `Chỉ có 1 Key — chờ 1s thử lại stream trên ${currentModelId}...`
+                });
+                await sleep(1000);
+              }
+
+              const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
+              const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
+
+              const cooling = isKeyCoolingDown(key, currentModelId);
+              if (cooling && !(isFirstModel && !triedAnyOnModel && attempt === maxPassAttempts - 1)) {
+                continue;
+              }
+
+              triedAnyOnModel = true;
+              if (keys.length > 0) {
+                lastKeyIndex = (keyIdx + 1) % keys.length;
+              }
+
+              attemptCounter++;
+              plotDebugLogger.updateAttempt(logId, {
+                model: currentModelId,
+                apiKey: key,
+                keyIndex: keyIdx + 1,
+                totalKeys: keysCount,
+                status: 'pending',
+                attemptCount: attemptCounter,
+                phase: `Đang mở Stream ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
+              });
+
+              const rawModels = createGenAI(key).models;
+              const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+
+              try {
+                const stream = await rawModels.generateContentStream(currentParams);
+                let finalMetadata: any = null;
+                let yieldedAny = false;
+                let fullAccumulated = "";
+
+                try {
+                  for await (const chunk of stream) {
+                    yieldedAny = true;
+                    if (chunk && chunk.usageMetadata) {
+                      finalMetadata = chunk.usageMetadata;
+                    }
+                    const chunkText = extractChunkTextSafe(chunk);
+                    if (chunkText) {
+                      fullAccumulated += chunkText;
+                      if (ownsLog) {
+                        plotDebugLogger.updateStreaming(logId, chunkText);
+                      }
+                    }
+                    yield chunk as GenerateContentResponse;
+                  }
+                } catch (streamErr: any) {
+                  if (!yieldedAny && isQuotaError(streamErr)) {
+                    markKeyRateLimited(key, 25000, currentModelId);
+                    tokenTracker.recordRequestFailure(reqId);
+                    lastErr = streamErr;
+                    plotDebugLogger.updateAttempt(logId, {
+                      status: 'rate_limit_429',
+                      phase: `Stream chạm 429 trên Key #${keyIdx + 1}/${keysCount} — xoay Key...`
+                    });
+                    continue;
+                  }
+                  if (!yieldedAny && isTransientServerError(streamErr)) {
+                    const errCode = extractHttpStatusCode(streamErr) || 503;
+                    markKeyTransientFailure(key, 12000, currentModelId);
+                    tokenTracker.recordRequestFailure(reqId);
+                    lastErr = streamErr;
+                    plotDebugLogger.updateAttempt(logId, {
+                      phase: `Stream gặp ${errCode}/quá tải trên Key #${keyIdx + 1}/${keysCount} — xoay Key...`
+                    });
+                    continue;
+                  }
+                  throw streamErr;
+                }
+
+                if (finalMetadata) {
+                  tokenTracker.recordRequestSuccess(
+                    reqId,
+                    finalMetadata.promptTokenCount || 0,
+                    finalMetadata.candidatesTokenCount || 0,
+                    finalMetadata.totalTokenCount || 0
+                  );
+                } else {
+                  tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                }
+                if (ownsLog) {
+                  plotDebugLogger.completeSuccess(logId, {
+                    fullResponse: fullAccumulated,
+                    usageMetadata: finalMetadata
+                  });
+                }
+                return; // Succeeded!
+              } catch (err: any) {
+                tokenTracker.recordRequestFailure(reqId);
+                lastErr = err;
+
+                if (isQuotaError(err)) {
+                  markKeyRateLimited(key, 25000, currentModelId);
+                  plotDebugLogger.updateAttempt(logId, {
+                    status: 'rate_limit_429',
+                    phase: `Key #${keyIdx + 1}/${keysCount} chạm 429 trên ${currentModelId} — xoay Key...`
+                  });
+                  continue;
+                }
+
+                if (isTransientServerError(err)) {
+                  const errCode = extractHttpStatusCode(err) || 503;
+                  markKeyTransientFailure(key, 12000, currentModelId);
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Key #${keyIdx + 1}/${keysCount} gặp ${errCode}/quá tải trên ${currentModelId} — xoay Key...`
+                  });
+                  continue;
+                }
+
+                const msg = err?.message || String(err);
+                const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
+                const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
+
+                if (is403 && hasSearch) {
+                  currentParams.config = stripGoogleSearch(currentParams.config);
+                  try {
+                    const stream = await rawModels.generateContentStream(currentParams);
+                    let finalMetadata: any = null;
+                    let retryAccumulated = "";
+                    for await (const chunk of stream) {
+                      if (chunk && chunk.usageMetadata) {
+                        finalMetadata = chunk.usageMetadata;
+                      }
+                      const chunkText = extractChunkTextSafe(chunk);
+                      if (chunkText) {
+                        retryAccumulated += chunkText;
+                        if (ownsLog) {
+                          plotDebugLogger.updateStreaming(logId, chunkText);
+                        }
+                      }
+                      yield chunk as GenerateContentResponse;
+                    }
+                    if (finalMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        finalMetadata.promptTokenCount || 0,
+                        finalMetadata.candidatesTokenCount || 0,
+                        finalMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    if (ownsLog) {
+                      plotDebugLogger.completeSuccess(logId, {
+                        fullResponse: retryAccumulated,
+                        usageMetadata: finalMetadata
+                      });
+                    }
+                    return;
+                  } catch (retryErr: any) {
+                    lastErr = retryErr;
+                    if (isQuotaError(retryErr)) {
+                      markKeyRateLimited(key, 25000, currentModelId);
+                      continue;
+                    }
+                    if (isTransientServerError(retryErr)) {
+                      markKeyTransientFailure(key, 12000, currentModelId);
+                      continue;
+                    }
+                  }
+                }
+
+                if (
+                  msg.includes("404") ||
+                  msg.includes("not found") ||
+                  msg.includes("NOT_FOUND") ||
+                  (is403 && !hasSearch)
+                ) {
+                  modelUnavailable = true;
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Stream ${currentModelId} không khả dụng — chuyển model dự phòng...`
+                  });
+                  console.warn(`Model ${currentModelId} không khả dụng trên stream, thử model tiếp theo...`);
+                  break;
+                }
+
+                if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                  markKeyTransientFailure(key, 60000);
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Key #${keyIdx + 1}/${keysCount} không hợp lệ — xoay Key...`
+                  });
+                  continue;
+                }
+
+                throw handleApiError(err, currentModelId);
+              }
+            }
+
+            if (!modelUnavailable) {
+              break;
+            }
+          }
+
+          throw handleApiError(lastErr || new Error('Toàn bộ API Key đều đang trong thời gian hạ nhiệt.'), requestedModel);
+        } catch (fatalErr: any) {
+          if (ownsLog) {
+            plotDebugLogger.recordFailure(logId, fatalErr);
+          }
+          throw fatalErr;
+        }
+      },
+
+      embedContent: async (params: any) => {
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
+        const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+        let lastErr: any = null;
+
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
+          const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
+          if (keys.length > 0) lastKeyIndex = (keyIdx + 1) % keys.length;
+          const rawModels = createGenAI(key).models;
+          try {
+            return await rawModels.embedContent(params);
+          } catch (err: any) {
+            lastErr = err;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Embed Rotation] Key #${keyIdx + 1} chạm 429. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            if (isTransientServerError(err)) {
+              markKeyTransientFailure(key, 12000);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Embed Rotation] Key #${keyIdx + 1} gặp 503/quá tải. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            throw handleApiError(err);
+          }
+        }
+        throw handleApiError(lastErr);
+      },
+
+      generateVideos: async (params: any) => {
+        const keys = getAllKeys();
+        const keysCount = Math.max(1, keys.length);
+        const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+        let lastErr: any = null;
+
+        for (let attempt = 0; attempt < keysCount; attempt++) {
+          const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
+          const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
+          if (keys.length > 0) lastKeyIndex = (keyIdx + 1) % keys.length;
+          const rawModels = createGenAI(key).models;
+          try {
+            return await rawModels.generateVideos(params);
+          } catch (err: any) {
+            lastErr = err;
+            if (isQuotaError(err)) {
+              markKeyRateLimited(key);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Video Rotation] Key #${keyIdx + 1} chạm 429. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            if (isTransientServerError(err)) {
+              markKeyTransientFailure(key, 12000);
+              if (attempt < keysCount - 1) {
+                console.warn(`[Network Layer Video Rotation] Key #${keyIdx + 1} gặp 503/quá tải. Tự động xoay sang Key tiếp theo...`);
+                continue;
+              }
+            }
+            throw handleApiError(err);
+          }
+        }
+        throw handleApiError(lastErr);
+      }
+    };
+  }
+
+  get chats() {
+    return {
+      create: (params: any) => {
+        const requestedModel = params.model || getFlash();
+
+        const wrappedSession: any = {};
+
+        // Wrap sendMessage with round-robin 429/503 key rotation & model cascade
+        wrappedSession.sendMessage = async (sendParams: any) => {
+          const modelCascade = getModelCascade(requestedModel);
+          const keys = getAllKeys();
+          const keysCount = Math.max(1, keys.length);
+          let lastErr: any = null;
+          const externalLogId: string | undefined = params?.config?._debugLogId;
+          const ownsLog = !externalLogId;
+          const dbgCtx = inferDebugContext(params, 'chat', sendParams);
+          const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+          const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
+          const logId = externalLogId || plotDebugLogger.startLog({
+            type: dbgCtx.type,
+            title: dbgCtx.title,
+            model: requestedModel,
+            apiKey: initialKey,
+            keyIndex: initialCursor + 1,
+            totalKeys: keysCount,
+            keySource: keys.length > 0 ? 'localStorage' : 'env',
+            systemInstruction: dbgCtx.systemInstruction,
+            message: dbgCtx.message,
+            historyTurns: dbgCtx.historyTurns,
+            currentPhase: `Đang gửi tin nhắn tới ${requestedModel}...`
+          });
+          let attemptCounter = 0;
+
+          try {
+            const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
+            if (extProfiles.length > 0) {
+              try {
+                return await externalProviderService.executeWithPool(extProfiles, params, {
+                  logId,
+                  ownsLog,
+                  sendParams,
+                  extractText: extractResponseText
+                });
+              } catch (extErr: any) {
+                const routing = externalProviderService.getRoutingConfig();
+                if (!routing.fallbackToGemini || keys.length === 0) {
+                  throw extErr;
+                }
+                plotDebugLogger.updateAttempt(logId, {
+                  model: requestedModel,
+                  phase: `Chat Key ngoài lỗi — dự phòng về Gemini...`
+                });
+              }
+            }
+
+            for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+              const currentModelId = modelCascade[mIdx];
+              const isFirstModel = mIdx === 0;
+              const currentParams = {
+                ...params,
+                model: currentModelId,
+                config: cleanConfigForModel(params.config, currentModelId)
+              };
+
+              const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+              const maxPassAttempts = keys.length === 1 ? 2 : keysCount;
+              let triedAnyOnModel = false;
+              let modelUnavailable = false;
+
+              for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+                if (keys.length === 1 && attempt > 0) {
+                  plotDebugLogger.updateAttempt(logId, {
+                    model: currentModelId,
+                    phase: `Chỉ có 1 Key — chờ 1s thử lại chat trên ${currentModelId}...`
+                  });
+                  await sleep(1000);
+                }
+
+                const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
+                const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
+
+                const cooling = isKeyCoolingDown(key, currentModelId);
+                if (cooling && !(isFirstModel && !triedAnyOnModel && attempt === maxPassAttempts - 1)) {
+                  continue;
+                }
+
+                triedAnyOnModel = true;
+                if (keys.length > 0) {
+                  lastKeyIndex = (keyIdx + 1) % keys.length;
                 }
 
                 attemptCounter++;
@@ -621,11 +1311,16 @@ class DynamicAI {
                   phase: `Đang gọi ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
                 });
 
-                const rawModels = createGenAI(key).models;
-                const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
+                const rawChats = createGenAI(key).chats;
+                const currentHistory = params.history || [];
+                const session = rawChats.create({
+                  ...currentParams,
+                  history: currentHistory
+                });
 
+                const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                 try {
-                  const res = await rawModels.generateContent(currentParams);
+                  const res = await session.sendMessage(sendParams);
                   if (res && res.usageMetadata) {
                     tokenTracker.recordRequestSuccess(
                       reqId,
@@ -651,394 +1346,142 @@ class DynamicAI {
                     markKeyRateLimited(key, 25000, currentModelId);
                     plotDebugLogger.updateAttempt(logId, {
                       status: 'rate_limit_429',
-                      phase: `Key #${keyIdx + 1} chạm 429 trên ${currentModelId} — đang xoay Key...`
+                      phase: `Key #${keyIdx + 1}/${keysCount} chạm 429 — đang xoay Key...`
                     });
-                    console.warn(`[Network Layer] Key (${key.slice(0, 6)}...) chạm 429 trên ${currentModelId}. Xoay vòng tiếp...`);
+                    continue;
+                  }
+
+                  if (isTransientServerError(err)) {
+                    const errCode = extractHttpStatusCode(err) || 503;
+                    markKeyTransientFailure(key, 12000, currentModelId);
+                    plotDebugLogger.updateAttempt(logId, {
+                      phase: `Key #${keyIdx + 1}/${keysCount} gặp ${errCode}/quá tải trên ${currentModelId} — xoay Key...`
+                    });
                     continue;
                   }
 
                   const msg = err?.message || String(err);
-                  const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-                  const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
-
-                  if (is403 && hasSearch) {
-                    currentParams.config = stripGoogleSearch(currentParams.config);
+                  if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                    modelUnavailable = true;
                     plotDebugLogger.updateAttempt(logId, {
-                      phase: `Bỏ Google Search Grounding trên ${currentModelId} và thử lại...`
+                      phase: `Model ${currentModelId} không tồn tại — chuyển model dự phòng...`
                     });
-                    try {
-                      const res = await rawModels.generateContent(currentParams);
-                      if (res && res.usageMetadata) {
-                        tokenTracker.recordRequestSuccess(
-                          reqId,
-                          res.usageMetadata.promptTokenCount || 0,
-                          res.usageMetadata.candidatesTokenCount || 0,
-                          res.usageMetadata.totalTokenCount || 0
-                        );
-                      } else {
-                        tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                      }
-                      if (ownsLog) {
-                        plotDebugLogger.completeSuccess(logId, {
-                          fullResponse: extractResponseText(res),
-                          usageMetadata: res?.usageMetadata
-                        });
-                      }
-                      return res;
-                    } catch (retryErr: any) {
-                      if (isQuotaError(retryErr)) {
-                        markKeyRateLimited(key, 25000, currentModelId);
-                        continue;
-                      }
-                    }
-                  }
-
-                  if (
-                    msg.includes("404") ||
-                    msg.includes("not found") ||
-                    msg.includes("NOT_FOUND") ||
-                    (is403 && !hasSearch)
-                  ) {
-                    plotDebugLogger.updateAttempt(logId, {
-                      phase: `Model ${currentModelId} không khả dụng — chuyển model dự phòng...`
-                    });
-                    console.warn(`Model ${currentModelId} không khả dụng hoặc không có quyền trên endpoint (${msg.slice(0, 80)}), chuyển sang model kế tiếp...`);
+                    console.warn(`Chat model ${currentModelId} không tồn tại, chuyển model tiếp theo trong cascade...`);
                     break;
                   }
 
                   if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                    markKeyTransientFailure(key, 60000);
+                    plotDebugLogger.updateAttempt(logId, {
+                      phase: `Key #${keyIdx + 1}/${keysCount} không hợp lệ — xoay Key...`
+                    });
                     continue;
                   }
 
                   throw handleApiError(err, currentModelId);
                 }
               }
-            }
-          }
 
-          throw handleApiError(lastErr, requestedModel);
-        } catch (fatalErr: any) {
-          if (ownsLog) {
-            plotDebugLogger.recordFailure(logId, fatalErr);
-          }
-          throw fatalErr;
-        }
-      },
-
-      generateContentStream: async function* (params: any) {
-        const keys = getAllKeys();
-        const keysCount = Math.max(1, keys.length);
-        const requestedModel = params.model || getFlash();
-        const modelCascade = getModelCascade(requestedModel);
-        let lastErr: any = null;
-
-        const externalLogId: string | undefined = params?.config?._debugLogId;
-        const dbgCtx = inferDebugContext(params, 'stream');
-        const initialKey = keys.length > 0 ? keys[lastKeyIndex % keys.length] : getApiKey();
-        const ownsLog = !externalLogId;
-        const logId = externalLogId || plotDebugLogger.startLog({
-          type: dbgCtx.type,
-          title: dbgCtx.title,
-          model: requestedModel,
-          apiKey: initialKey,
-          keyIndex: (lastKeyIndex % Math.max(1, keys.length)) + 1,
-          totalKeys: keysCount,
-          keySource: keys.length > 0 ? 'localStorage' : 'env',
-          systemInstruction: dbgCtx.systemInstruction,
-          message: dbgCtx.message,
-          historyTurns: dbgCtx.historyTurns,
-          currentPhase: `Đang mở luồng Stream tới ${requestedModel}...`
-        });
-
-        let attemptCounter = 0;
-
-        try {
-          for (const currentModelId of modelCascade) {
-            let currentParams = {
-              ...params,
-              model: currentModelId,
-              config: cleanConfigForModel(params.config, currentModelId)
-            };
-
-            for (let round = 0; round < 2; round++) {
-              if (round > 0) {
-                plotDebugLogger.updateAttempt(logId, {
-                  model: currentModelId,
-                  phase: `Chờ 1s thử lại stream lượt ${round + 1} trên ${currentModelId}...`
-                });
-                await sleep(1000);
+              if (!modelUnavailable) {
+                break;
               }
+            }
+            throw handleApiError(lastErr || new Error('Toàn bộ API Key đều đang trong thời gian hạ nhiệt.'), requestedModel);
+          } catch (fatalErr: any) {
+            if (ownsLog) {
+              plotDebugLogger.recordFailure(logId, fatalErr);
+            }
+            throw fatalErr;
+          }
+        };
 
-              for (let attempt = 0; attempt < keysCount; attempt++) {
-                const keyIdx = keys.length > 0 ? (lastKeyIndex + attempt) % keys.length : 0;
-                const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
-                if (isKeyCoolingDown(key, currentModelId)) {
-                  continue;
-                }
+        // Wrap sendMessageStream with round-robin 429/503 key rotation & model cascade
+        wrappedSession.sendMessageStream = async (sendParams: any) => {
+          async function* runStreamWithRetry() {
+            const modelCascade = getModelCascade(requestedModel);
+            const keys = getAllKeys();
+            const keysCount = Math.max(1, keys.length);
+            let lastErr: any = null;
+            const externalLogId: string | undefined = params?.config?._debugLogId;
+            const ownsLog = !externalLogId;
+            const dbgCtx = inferDebugContext(params, 'chat', sendParams);
+            const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+            const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
+            const logId = externalLogId || plotDebugLogger.startLog({
+              type: dbgCtx.type,
+              title: dbgCtx.title,
+              model: requestedModel,
+              apiKey: initialKey,
+              keyIndex: initialCursor + 1,
+              totalKeys: keysCount,
+              keySource: keys.length > 0 ? 'localStorage' : 'env',
+              systemInstruction: dbgCtx.systemInstruction,
+              message: dbgCtx.message,
+              historyTurns: dbgCtx.historyTurns,
+              currentPhase: `Đang kết nối Chat Stream tới ${requestedModel}...`
+            });
+            let attemptCounter = 0;
 
-                attemptCounter++;
-                plotDebugLogger.updateAttempt(logId, {
-                  model: currentModelId,
-                  apiKey: key,
-                  keyIndex: keyIdx + 1,
-                  totalKeys: keysCount,
-                  status: 'pending',
-                  attemptCount: attemptCounter,
-                  phase: `Đang mở Stream ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
-                });
-
-                const rawModels = createGenAI(key).models;
-                const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
-
+            try {
+              const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
+              if (extProfiles.length > 0) {
+                let extYielded = false;
                 try {
-                  const stream = await rawModels.generateContentStream(currentParams);
-                  let finalMetadata: any = null;
-                  let yieldedAny = false;
-                  let fullAccumulated = "";
-
-                  try {
-                    for await (const chunk of stream) {
-                      yieldedAny = true;
-                      if (chunk && chunk.usageMetadata) {
-                        finalMetadata = chunk.usageMetadata;
-                      }
-                      const chunkText = extractChunkTextSafe(chunk);
-                      if (chunkText) {
-                        fullAccumulated += chunkText;
-                        if (ownsLog) {
-                          plotDebugLogger.updateStreaming(logId, chunkText);
-                        }
-                      }
-                      yield chunk as GenerateContentResponse;
-                    }
-                  } catch (streamErr: any) {
-                    if (!yieldedAny && isQuotaError(streamErr)) {
-                      markKeyRateLimited(key, 25000, currentModelId);
-                      tokenTracker.recordRequestFailure(reqId);
-                      lastErr = streamErr;
-                      plotDebugLogger.updateAttempt(logId, {
-                        status: 'rate_limit_429',
-                        phase: `Stream chạm 429 trên Key #${keyIdx + 1} — xoay Key...`
-                      });
-                      continue;
-                    }
-                    throw streamErr;
+                  for await (const chunk of externalProviderService.executeStreamWithPool(extProfiles, params, {
+                    logId,
+                    ownsLog,
+                    sendParams
+                  })) {
+                    extYielded = true;
+                    yield chunk as GenerateContentResponse;
                   }
-
-                  if (finalMetadata) {
-                    tokenTracker.recordRequestSuccess(
-                      reqId,
-                      finalMetadata.promptTokenCount || 0,
-                      finalMetadata.candidatesTokenCount || 0,
-                      finalMetadata.totalTokenCount || 0
-                    );
-                  } else {
-                    tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                  return;
+                } catch (extErr: any) {
+                  const routing = externalProviderService.getRoutingConfig();
+                  if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
+                    throw extErr;
                   }
-                  if (ownsLog) {
-                    plotDebugLogger.completeSuccess(logId, {
-                      fullResponse: fullAccumulated,
-                      usageMetadata: finalMetadata
-                    });
-                  }
-                  return; // Succeeded!
-                } catch (err: any) {
-                  tokenTracker.recordRequestFailure(reqId);
-                  lastErr = err;
-
-                  if (isQuotaError(err)) {
-                    markKeyRateLimited(key, 25000, currentModelId);
-                    plotDebugLogger.updateAttempt(logId, {
-                      status: 'rate_limit_429',
-                      phase: `Key #${keyIdx + 1} chạm 429 trên ${currentModelId} — xoay Key...`
-                    });
-                    continue;
-                  }
-
-                  const msg = err?.message || String(err);
-                  const is403 = msg.includes("403") || msg.includes("PERMISSION_DENIED");
-                  const hasSearch = currentParams.config?.tools?.some((t: any) => t.googleSearch);
-
-                  if (is403 && hasSearch) {
-                    currentParams.config = stripGoogleSearch(currentParams.config);
-                    try {
-                      const stream = await rawModels.generateContentStream(currentParams);
-                      let finalMetadata: any = null;
-                      let retryAccumulated = "";
-                      for await (const chunk of stream) {
-                        if (chunk && chunk.usageMetadata) {
-                          finalMetadata = chunk.usageMetadata;
-                        }
-                        const chunkText = extractChunkTextSafe(chunk);
-                        if (chunkText) {
-                          retryAccumulated += chunkText;
-                          if (ownsLog) {
-                            plotDebugLogger.updateStreaming(logId, chunkText);
-                          }
-                        }
-                        yield chunk as GenerateContentResponse;
-                      }
-                      if (finalMetadata) {
-                        tokenTracker.recordRequestSuccess(
-                          reqId,
-                          finalMetadata.promptTokenCount || 0,
-                          finalMetadata.candidatesTokenCount || 0,
-                          finalMetadata.totalTokenCount || 0
-                        );
-                      } else {
-                        tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                      }
-                      if (ownsLog) {
-                        plotDebugLogger.completeSuccess(logId, {
-                          fullResponse: retryAccumulated,
-                          usageMetadata: finalMetadata
-                        });
-                      }
-                      return;
-                    } catch (retryErr: any) {
-                      if (isQuotaError(retryErr)) {
-                        markKeyRateLimited(key, 25000, currentModelId);
-                        continue;
-                      }
-                    }
-                  }
-
-                  if (
-                    msg.includes("404") ||
-                    msg.includes("not found") ||
-                    msg.includes("NOT_FOUND") ||
-                    (is403 && !hasSearch)
-                  ) {
-                    plotDebugLogger.updateAttempt(logId, {
-                      phase: `Stream ${currentModelId} không khả dụng — chuyển model dự phòng...`
-                    });
-                    console.warn(`Model ${currentModelId} không khả dụng trên stream, thử model tiếp theo...`);
-                    break;
-                  }
-
-                  if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
-                    continue;
-                  }
-
-                  throw handleApiError(err, currentModelId);
-                }
-              }
-            }
-          }
-
-          throw handleApiError(lastErr, requestedModel);
-        } catch (fatalErr: any) {
-          if (ownsLog) {
-            plotDebugLogger.recordFailure(logId, fatalErr);
-          }
-          throw fatalErr;
-        }
-      },
-
-      embedContent: async (params: any) => {
-        const keysCount = Math.max(1, getAvailableKeysCount());
-        let lastErr: any = null;
-
-        for (let attempt = 0; attempt < keysCount; attempt++) {
-          const key = getApiKey(attempt > 0);
-          const rawModels = createGenAI(key).models;
-          try {
-            return await rawModels.embedContent(params);
-          } catch (err: any) {
-            lastErr = err;
-            if (isQuotaError(err)) {
-              markKeyRateLimited(key);
-              if (attempt < keysCount - 1) {
-                console.warn(`[Network Layer Embed Rotation] Key bị chạm 429 Quota Exceeded. Tự động xoay sang Key tiếp theo...`);
-                continue;
-              }
-            }
-            throw handleApiError(err);
-          }
-        }
-        throw handleApiError(lastErr);
-      },
-
-      generateVideos: async (params: any) => {
-        const keysCount = Math.max(1, getAvailableKeysCount());
-        let lastErr: any = null;
-
-        for (let attempt = 0; attempt < keysCount; attempt++) {
-          const key = getApiKey(attempt > 0);
-          const rawModels = createGenAI(key).models;
-          try {
-            return await rawModels.generateVideos(params);
-          } catch (err: any) {
-            lastErr = err;
-            if (isQuotaError(err)) {
-              markKeyRateLimited(key);
-              if (attempt < keysCount - 1) {
-                console.warn(`[Network Layer Video Rotation] Key bị chạm 429 Quota Exceeded. Tự động xoay sang Key tiếp theo...`);
-                continue;
-              }
-            }
-            throw handleApiError(err);
-          }
-        }
-        throw handleApiError(lastErr);
-      }
-    };
-  }
-
-  get chats() {
-    return {
-      create: (params: any) => {
-        const requestedModel = params.model || getFlash();
-        const modelCascade = getModelCascade(requestedModel);
-        const keys = getAllKeys();
-        const keysCount = Math.max(1, keys.length);
-
-        const wrappedSession: any = {};
-
-        // Wrap sendMessage with 429 key rotation, model cascade & backoff
-        wrappedSession.sendMessage = async (sendParams: any) => {
-          let lastErr: any = null;
-          const externalLogId: string | undefined = params?.config?._debugLogId;
-          const ownsLog = !externalLogId;
-          const dbgCtx = inferDebugContext(params, 'chat', sendParams);
-          const initialKey = keys.length > 0 ? keys[lastKeyIndex % keys.length] : getApiKey();
-          const logId = externalLogId || plotDebugLogger.startLog({
-            type: dbgCtx.type,
-            title: dbgCtx.title,
-            model: requestedModel,
-            apiKey: initialKey,
-            keyIndex: (lastKeyIndex % Math.max(1, keys.length)) + 1,
-            totalKeys: keysCount,
-            keySource: keys.length > 0 ? 'localStorage' : 'env',
-            systemInstruction: dbgCtx.systemInstruction,
-            message: dbgCtx.message,
-            historyTurns: dbgCtx.historyTurns,
-            currentPhase: `Đang gửi tin nhắn tới ${requestedModel}...`
-          });
-          let attemptCounter = 0;
-
-          try {
-            for (const currentModelId of modelCascade) {
-              const currentParams = {
-                ...params,
-                model: currentModelId,
-                config: cleanConfigForModel(params.config, currentModelId)
-              };
-
-              for (let round = 0; round < 2; round++) {
-                if (round > 0) {
                   plotDebugLogger.updateAttempt(logId, {
-                    model: currentModelId,
-                    phase: `Chờ 1s thử lại chat lượt ${round + 1}...`
+                    model: requestedModel,
+                    phase: `Chat Stream Key ngoài lỗi — dự phòng về Gemini...`
                   });
-                  await sleep(1000);
                 }
+              }
 
-                for (let attempt = 0; attempt < keysCount; attempt++) {
-                  const keyIdx = keys.length > 0 ? (lastKeyIndex + attempt) % keys.length : 0;
+              for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+                const currentModelId = modelCascade[mIdx];
+                const isFirstModel = mIdx === 0;
+                const currentParams = {
+                  ...params,
+                  model: currentModelId,
+                  config: cleanConfigForModel(params.config, currentModelId)
+                };
+
+                const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
+                const maxPassAttempts = keys.length === 1 ? 2 : keysCount;
+                let triedAnyOnModel = false;
+                let modelUnavailable = false;
+
+                for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+                  if (keys.length === 1 && attempt > 0) {
+                    plotDebugLogger.updateAttempt(logId, {
+                      model: currentModelId,
+                      phase: `Chỉ có 1 Key — chờ 1s thử lại chat stream trên ${currentModelId}...`
+                    });
+                    await sleep(1000);
+                  }
+
+                  const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
                   const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
-                  if (isKeyCoolingDown(key, currentModelId)) {
+
+                  const cooling = isKeyCoolingDown(key, currentModelId);
+                  if (cooling && !(isFirstModel && !triedAnyOnModel && attempt === maxPassAttempts - 1)) {
                     continue;
+                  }
+
+                  triedAnyOnModel = true;
+                  if (keys.length > 0) {
+                    lastKeyIndex = (keyIdx + 1) % keys.length;
                   }
 
                   attemptCounter++;
@@ -1049,7 +1492,7 @@ class DynamicAI {
                     totalKeys: keysCount,
                     status: 'pending',
                     attemptCount: attemptCounter,
-                    phase: `Đang gọi ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
+                    phase: `Đang stream Chat ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
                   });
 
                   const rawChats = createGenAI(key).chats;
@@ -1061,24 +1504,68 @@ class DynamicAI {
 
                   const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                   try {
-                    const res = await session.sendMessage(sendParams);
-                    if (res && res.usageMetadata) {
+                    const rawStream = await session.sendMessageStream(sendParams);
+                    let finalMetadata: any = null;
+                    let yieldedAny = false;
+                    let fullAccumulated = "";
+
+                    try {
+                      for await (const chunk of rawStream) {
+                        yieldedAny = true;
+                        if (chunk && chunk.usageMetadata) {
+                          finalMetadata = chunk.usageMetadata;
+                        }
+                        const chunkText = extractChunkTextSafe(chunk);
+                        if (chunkText) {
+                          fullAccumulated += chunkText;
+                          if (ownsLog) {
+                            plotDebugLogger.updateStreaming(logId, chunkText);
+                          }
+                        }
+                        yield chunk as GenerateContentResponse;
+                      }
+                    } catch (streamErr: any) {
+                      if (!yieldedAny && isQuotaError(streamErr)) {
+                        markKeyRateLimited(key, 25000, currentModelId);
+                        tokenTracker.recordRequestFailure(reqId);
+                        lastErr = streamErr;
+                        plotDebugLogger.updateAttempt(logId, {
+                          status: 'rate_limit_429',
+                          phase: `Chat stream chạm 429 trên Key #${keyIdx + 1}/${keysCount} — xoay Key...`
+                        });
+                        continue;
+                      }
+                      if (!yieldedAny && isTransientServerError(streamErr)) {
+                        const errCode = extractHttpStatusCode(streamErr) || 503;
+                        markKeyTransientFailure(key, 12000, currentModelId);
+                        tokenTracker.recordRequestFailure(reqId);
+                        lastErr = streamErr;
+                        plotDebugLogger.updateAttempt(logId, {
+                          phase: `Chat stream gặp ${errCode}/quá tải trên Key #${keyIdx + 1}/${keysCount} — xoay Key...`
+                        });
+                        continue;
+                      }
+                      throw streamErr;
+                    }
+
+                    if (finalMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
-                        res.usageMetadata.promptTokenCount || 0,
-                        res.usageMetadata.candidatesTokenCount || 0,
-                        res.usageMetadata.totalTokenCount || 0
+                        finalMetadata.promptTokenCount || 0,
+                        finalMetadata.candidatesTokenCount || 0,
+                        finalMetadata.totalTokenCount || 0
                       );
                     } else {
                       tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
                     }
+
                     if (ownsLog) {
                       plotDebugLogger.completeSuccess(logId, {
-                        fullResponse: extractResponseText(res),
-                        usageMetadata: res?.usageMetadata
+                        fullResponse: fullAccumulated,
+                        usageMetadata: finalMetadata
                       });
                     }
-                    return res;
+                    return; // Success
                   } catch (err: any) {
                     tokenTracker.recordRequestFailure(reqId);
                     lastErr = err;
@@ -1087,189 +1574,47 @@ class DynamicAI {
                       markKeyRateLimited(key, 25000, currentModelId);
                       plotDebugLogger.updateAttempt(logId, {
                         status: 'rate_limit_429',
-                        phase: `Key #${keyIdx + 1} chạm 429 — đang xoay Key...`
+                        phase: `Key #${keyIdx + 1}/${keysCount} chạm 429 — đang xoay Key...`
+                      });
+                      continue;
+                    }
+
+                    if (isTransientServerError(err)) {
+                      const errCode = extractHttpStatusCode(err) || 503;
+                      markKeyTransientFailure(key, 12000, currentModelId);
+                      plotDebugLogger.updateAttempt(logId, {
+                        phase: `Key #${keyIdx + 1}/${keysCount} gặp ${errCode}/quá tải trên ${currentModelId} — xoay Key...`
                       });
                       continue;
                     }
 
                     const msg = err?.message || String(err);
                     if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
+                      modelUnavailable = true;
                       plotDebugLogger.updateAttempt(logId, {
-                        phase: `Model ${currentModelId} không tồn tại — chuyển model dự phòng...`
+                        phase: `Chat model ${currentModelId} không tồn tại — thử model dự phòng...`
                       });
-                      console.warn(`Chat model ${currentModelId} không tồn tại, chuyển model tiếp theo trong cascade...`);
+                      console.warn(`Chat stream model ${currentModelId} không tồn tại, thử model tiếp theo...`);
                       break;
                     }
 
                     if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
+                      markKeyTransientFailure(key, 60000);
+                      plotDebugLogger.updateAttempt(logId, {
+                        phase: `Key #${keyIdx + 1}/${keysCount} không hợp lệ — xoay Key...`
+                      });
                       continue;
                     }
 
                     throw handleApiError(err, currentModelId);
                   }
                 }
-              }
-            }
-            throw handleApiError(lastErr, requestedModel);
-          } catch (fatalErr: any) {
-            if (ownsLog) {
-              plotDebugLogger.recordFailure(logId, fatalErr);
-            }
-            throw fatalErr;
-          }
-        };
 
-        // Wrap sendMessageStream with 429 key rotation, model cascade & backoff
-        wrappedSession.sendMessageStream = async (sendParams: any) => {
-          async function* runStreamWithRetry() {
-            let lastErr: any = null;
-            const externalLogId: string | undefined = params?.config?._debugLogId;
-            const ownsLog = !externalLogId;
-            const dbgCtx = inferDebugContext(params, 'chat', sendParams);
-            const initialKey = keys.length > 0 ? keys[lastKeyIndex % keys.length] : getApiKey();
-            const logId = externalLogId || plotDebugLogger.startLog({
-              type: dbgCtx.type,
-              title: dbgCtx.title,
-              model: requestedModel,
-              apiKey: initialKey,
-              keyIndex: (lastKeyIndex % Math.max(1, keys.length)) + 1,
-              totalKeys: keysCount,
-              keySource: keys.length > 0 ? 'localStorage' : 'env',
-              systemInstruction: dbgCtx.systemInstruction,
-              message: dbgCtx.message,
-              historyTurns: dbgCtx.historyTurns,
-              currentPhase: `Đang kết nối Chat Stream tới ${requestedModel}...`
-            });
-            let attemptCounter = 0;
-
-            try {
-              for (const currentModelId of modelCascade) {
-                const currentParams = {
-                  ...params,
-                  model: currentModelId,
-                  config: cleanConfigForModel(params.config, currentModelId)
-                };
-
-                for (let round = 0; round < 2; round++) {
-                  if (round > 0) {
-                    plotDebugLogger.updateAttempt(logId, {
-                      model: currentModelId,
-                      phase: `Chờ 1s thử lại chat stream lượt ${round + 1}...`
-                    });
-                    await sleep(1000);
-                  }
-
-                  for (let attempt = 0; attempt < keysCount; attempt++) {
-                    const keyIdx = keys.length > 0 ? (lastKeyIndex + attempt) % keys.length : 0;
-                    const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
-                    if (isKeyCoolingDown(key, currentModelId)) {
-                      continue;
-                    }
-
-                    attemptCounter++;
-                    plotDebugLogger.updateAttempt(logId, {
-                      model: currentModelId,
-                      apiKey: key,
-                      keyIndex: keyIdx + 1,
-                      totalKeys: keysCount,
-                      status: 'pending',
-                      attemptCount: attemptCounter,
-                      phase: `Đang stream Chat ${currentModelId} (Key #${keyIdx + 1}/${keysCount})...`
-                    });
-
-                    const rawChats = createGenAI(key).chats;
-                    const currentHistory = params.history || [];
-                    const session = rawChats.create({
-                      ...currentParams,
-                      history: currentHistory
-                    });
-
-                    const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
-                    try {
-                      const rawStream = await session.sendMessageStream(sendParams);
-                      let finalMetadata: any = null;
-                      let yieldedAny = false;
-                      let fullAccumulated = "";
-
-                      try {
-                        for await (const chunk of rawStream) {
-                          yieldedAny = true;
-                          if (chunk && chunk.usageMetadata) {
-                            finalMetadata = chunk.usageMetadata;
-                          }
-                          const chunkText = extractChunkTextSafe(chunk);
-                          if (chunkText) {
-                            fullAccumulated += chunkText;
-                            if (ownsLog) {
-                              plotDebugLogger.updateStreaming(logId, chunkText);
-                            }
-                          }
-                          yield chunk as GenerateContentResponse;
-                        }
-                      } catch (streamErr: any) {
-                        if (!yieldedAny && isQuotaError(streamErr)) {
-                          markKeyRateLimited(key, 25000, currentModelId);
-                          tokenTracker.recordRequestFailure(reqId);
-                          lastErr = streamErr;
-                          plotDebugLogger.updateAttempt(logId, {
-                            status: 'rate_limit_429',
-                            phase: `Chat stream chạm 429 trên Key #${keyIdx + 1} — xoay Key...`
-                          });
-                          continue;
-                        }
-                        throw streamErr;
-                      }
-
-                      if (finalMetadata) {
-                        tokenTracker.recordRequestSuccess(
-                          reqId,
-                          finalMetadata.promptTokenCount || 0,
-                          finalMetadata.candidatesTokenCount || 0,
-                          finalMetadata.totalTokenCount || 0
-                        );
-                      } else {
-                        tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
-                      }
-
-                      if (ownsLog) {
-                        plotDebugLogger.completeSuccess(logId, {
-                          fullResponse: fullAccumulated,
-                          usageMetadata: finalMetadata
-                        });
-                      }
-                      return; // Success
-                    } catch (err: any) {
-                      tokenTracker.recordRequestFailure(reqId);
-                      lastErr = err;
-
-                      if (isQuotaError(err)) {
-                        markKeyRateLimited(key, 25000, currentModelId);
-                        plotDebugLogger.updateAttempt(logId, {
-                          status: 'rate_limit_429',
-                          phase: `Key #${keyIdx + 1} chạm 429 — đang xoay Key...`
-                        });
-                        continue;
-                      }
-
-                      const msg = err?.message || String(err);
-                      if (msg.includes("404") || msg.includes("not found") || msg.includes("NOT_FOUND")) {
-                        plotDebugLogger.updateAttempt(logId, {
-                          phase: `Chat model ${currentModelId} không tồn tại — thử model dự phòng...`
-                        });
-                        console.warn(`Chat stream model ${currentModelId} không tồn tại, thử model tiếp theo...`);
-                        break;
-                      }
-
-                      if (msg.includes("API key") || msg.includes("API_KEY_INVALID")) {
-                        continue;
-                      }
-
-                      throw handleApiError(err, currentModelId);
-                    }
-                  }
+                if (!modelUnavailable) {
+                  break;
                 }
               }
-              throw handleApiError(lastErr, requestedModel);
+              throw handleApiError(lastErr || new Error('Toàn bộ API Key đều đang trong thời gian hạ nhiệt.'), requestedModel);
             } catch (fatalErr: any) {
               if (ownsLog) {
                 plotDebugLogger.recordFailure(logId, fatalErr);
@@ -1291,33 +1636,9 @@ const ai = new DynamicAI() as unknown as GoogleGenAI;
 const MODEL_EMBEDDING = 'gemini-embedding-2';
 const MODEL_VEO = 'veo-3.1-lite-generate-preview';
 
-// Helper for safe content generation with fallback
+// Helper for safe content generation (DynamicAI handles full modelCascade + key rotation + 503 circuit breaker)
 async function safeGenerateContent(params: { model: string, contents: any, config?: any }): Promise<any> {
-  const fallbackModels = [
-    params.model,
-    'gemini-4-hydrogen',
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-flash-latest',
-    'gemini-3.6-flash'
-  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
-
-  let lastError: any = null;
-  for (const modelToTry of fallbackModels) {
-    try {
-      const config = cleanConfigForModel(params.config, modelToTry);
-      return await ai.models.generateContent({
-        ...params,
-        model: modelToTry,
-        config
-      });
-    } catch (error: any) {
-      lastError = error;
-      console.warn(`safeGenerateContent failed on model ${modelToTry}, trying next fallback...`, error);
-    }
-  }
-  throw lastError;
+  return ai.models.generateContent(params);
 }
 
 const CREATIVE_SAFETY_SETTINGS = [
@@ -1587,6 +1908,8 @@ async function generateAuditJsonWithFallback(
     const msg = String(err?.message || err || '').toLowerCase();
     return (
       msg.includes('429') ||
+      msg.includes('503') ||
+      msg.includes('quá tải tạm thời') ||
       msg.includes('hạn mức') ||
       msg.includes('api key') ||
       msg.includes('api_key_invalid') ||
@@ -1687,47 +2010,12 @@ async function generateAuditJsonWithFallback(
   };
 }
 
-// Helper for safe streaming content generation with fallback
+// Helper for safe streaming content generation (DynamicAI handles full modelCascade + key rotation + 503 circuit breaker)
 async function* safeGenerateContentStream(params: { model: string, contents: any, config?: any }): AsyncGenerator<GenerateContentResponse, void, unknown> {
-  const fallbackModels = [
-    params.model,
-    'gemini-4-hydrogen',
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-flash-latest',
-    'gemini-3.6-flash'
-  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
-
-  let lastError: any = null;
-  let hasYieldedAnyChunk = false;
-
-  for (const modelToTry of fallbackModels) {
-    try {
-      const config = cleanConfigForModel(params.config, modelToTry);
-      const stream = await ai.models.generateContentStream({
-        ...params,
-        model: modelToTry,
-        config
-      });
-      for await (const chunk of stream) {
-        hasYieldedAnyChunk = true;
-        yield chunk as GenerateContentResponse;
-      }
-      return; // Streamed successfully
-    } catch (error: any) {
-      lastError = error;
-      console.warn(`safeGenerateContentStream failed on model ${modelToTry}, error:`, error);
-      // CRITICAL FIX: If any chunks have already been yielded downstream to the caller,
-      // switching to a new fallback model would start generation from token 0, resulting in
-      // duplicated / repeated story content in the chapter!
-      // Once data has started flowing, we must throw the error directly rather than concating another stream.
-      if (hasYieldedAnyChunk) {
-        throw error;
-      }
-    }
+  const stream = await ai.models.generateContentStream(params);
+  for await (const chunk of stream) {
+    yield chunk as GenerateContentResponse;
   }
-  throw lastError;
 }
 
 export const geminiService = {
@@ -3234,7 +3522,7 @@ TRẢ VỀ JSON:
     const primaryModel = modelToTest || getFlash();
     const timeoutMs = options?.timeoutMs ?? 15000;
     const probeModels = Array.from(
-      new Set([primaryModel, 'gemini-3.1-flash-lite', 'gemini-flash-latest'])
+      new Set([primaryModel, 'gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'])
     );
 
     let lastErr: any = null;

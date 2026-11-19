@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { geminiService } from "../services/geminiService.ts";
 import { tokenTracker } from "../services/tokenTracker.ts";
+import {
+    externalProviderService,
+    ExternalProviderProfile,
+    ProviderRoutingConfig,
+    AIProviderType,
+    ProviderTaskRole,
+    PROVIDER_PRESETS
+} from "../services/externalProviderService.ts";
 
 interface Props {
     isOpen: boolean;
@@ -8,7 +16,7 @@ interface Props {
 }
 
 export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
-    const [activeTab, setActiveTab] = useState<'settings' | 'dashboard'>('settings');
+    const [activeTab, setActiveTab] = useState<'settings' | 'providers' | 'dashboard'>('settings');
     const [apiKeys, setApiKeys] = useState<string[]>([""]);
     const [showKeyIndex, setShowKeyIndex] = useState<number | null>(null);
     const [expandedStatsIndex, setExpandedStatsIndex] = useState<number | null>(null);
@@ -21,6 +29,20 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [isFetchingAllStatuses, setIsFetchingAllStatuses] = useState(false);
     const [nowTime, setNowTime] = useState(Date.now());
     const [dashboardFilter, setDashboardFilter] = useState<'all' | 'active' | 'limited'>('all');
+
+    // External Multi-Provider Keys State
+    const [extProfiles, setExtProfiles] = useState<ExternalProviderProfile[]>([]);
+    const [routingConfig, setRoutingConfig] = useState<ProviderRoutingConfig>(() =>
+        externalProviderService.getRoutingConfig()
+    );
+    const [newProviderType, setNewProviderType] = useState<AIProviderType>('openrouter');
+    const [newProfileName, setNewProfileName] = useState('');
+    const [newProfileBaseUrl, setNewProfileBaseUrl] = useState(PROVIDER_PRESETS.openrouter.defaultBaseUrl);
+    const [newProfileModel, setNewProfileModel] = useState(PROVIDER_PRESETS.openrouter.suggestedModels[0]);
+    const [newProfileKey, setNewProfileKey] = useState('');
+    const [newProfileRole, setNewProfileRole] = useState<ProviderTaskRole>('all');
+    const [showNewExtKey, setShowNewExtKey] = useState(false);
+    const [extTestStatus, setExtTestStatus] = useState<Record<string, { loading?: boolean; success?: boolean; message?: string }>>({});
 
     // Timer for live countdown of rate-limit cooldowns
     useEffect(() => {
@@ -62,12 +84,93 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             }
             setModelPro(geminiService.getPro());
             setModelFlash(geminiService.getFlash());
+            setExtProfiles(externalProviderService.getProfiles());
+            setRoutingConfig(externalProviderService.getRoutingConfig());
+            setExtTestStatus({});
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
             setTestingIndex(null);
         }
     }, [isOpen]);
+
+    const handleSelectProviderPreset = (type: AIProviderType) => {
+        const preset = PROVIDER_PRESETS[type];
+        setNewProviderType(type);
+        setNewProfileBaseUrl(preset.defaultBaseUrl);
+        setNewProfileModel(preset.suggestedModels[0] || '');
+    };
+
+    const handleAddExtProfile = () => {
+        if (!newProfileKey.trim() || !newProfileModel.trim()) return;
+        const preset = PROVIDER_PRESETS[newProviderType];
+        const created: ExternalProviderProfile = {
+            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            name: newProfileName.trim() || `${newProviderType.toUpperCase()} · ${newProfileModel.trim()}`,
+            providerType: newProviderType,
+            apiKey: newProfileKey.trim(),
+            baseUrl: newProfileBaseUrl.trim() || preset.defaultBaseUrl,
+            model: newProfileModel.trim(),
+            role: newProfileRole,
+            enabled: true,
+            priority: extProfiles.length
+        };
+        const updated = [...extProfiles, created];
+        setExtProfiles(updated);
+        externalProviderService.saveProfiles(updated);
+
+        // Auto-activate routing for the selected role on adding an external key
+        const nextRouting: ProviderRoutingConfig = {
+            ...routingConfig,
+            activeProBackend: created.role === 'all' || created.role === 'pro' ? 'external' : routingConfig.activeProBackend,
+            activeFlashBackend: created.role === 'all' || created.role === 'flash' ? 'external' : routingConfig.activeFlashBackend
+        };
+        setRoutingConfig(nextRouting);
+        externalProviderService.saveRoutingConfig(nextRouting);
+
+        setNewProfileName('');
+        setNewProfileKey('');
+    };
+
+    const handleToggleExtProfile = (id: string) => {
+        const updated = extProfiles.map(p => (p.id === id ? { ...p, enabled: !p.enabled } : p));
+        setExtProfiles(updated);
+        externalProviderService.saveProfiles(updated);
+    };
+
+    const handleChangeExtRole = (id: string, role: ProviderTaskRole) => {
+        const updated = extProfiles.map(p => (p.id === id ? { ...p, role } : p));
+        setExtProfiles(updated);
+        externalProviderService.saveProfiles(updated);
+    };
+
+    const handleDeleteExtProfile = (id: string) => {
+        const updated = extProfiles.filter(p => p.id !== id);
+        setExtProfiles(updated);
+        externalProviderService.saveProfiles(updated);
+
+        if (updated.filter(p => p.enabled).length === 0) {
+            const resetRouting: ProviderRoutingConfig = {
+                ...routingConfig,
+                activeProBackend: 'gemini',
+                activeFlashBackend: 'gemini'
+            };
+            setRoutingConfig(resetRouting);
+            externalProviderService.saveRoutingConfig(resetRouting);
+        }
+    };
+
+    const handleTestExtProfile = async (profile: ExternalProviderProfile) => {
+        setExtTestStatus(prev => ({ ...prev, [profile.id]: { loading: true } }));
+        const res = await externalProviderService.testProfile(profile, 15000);
+        if (res.success) {
+            externalProviderService.clearProfileCooldown(profile.id);
+        }
+        setExtTestStatus(prev => ({
+            ...prev,
+            [profile.id]: { loading: false, success: res.success, message: res.message }
+        }));
+    };
 
     const handleTestKey = async (index: number) => {
         const key = apiKeys[index]?.trim();
@@ -220,10 +323,13 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         
         localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-4-argon');
         localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-4-hydrogen');
+        externalProviderService.saveProfiles(extProfiles);
+        externalProviderService.saveRoutingConfig(routingConfig);
         
         // Reset flags for models
         geminiService.resetProModelFailed();
         geminiService.clearAllCooldowns();
+        externalProviderService.clearAllCooldowns();
         
         onClose();
     };
@@ -275,9 +381,9 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
-                            Cài đặt & Quản lý API Gemini
+                            Cài đặt & Quản lý API AI
                         </h2>
-                        <p className="text-xs text-gray-400 mt-0.5">Cấu hình danh sách API Key và Bảng điều khiển Giới hạn Tần suất (429 Rate Limits)</p>
+                        <p className="text-xs text-gray-400 mt-0.5">Cấu hình đa nền tảng API (Gemini, OpenRouter, OpenAI, Claude, DeepSeek...) &amp; xoay vòng 429</p>
                     </div>
                     <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors p-1 rounded-lg">
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -285,10 +391,10 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 </div>
 
                 {/* Navigation Tabs */}
-                <div className="flex border-b border-gray-800 mb-5 shrink-0 gap-2">
+                <div className="flex border-b border-gray-800 mb-5 shrink-0 gap-1.5 overflow-x-auto">
                     <button
                         onClick={() => setActiveTab('settings')}
-                        className={`px-4 py-2.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 ${
+                        className={`px-3.5 py-2.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 whitespace-nowrap ${
                             activeTab === 'settings'
                                 ? 'border-primary-500 text-primary-400 bg-primary-500/10 rounded-t-xl'
                                 : 'border-transparent text-gray-400 hover:text-gray-200'
@@ -297,12 +403,26 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                         </svg>
-                        Danh Sách Key & Models
+                        Gemini &amp; Models
+                    </button>
+
+                    <button
+                        onClick={() => setActiveTab('providers')}
+                        className={`px-3.5 py-2.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                            activeTab === 'providers'
+                                ? 'border-sky-500 text-sky-400 bg-sky-500/10 rounded-t-xl'
+                                : 'border-transparent text-gray-400 hover:text-gray-200'
+                        }`}
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        Đa Nền Tảng ({extProfiles.filter(p => p.enabled).length})
                     </button>
 
                     <button
                         onClick={() => setActiveTab('dashboard')}
-                        className={`px-4 py-2.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 relative ${
+                        className={`px-3.5 py-2.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 relative whitespace-nowrap ${
                             activeTab === 'dashboard'
                                 ? 'border-primary-500 text-primary-400 bg-primary-500/10 rounded-t-xl'
                                 : 'border-transparent text-gray-400 hover:text-gray-200'
@@ -326,7 +446,276 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
                 {/* Content Area */}
                 <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar text-sm space-y-6">
-                    {activeTab === 'dashboard' ? (
+                    {activeTab === 'providers' ? (
+                        <div className="space-y-5 animate-fadeIn">
+                            {/* Routing Configuration */}
+                            <div className="p-4 rounded-xl bg-gray-950 border border-gray-800 space-y-3">
+                                <div>
+                                    <h3 className="text-sm font-bold text-white">Điều phối Nguồn AI theo vai trò</h3>
+                                    <p className="text-xs text-gray-400 mt-0.5">
+                                        Bạn có thể cho AI ngoài (Claude / GPT / DeepSeek / OpenRouter) viết truyện chính, còn Gemini lo Embeddings &amp; dự phòng hoặc ngược lại.
+                                    </p>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] font-semibold text-gray-400 block">Tác vụ Sáng tác &amp; Suy luận (Pro)</span>
+                                        <select
+                                            value={routingConfig.activeProBackend}
+                                            onChange={(e) => {
+                                                const next = { ...routingConfig, activeProBackend: e.target.value as 'gemini' | 'external' };
+                                                setRoutingConfig(next);
+                                                externalProviderService.saveRoutingConfig(next);
+                                            }}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+                                        >
+                                            <option value="gemini">Google Gemini (Mặc định)</option>
+                                            <option value="external">Dùng Key Ngoài (Theo danh sách bên dưới)</option>
+                                        </select>
+                                    </label>
+
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] font-semibold text-gray-400 block">Tác vụ Nhanh, Chat &amp; Quét (Flash)</span>
+                                        <select
+                                            value={routingConfig.activeFlashBackend}
+                                            onChange={(e) => {
+                                                const next = { ...routingConfig, activeFlashBackend: e.target.value as 'gemini' | 'external' };
+                                                setRoutingConfig(next);
+                                                externalProviderService.saveRoutingConfig(next);
+                                            }}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+                                        >
+                                            <option value="gemini">Google Gemini (Mặc định)</option>
+                                            <option value="external">Dùng Key Ngoài (Theo danh sách bên dưới)</option>
+                                        </select>
+                                    </label>
+                                </div>
+
+                                <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer pt-1">
+                                    <input
+                                        type="checkbox"
+                                        checked={routingConfig.fallbackToGemini}
+                                        onChange={(e) => {
+                                            const next = { ...routingConfig, fallbackToGemini: e.target.checked };
+                                            setRoutingConfig(next);
+                                            externalProviderService.saveRoutingConfig(next);
+                                        }}
+                                        className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-sky-500"
+                                    />
+                                    <span>Tự động dự phòng sang Gemini Key nếu toàn bộ Key ngoài gặp lỗi hoặc hết hạn mức</span>
+                                </label>
+                            </div>
+
+                            {/* Configured External Keys List */}
+                            <div className="space-y-2.5">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wider">
+                                        Danh sách Key Ngoài đã lưu ({extProfiles.length})
+                                    </h3>
+                                    <span className="text-[11px] text-gray-500">Tự xoay vòng khi chạm 429</span>
+                                </div>
+
+                                {extProfiles.length === 0 ? (
+                                    <div className="p-5 text-center rounded-xl border border-dashed border-gray-800 text-xs text-gray-500">
+                                        Chưa có Key ngoài nào. Thêm OpenRouter, OpenAI, Claude, DeepSeek, Groq hoặc Custom Proxy ở khung bên dưới.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {extProfiles.map((p) => {
+                                            const tStatus = extTestStatus[p.id];
+                                            const masked = p.apiKey.length > 10 ? `${p.apiKey.slice(0, 6)}...${p.apiKey.slice(-4)}` : '••••••';
+                                            return (
+                                                <div
+                                                    key={p.id}
+                                                    className={`p-3 rounded-xl border space-y-2 transition-colors ${
+                                                        p.enabled ? 'bg-gray-950 border-gray-800' : 'bg-gray-950/40 border-gray-900 opacity-60'
+                                                    }`}
+                                                >
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-bold text-white truncate">{p.name}</div>
+                                                            <div className="text-[11px] font-mono text-gray-400 truncate">
+                                                                {p.providerType.toUpperCase()} · {p.model} · {masked}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                            <select
+                                                                value={p.role}
+                                                                onChange={(e) => handleChangeExtRole(p.id, e.target.value as ProviderTaskRole)}
+                                                                className="bg-gray-900 border border-gray-700 rounded-md px-2 py-1 text-[11px] text-gray-200 outline-none"
+                                                            >
+                                                                <option value="all">Pro + Flash</option>
+                                                                <option value="pro">Chỉ Pro</option>
+                                                                <option value="flash">Chỉ Flash</option>
+                                                            </select>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleTestExtProfile(p)}
+                                                                disabled={tStatus?.loading}
+                                                                className="px-2.5 py-1 rounded-md bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-[11px] font-semibold"
+                                                            >
+                                                                {tStatus?.loading ? 'Đang ping...' : 'Test'}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleToggleExtProfile(p.id)}
+                                                                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border ${
+                                                                    p.enabled
+                                                                        ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300'
+                                                                        : 'bg-gray-800 border-gray-700 text-gray-400'
+                                                                }`}
+                                                            >
+                                                                {p.enabled ? 'Đang bật' : 'Đang tắt'}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteExtProfile(p.id)}
+                                                                className="px-2 py-1 rounded-md bg-rose-950/40 hover:bg-rose-900/50 border border-rose-800/50 text-rose-300 text-[11px]"
+                                                                title="Xóa"
+                                                            >
+                                                                Xóa
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    {tStatus?.message && (
+                                                        <div
+                                                            className={`text-[11px] font-mono px-2.5 py-1.5 rounded-lg border ${
+                                                                tStatus.success
+                                                                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                                                                    : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                                                            }`}
+                                                        >
+                                                            {tStatus.message}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Add New External Provider Key Form */}
+                            <div className="p-4 rounded-xl bg-gray-950/80 border border-gray-800 space-y-3">
+                                <div className="text-xs font-bold text-sky-400">Thêm API Key Nhà Cung Cấp Mới</div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] text-gray-400 block">Loại API Key / Nền tảng</span>
+                                        <select
+                                            value={newProviderType}
+                                            onChange={(e) => handleSelectProviderPreset(e.target.value as AIProviderType)}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-2 text-xs text-white outline-none focus:border-sky-500"
+                                        >
+                                            {Object.values(PROVIDER_PRESETS).map(preset => (
+                                                <option key={preset.type} value={preset.type}>{preset.label}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] text-gray-400 block">Vai trò sử dụng</span>
+                                        <select
+                                            value={newProfileRole}
+                                            onChange={(e) => setNewProfileRole(e.target.value as ProviderTaskRole)}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-2 text-xs text-white outline-none focus:border-sky-500"
+                                        >
+                                            <option value="all">Mọi tác vụ (Pro + Flash)</option>
+                                            <option value="pro">Chỉ Sáng tác &amp; Kiểm toán (Pro)</option>
+                                            <option value="flash">Chỉ Chat &amp; Quét nhanh (Flash)</option>
+                                        </select>
+                                    </label>
+                                </div>
+
+                                <p className="text-[11px] text-gray-400 leading-relaxed">
+                                    {PROVIDER_PRESETS[newProviderType].note}
+                                </p>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] text-gray-400 block">Tên gợi nhớ (tùy chọn)</span>
+                                        <input
+                                            type="text"
+                                            value={newProfileName}
+                                            onChange={(e) => setNewProfileName(e.target.value)}
+                                            placeholder={`VD: ${newProviderType.toUpperCase()} Chính`}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+                                        />
+                                    </label>
+
+                                    <label className="space-y-1">
+                                        <span className="text-[11px] text-gray-400 block">Base URL Endpoint</span>
+                                        <input
+                                            type="text"
+                                            value={newProfileBaseUrl}
+                                            onChange={(e) => setNewProfileBaseUrl(e.target.value)}
+                                            placeholder={PROVIDER_PRESETS[newProviderType].defaultBaseUrl}
+                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-sky-500"
+                                        />
+                                    </label>
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <span className="text-[11px] text-gray-400">Model ID</span>
+                                        <div className="flex flex-wrap gap-1">
+                                            {PROVIDER_PRESETS[newProviderType].suggestedModels.map(m => (
+                                                <button
+                                                    key={m}
+                                                    type="button"
+                                                    onClick={() => setNewProfileModel(m)}
+                                                    className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
+                                                        newProfileModel === m
+                                                            ? 'bg-sky-600/25 border-sky-500 text-sky-300'
+                                                            : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'
+                                                    }`}
+                                                >
+                                                    {m}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        value={newProfileModel}
+                                        onChange={(e) => setNewProfileModel(e.target.value)}
+                                        placeholder="Nhập tên model (vd: anthropic/claude-sonnet-4)"
+                                        className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-sky-500"
+                                    />
+                                </div>
+
+                                <div className="space-y-1">
+                                    <span className="text-[11px] text-gray-400 block">API Key</span>
+                                    <div className="flex gap-2">
+                                        <div className="relative flex-1">
+                                            <input
+                                                type={showNewExtKey ? 'text' : 'password'}
+                                                value={newProfileKey}
+                                                onChange={(e) => setNewProfileKey(e.target.value)}
+                                                placeholder={PROVIDER_PRESETS[newProviderType].keyPlaceholder}
+                                                className="w-full bg-gray-900 border border-gray-700 rounded-lg py-2 pl-3 pr-9 text-xs font-mono text-white outline-none focus:border-sky-500"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowNewExtKey(prev => !prev)}
+                                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-[11px]"
+                                            >
+                                                {showNewExtKey ? 'Ẩn' : 'Hiện'}
+                                            </button>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddExtProfile}
+                                            disabled={!newProfileKey.trim() || !newProfileModel.trim()}
+                                            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold disabled:opacity-40 shrink-0"
+                                        >
+                                            + Thêm Key
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : activeTab === 'dashboard' ? (
                         /* API USAGE DASHBOARD VIEW */
                         <div className="space-y-6 animate-fadeIn">
                             {/* Summary Metrics Cards */}
@@ -885,12 +1274,14 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                         <option value="gemini-3.6-pro">gemini-3.6-pro (Pro 3.6 - Suy luận chuyên sâu)</option>
                                         <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro 3.1 Preview - Suy luận cốt truyện)</option>
                                     </optgroup>
-                                    <optgroup label="Dòng Flash (4.0 Mới nhất → 3.1)">
-                                        <option value="gemini-4-hydrogen">gemini-4-hydrogen (Flash 4 Hydrogen - Mới nhất, nhanh & hỗ trợ mọi Key)</option>
-                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao & ổn định)</option>
+                                    <optgroup label="Dòng Flash (4.0 Mới nhất → 2.5 Ổn định)">
+                                        <option value="gemini-4-hydrogen">gemini-4-hydrogen (Flash 4 Hydrogen - Mới nhất, nhanh &amp; hỗ trợ mọi Key)</option>
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5 - Ổn định cao, né lỗi 503)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao &amp; ổn định)</option>
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Hybrid reasoning)</option>
                                         <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 tốt nhất)</option>
+                                        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Flash 2.5 Lite - Tốc độ cao, ít nghẽn 503)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
                                     </optgroup>
                                 </select>
@@ -899,20 +1290,22 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                             {/* Flash Model Selection */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
-                                    <label className="block text-gray-400 font-bold">Model Flash (Dành cho tác vụ nhanh, chat & gợi ý)</label>
-                                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md font-medium">Chat & Tinh chỉnh nhanh</span>
+                                    <label className="block text-gray-400 font-bold">Model Flash (Dành cho tác vụ nhanh, chat &amp; gợi ý)</label>
+                                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md font-medium">Chat &amp; Tinh chỉnh nhanh</span>
                                 </div>
                                 <select 
                                     className="w-full bg-gray-950 border border-gray-700 rounded-xl p-3 text-white outline-none focus:border-primary-500 transition-colors appearance-none"
                                     value={modelFlash}
                                     onChange={(e) => setModelFlash(e.target.value)}
                                 >
-                                    <optgroup label="Dòng Flash Khuyên Dùng (4.0 Mới nhất → 3.1)">
+                                    <optgroup label="Dòng Flash Khuyên Dùng (4.0 Mới nhất → 2.5 Ổn định)">
                                         <option value="gemini-4-hydrogen">gemini-4-hydrogen (Mặc định Flash 4 Hydrogen - Mới nhất, hỗ trợ mọi Key)</option>
-                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao & ổn định)</option>
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash (Flash 2.5 - Khuyên dùng khi Flash 4.0/3.8 hay bị 503)</option>
+                                        <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 - Tốc độ cao &amp; ổn định)</option>
                                         <option value="gemini-3.7-flash">gemini-3.7-flash (Flash 3.7 - Xử lý ngữ cảnh nhanh, thinking)</option>
                                         <option value="gemini-3.6-flash">gemini-3.6-flash (Flash 3.6 - Tương thích cao)</option>
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 cực tốt)</option>
+                                        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Flash 2.5 Lite - Tốc độ cao, ít nghẽn 503)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Pro & Deep Reasoning (4.0 Mới nhất → 3.1)">
