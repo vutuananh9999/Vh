@@ -101,6 +101,7 @@ interface StoryContextType {
   redo: () => void;
   
   loadStories: () => Promise<void>;
+  refreshFromStorage: (updatedStoryIds?: string[]) => Promise<void>;
   createStory: (params: any) => Promise<void>;
   openStory: (id: string) => Promise<void>;
   closeStory: () => void;
@@ -375,6 +376,22 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   useEffect(() => { loadStories(); }, []);
+
+  const refreshFromStorage = useCallback(async (updatedStoryIds?: string[]) => {
+    await loadStories(true);
+    const active = storyRef.current;
+    if (active && (!updatedStoryIds || updatedStoryIds.includes(active.id))) {
+      const refreshed = await storageService.getStory(active.id);
+      if (refreshed) {
+        setStory(refreshed);
+        const currentChId = activeChapterIdRef.current;
+        if (!currentChId || !refreshed.chapters.some(c => c.id === currentChId)) {
+          setActiveChapterId(refreshed.chapters[0]?.id || null);
+        }
+        setEditorSyncToken(t => t + 1);
+      }
+    }
+  }, []);
 
   const createStory = async (params: any) => {
     setIsGenerating(true);
@@ -2980,7 +2997,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       pendingEdit, setPendingEdit, chapterSuggestion, setChapterSuggestion, isSuggestingChapter,
       lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
       canUndo, canRedo, undo, redo,
-      loadStories, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
+      loadStories, refreshFromStorage, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
       sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, insertChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
       generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, scanStoryCharactersAndLore, applyKnowledgeExtraction, learnStyleFromText, learnWritingDNA, learnFromInteraction,
       toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,

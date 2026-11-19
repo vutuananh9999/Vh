@@ -86,6 +86,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
   const listScrollRef = useRef<HTMLDivElement>(null);
   const inspectorScrollRef = useRef<HTMLDivElement>(null);
   const responseBoxRef = useRef<HTMLDivElement>(null);
+  const testAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     selectedLogIdRef.current = selectedLog?.id || null;
@@ -226,57 +227,113 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
     return { total, live, count429, errors, scanAudit };
   }, [logs]);
 
+  const handleCancelKeyTest = () => {
+    if (testAbortRef.current) {
+      testAbortRef.current.abort();
+      showNotification('Đang dừng kiểm tra API Key...');
+    }
+  };
+
   const handleTestAllKeys = async () => {
+    if (isTestingKeys) return;
     if (storedKeys.length === 0) {
       showNotification('Chưa có API Key nào được cài đặt!');
       return;
     }
+
+    const controller = new AbortController();
+    testAbortRef.current = controller;
     setIsTestingKeys(true);
     setShowConfigDrawer(true);
-    const results: Record<string, { ok: boolean; statusText: string; latency?: number }> = {};
+    setTestResults({});
 
-    for (let i = 0; i < storedKeys.length; i++) {
-      const k = storedKeys[i];
-      const start = Date.now();
-      const mask = k.length > 8 ? `${k.slice(0, 6)}...${k.slice(-4)}` : `Key #${i + 1}`;
+    const batchStart = Date.now();
+    let okCount = 0;
+    let failCount = 0;
 
-      const logId = plotDebugLogger.startLog({
-        type: 'key_test',
-        title: `Kiểm tra kết nối Key #${i + 1} (${mask})`,
-        model: selectedModel,
-        apiKey: k,
-        keyIndex: i + 1,
-        totalKeys: storedKeys.length,
-        keySource: 'localStorage',
-        message: 'Ping test',
-        systemInstruction: 'Test connection',
-        currentPhase: `Đang ping Key #${i + 1}...`
-      });
+    try {
+      for (let i = 0; i < storedKeys.length; i++) {
+        if (controller.signal.aborted) break;
 
-      try {
-        const res = await geminiService.testSingleKeyDirectly(k);
-        const latency = Date.now() - start;
-        results[k] = { ok: true, statusText: `200 OK · ${latency}ms`, latency };
-        plotDebugLogger.completeSuccess(logId, {
-          fullResponse: 'Ping test thành công: ' + (res.text || 'OK'),
-          durationMs: latency
+        const k = storedKeys[i];
+        const start = Date.now();
+        const mask = k.length > 8 ? `${k.slice(0, 6)}...${k.slice(-4)}` : `Key #${i + 1}`;
+
+        const logId = plotDebugLogger.startLog({
+          type: 'key_test',
+          title: `Kiểm tra kết nối Key #${i + 1} (${mask})`,
+          model: selectedModel,
+          apiKey: k,
+          keyIndex: i + 1,
+          totalKeys: storedKeys.length,
+          keySource: 'localStorage',
+          message: 'Ping. Reply OK.',
+          systemInstruction: `Direct ping probe (timeout 15s, model ${selectedModel})`,
+          currentPhase: `Đang ping Key #${i + 1} qua ${selectedModel}...`
         });
-      } catch (err: any) {
-        const latency = Date.now() - start;
-        const msg = err?.message || String(err);
-        const is429 = msg.includes('429') || msg.toLowerCase().includes('resource_exhausted');
-        results[k] = {
-          ok: false,
-          statusText: is429 ? '429 Hết quota' : msg.substring(0, 40),
-          latency
-        };
-        plotDebugLogger.recordFailure(logId, err);
+
+        try {
+          const res = await geminiService.testSingleKeyDirectly(k, selectedModel, {
+            timeoutMs: 15000,
+            signal: controller.signal,
+            onPhase: (phase, model) => {
+              plotDebugLogger.updateAttempt(logId, { phase, model });
+            }
+          });
+          const totalKeyElapsed = Math.max(1, Date.now() - start);
+          okCount++;
+          const nextEntry = {
+            ok: true,
+            statusText: `200 OK · ${formatDuration(totalKeyElapsed)} · ${res.modelUsed}`,
+            latency: totalKeyElapsed
+          };
+          setTestResults(prev => ({ ...prev, [k]: nextEntry }));
+          plotDebugLogger.updateAttempt(logId, { model: res.modelUsed });
+          plotDebugLogger.completeSuccess(logId, {
+            fullResponse: `Ping test thành công (${res.modelUsed}): ${res.text || 'OK'}`,
+            usageMetadata: res.usageMetadata,
+            durationMs: totalKeyElapsed
+          });
+        } catch (err: any) {
+          const totalKeyElapsed = Math.max(1, Date.now() - start);
+          failCount++;
+          const msg = err?.message || String(err);
+          const msgLower = msg.toLowerCase();
+          const is429 = msg.includes('429') || msgLower.includes('resource_exhausted');
+          const isTimeout = msgLower.includes('timeout') || msgLower.includes('quá thời gian');
+          const isAborted = controller.signal.aborted || msgLower.includes('aborted');
+
+          const nextEntry = {
+            ok: false,
+            statusText: isAborted
+              ? `Đã hủy · ${formatDuration(totalKeyElapsed)}`
+              : isTimeout
+                ? `Timeout · ${formatDuration(totalKeyElapsed)}`
+                : is429
+                  ? `429 Hết quota · ${formatDuration(totalKeyElapsed)}`
+                  : `${msg.substring(0, 30)} (${formatDuration(totalKeyElapsed)})`,
+            latency: totalKeyElapsed
+          };
+          setTestResults(prev => ({ ...prev, [k]: nextEntry }));
+          plotDebugLogger.recordFailure(logId, err, undefined, totalKeyElapsed);
+
+          if (controller.signal.aborted) break;
+        }
+      }
+    } finally {
+      const batchElapsed = Math.max(1, Date.now() - batchStart);
+      const wasAborted = controller.signal.aborted;
+      testAbortRef.current = null;
+      setIsTestingKeys(false);
+
+      if (wasAborted) {
+        showNotification(`Đã dừng kiểm tra sau ${formatDuration(batchElapsed)}`);
+      } else {
+        showNotification(
+          `Đã test ${storedKeys.length} Key trong ${formatDuration(batchElapsed)} (${okCount} OK · ${failCount} lỗi)`
+        );
       }
     }
-
-    setTestResults(results);
-    setIsTestingKeys(false);
-    showNotification('Đã kiểm tra xong toàn bộ API Key');
   };
 
   const handleResetCooldowns = () => {
@@ -385,13 +442,22 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               <span>Cấu hình &amp; Key</span>
             </button>
 
-            <button
-              onClick={handleTestAllKeys}
-              disabled={isTestingKeys}
-              className="min-h-[40px] sm:min-h-[34px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap"
-            >
-              {isTestingKeys ? 'Đang test...' : 'Test Key'}
-            </button>
+            {isTestingKeys ? (
+              <button
+                onClick={handleCancelKeyTest}
+                className="min-h-[40px] sm:min-h-[34px] px-3 py-1.5 bg-rose-600/90 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5"
+              >
+                <span className="w-2 h-2 rounded-sm bg-white shrink-0" />
+                <span>Dừng Test</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleTestAllKeys}
+                className="min-h-[40px] sm:min-h-[34px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap"
+              >
+                Test Key
+              </button>
+            )}
           </div>
         </div>
 

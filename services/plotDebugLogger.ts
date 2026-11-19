@@ -372,11 +372,11 @@ class PlotDebugLoggerService {
       ? resolvedFull.substring(0, 350) + (resolvedFull.length > 350 ? '...' : '')
       : item.responseSnippet;
     item.usageMetadata = params.usageMetadata;
-    item.durationMs = params.durationMs || (now - item.timestamp);
+    item.durationMs = Math.max(1, params.durationMs ?? (now - item.timestamp));
     this.saveLogsImmediate();
   }
 
-  public recordFailure(id: string, error: any, customAdvice?: string) {
+  public recordFailure(id: string, error: any, customAdvice?: string, durationMsOverride?: number) {
     const item = this.logs.find(l => l.id === id);
     if (!item) return;
 
@@ -389,6 +389,20 @@ class PlotDebugLoggerService {
     let advice = customAdvice || '';
 
     if (
+      errLower.includes('timeout') ||
+      errLower.includes('quá thời gian') ||
+      errLower.includes('aborted') ||
+      errLower.includes('abort')
+    ) {
+      status = 'network_error';
+      statusCode = 'TIMEOUT';
+      advice = `[LỖI TIMEOUT — PHẢN HỒI QUÁ THỜI GIAN CHO PHÉP]
+1. Nguyên nhân: Kết nối từ trình duyệt (Safari / Netlify) tới máy chủ Google cho model "${item.model}" bị treo hoặc mất gói tin nên hệ thống đã tự ngắt sau giới hạn chờ để không làm đơ máy.
+2. Lưu ý trên iPhone Safari: Nếu bạn khóa màn hình hoặc chuyển sang ứng dụng khác khi đang gọi API, iOS Safari có thể tạm đóng băng kết nối mạng của tab.
+3. Giải pháp:
+• Giữ màn hình sáng khi test hoặc chuyển sang model nhẹ 'gemini-3.1-flash-lite' / 'gemini-4-hydrogen'.
+• Kiểm tra lại kết nối Wi-Fi / 4G hoặc tắt VPN/iCloud Private Relay nếu bị nghẽn.`;
+    } else if (
       errLower.includes('503') ||
       errLower.includes('high demand') ||
       errLower.includes('unavailable') ||
@@ -441,7 +455,7 @@ class PlotDebugLoggerService {
     item.rawError = errMsg;
     item.errorStack = error?.stack || String(error);
     item.diagnosticAdvice = advice;
-    item.durationMs = now - item.timestamp;
+    item.durationMs = Math.max(1, durationMsOverride ?? (now - item.timestamp));
     this.saveLogsImmediate();
   }
 

@@ -243,6 +243,39 @@ function createGenAI(apiKey: string): GoogleGenAI {
   });
 }
 
+async function withAbortTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+  externalSignal?: AbortSignal
+): Promise<T> {
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(timeoutMessage));
+      }, timeoutMs);
+    });
+    return await Promise.race([fn(controller.signal), timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
 let proModelFailed = false;
 let proModelFailedUntil = 0;
 
@@ -1716,77 +1749,72 @@ export const geminiService = {
     }
     try {
       const testAI = createGenAI(key.trim());
-      
-      // Thử thực tế generateContent trước bằng gemini-4-hydrogen để kiểm tra xem key có bị dính 429 / hết hạn mức không.
-      // (Vì models.list() chỉ kiểm tra xác thực signature của key chứ không kiểm tra được hạn mức sinh văn bản thực tế).
-      try {
-        const response = await testAI.models.generateContent({
-          model: "gemini-4-hydrogen",
-          contents: "Hi",
-          config: { maxOutputTokens: 2 }
-        });
-        if (response) {
-          return { 
-            success: true, 
-            message: "Kết nối thành công! API Key hoạt động hoàn hảo và sẵn sàng tạo nội dung." 
-          };
-        }
-      } catch (genErr: any) {
-        console.warn("generateContent failed during API key test:", genErr);
-        const msg = (genErr?.message || String(genErr)).toLowerCase();
-        const is429 = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota") || msg.includes("limit");
-        
-        if (is429) {
-          return {
-            success: false,
-            message: "API Key đúng cấu trúc nhưng HIỆN TẠI ĐÃ HẾT HẠN MỨC HOẶC BỊ GIỚI HẠN TẦN SUẤT (Lỗi 429 Resource Exhausted/Quota Exceeded). Vui lòng thử lại sau 1-2 phút hoặc nhập thêm API Key dự phòng khác."
-          };
-        }
-        
-        // Nếu là lỗi xác thực (sai key hoàn toàn), ta ném lỗi ra ngoài để xử lý ở catch chính
-        if (msg.includes("key") || msg.includes("invalid") || msg.includes("unauthorized") || msg.includes("400") || msg.includes("403")) {
-          throw genErr;
-        }
-      }
-
-      // Phương án dự phòng: Nếu generateContent lỗi vì lý do đặc thù khác, thử list models để xem key có hợp lệ cấu trúc không.
-      try {
-        const modelList = await testAI.models.list();
-        if (modelList) {
-          return { 
-            success: true, 
-            message: "Kết nối thành công! Xác thực cấu trúc API Key hợp lệ qua Model Service (nhưng hãy chú ý hạn mức tạo văn bản có thể bị hạn chế)." 
-          };
-        }
-      } catch (listErr: any) {
-        console.warn("models.list failed, trying generateContent fallback:", listErr);
-      }
-
-      // Nếu list thất bại hoặc không được hỗ trợ (ví dụ một số key giới hạn quyền), thử generateContent với các model khác nhau làm fallback
-      const modelsToTry = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash"];
-      let lastError: any = null;
+      const modelsToTry = ["gemini-4-hydrogen", "gemini-3.1-flash-lite", "gemini-flash-latest"];
 
       for (const modelName of modelsToTry) {
         try {
-          const response = await testAI.models.generateContent({
-            model: modelName,
-            contents: "hi",
-            config: { maxOutputTokens: 5 }
-          });
+          const response = await withAbortTimeout(
+            (signal) =>
+              testAI.models.generateContent({
+                model: modelName,
+                contents: "Hi",
+                config: {
+                  ...cleanConfigForModel({
+                    maxOutputTokens: 32,
+                    thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+                  }, modelName),
+                  abortSignal: signal
+                } as any
+              }),
+            12000,
+            `Quá thời gian chờ (12s) khi ping model ${modelName}.`
+          );
           if (response) {
-            return { 
-              success: true, 
-              message: `Kết nối thành công! API Key hoạt động chính xác (đã xác thực qua model ${modelName}).` 
+            return {
+              success: true,
+              message: `Kết nối thành công! API Key hoạt động hoàn hảo (${modelName}).`
             };
           }
         } catch (genErr: any) {
-          console.warn(`generateContent with ${modelName} failed:`, genErr);
-          lastError = genErr;
+          console.warn(`generateContent failed during API key test (${modelName}):`, genErr);
+          const msg = (genErr?.message || String(genErr)).toLowerCase();
+          const is429 = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota") || msg.includes("limit");
+
+          if (is429) {
+            return {
+              success: false,
+              message: "API Key đúng cấu trúc nhưng HIỆN TẠI ĐÃ HẾT HẠN MỨC HOẶC BỊ GIỚI HẠN TẦN SUẤT (Lỗi 429 Resource Exhausted/Quota Exceeded). Vui lòng thử lại sau 1-2 phút hoặc nhập thêm API Key dự phòng khác."
+            };
+          }
+
+          if (msg.includes("api_key_invalid") || msg.includes("api key not valid") || msg.includes("unauthorized") || msg.includes("403")) {
+            throw genErr;
+          }
         }
       }
 
-      // Nếu tất cả đều thất bại, báo lỗi cụ thể của lần thử cuối cùng
-      throw lastError || new Error("Không thể kết nối tới bất kỳ model nào.");
+      // Phương án dự phòng: kiểm tra cấu trúc Key qua models.list() với timeout 8s
+      try {
+        const modelList = await withAbortTimeout(
+          () => testAI.models.list(),
+          8000,
+          "Quá thời gian chờ (8s) khi kiểm tra models.list()."
+        );
+        if (modelList) {
+          return {
+            success: true,
+            message: "Kết nối thành công! Xác thực cấu trúc API Key hợp lệ qua Model Service (hãy chú ý hạn mức tạo văn bản)."
+          };
+        }
+      } catch (listErr: any) {
+        console.warn("models.list failed:", listErr);
+        throw listErr;
+      }
+
+      return {
+        success: false,
+        message: "Không nhận được phản hồi hợp lệ từ máy chủ Google (Timeout / Không phản hồi)."
+      };
     } catch (e: any) {
       console.error("Test API key error:", e);
       const msg = (e?.message || String(e)).toLowerCase();
@@ -3193,20 +3221,91 @@ TRẢ VỀ JSON:
     return link ? `${link}&key=${key}` : null;
   },
 
-  async testSingleKeyDirectly(apiKey: string, modelToTest?: string): Promise<{ text: string; usageMetadata?: any }> {
+  async testSingleKeyDirectly(
+    apiKey: string,
+    modelToTest?: string,
+    options?: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      onPhase?: (phase: string, model: string) => void;
+    }
+  ): Promise<{ text: string; usageMetadata?: any; modelUsed: string; latencyMs: number }> {
     const rawAi = createGenAI(apiKey);
-    const targetModel = modelToTest || getFlash();
-    const response = await rawAi.models.generateContent({
-      model: targetModel,
-      contents: [{ parts: [{ text: "Hello Gemini, ping test 1 2 3." }] }],
-      config: cleanConfigForModel({
-        temperature: 0.1
-      }, targetModel)
-    });
-    return {
-      text: response.text || "OK",
-      usageMetadata: response.usageMetadata
-    };
+    const primaryModel = modelToTest || getFlash();
+    const timeoutMs = options?.timeoutMs ?? 15000;
+    const probeModels = Array.from(
+      new Set([primaryModel, 'gemini-3.1-flash-lite', 'gemini-flash-latest'])
+    );
+
+    let lastErr: any = null;
+    for (let i = 0; i < probeModels.length; i++) {
+      const targetModel = probeModels[i];
+      if (options?.signal?.aborted) {
+        throw new Error('Đã hủy kiểm tra Key theo yêu cầu người dùng (aborted).');
+      }
+
+      options?.onPhase?.(
+        i === 0
+          ? `Đang ping ${targetModel} (tối đa ${Math.round(timeoutMs / 1000)}s)...`
+          : `${primaryModel} không phản hồi — thử dự phòng ${targetModel}...`,
+        targetModel
+      );
+
+      const attemptStart = Date.now();
+      try {
+        const response = await withAbortTimeout(
+          (signal) =>
+            rawAi.models.generateContent({
+              model: targetModel,
+              contents: [{ parts: [{ text: "Ping. Reply OK." }] }],
+              config: {
+                ...cleanConfigForModel(
+                  {
+                    temperature: 0.1,
+                    maxOutputTokens: 32,
+                    thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+                  },
+                  targetModel
+                ),
+                abortSignal: signal
+              } as any
+            }),
+          timeoutMs,
+          `Timeout sau ${Math.round(timeoutMs / 1000)}s khi gọi ${targetModel} (Kết nối bị treo hoặc bị chặn bởi trình duyệt/mạng).`,
+          options?.signal
+        );
+
+        const latencyMs = Math.max(1, Date.now() - attemptStart);
+        return {
+          text: extractResponseText(response) || "OK",
+          usageMetadata: response.usageMetadata,
+          modelUsed: targetModel,
+          latencyMs
+        };
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.message || err || '').toLowerCase();
+        // If 429 or invalid key or permission denied or manual cancel, stop immediately instead of hiding the real key error
+        if (
+          options?.signal?.aborted ||
+          msg.includes('429') ||
+          msg.includes('resource_exhausted') ||
+          msg.includes('quota') ||
+          msg.includes('api key') ||
+          msg.includes('api_key_invalid') ||
+          msg.includes('400') ||
+          msg.includes('403')
+        ) {
+          throw err;
+        }
+        // Only try fallback flash-lite/latest if model was 404/NOT_FOUND or timed out
+        if (i === probeModels.length - 1) {
+          throw err;
+        }
+      }
+    }
+
+    throw lastErr || new Error('Không thể kiểm tra API Key.');
   },
 
   getAllKeys,

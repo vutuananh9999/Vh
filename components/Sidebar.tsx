@@ -113,9 +113,10 @@ interface Props {
     onOpenPlotArc?: () => void;
     onOpenHelp: () => void;
     onOpenBilingualReview?: (chapterId?: string) => void;
+    onOpenDriveSync?: () => void;
 }
 
-export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOpenPlotArc, onOpenHelp, onOpenBilingualReview }) => {
+export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOpenPlotArc, onOpenHelp, onOpenBilingualReview, onOpenDriveSync }) => {
   const { 
     story, activeChapterId, selectChapter, addChapter, deleteChapter, 
     userInstruction, setUserInstruction,
@@ -363,6 +364,11 @@ export const Sidebar: React.FC<Props> = ({ onOpenSettings, isOpen, onClose, onOp
             <p className="text-[9px] text-gray-500 mt-0.5 uppercase tracking-tighter truncate flex items-center gap-1">{story.title}</p>
          </div>
          <div className="flex items-center gap-1">
+             {onOpenDriveSync && (
+               <button onClick={onOpenDriveSync} className="p-2 text-gray-500 hover:text-sky-400 transition-colors" title="Đồng bộ Google Drive">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" /></svg>
+               </button>
+             )}
              <button onClick={onOpenHelp} className="p-2 text-gray-500 hover:text-emerald-400 transition-colors" title="Học Viện Aetheria">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
              </button>

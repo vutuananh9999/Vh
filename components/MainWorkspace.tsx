@@ -13,6 +13,7 @@ import { PlotArcModal } from './PlotArcModal.tsx';
 import { ChapterSuggestionModal } from './ChapterSuggestionModal.tsx';
 import { HelpGuideModal } from './HelpGuideModal.tsx';
 import { BilingualReviewModal } from './BilingualReviewModal.tsx';
+import { GoogleDriveSyncModal } from './GoogleDriveSyncModal.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 
 export const MainWorkspace: React.FC = () => {
@@ -23,6 +24,7 @@ export const MainWorkspace: React.FC = () => {
     const [isHelpOpen, setIsHelpOpen] = useState(false);
     const [isBilingualOpen, setIsBilingualOpen] = useState(false);
     const [bilingualChapterId, setBilingualChapterId] = useState<string | undefined>(undefined);
+    const [isDriveSyncOpen, setIsDriveSyncOpen] = useState(false);
 
     if (!story) return null;
 
@@ -49,6 +51,7 @@ export const MainWorkspace: React.FC = () => {
                 onOpenPlotArc={() => setIsPlotArcOpen(true)}
                 onOpenHelp={() => setIsHelpOpen(true)}
                 onOpenBilingualReview={handleOpenBilingual}
+                onOpenDriveSync={() => setIsDriveSyncOpen(true)}
             />
 
             {/* Main Content Area */}
@@ -76,6 +79,10 @@ export const MainWorkspace: React.FC = () => {
                 isOpen={isBilingualOpen} 
                 onClose={() => setIsBilingualOpen(false)} 
                 defaultChapterId={bilingualChapterId} 
+            />
+            <GoogleDriveSyncModal
+                isOpen={isDriveSyncOpen}
+                onClose={() => setIsDriveSyncOpen(false)}
             />
             
             {/* AI Insight Modals */}

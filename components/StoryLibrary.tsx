@@ -3,6 +3,7 @@ import React, { useRef, useState } from 'react';
 import { useStory } from '../context/StoryContext.tsx';
 import { GlobalSettingsModal } from './GlobalSettingsModal.tsx';
 import { SteamOSInstallModal } from './SteamOSInstallModal.tsx';
+import { GoogleDriveSyncModal } from './GoogleDriveSyncModal.tsx';
 
 export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNew }) => {
     const { storiesList, openStory, deleteStory, exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub } = useStory();
@@ -12,6 +13,7 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
     const [isSteamOSPluginOpen, setIsSteamOSPluginOpen] = useState(false);
+    const [isDriveSyncOpen, setIsDriveSyncOpen] = useState(false);
 
     const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
@@ -164,6 +166,16 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
                             </svg>
                             Nhập (JSON)
                         </button>
+                        <button
+                            onClick={() => setIsDriveSyncOpen(true)}
+                            className="bg-sky-950/50 hover:bg-sky-900/60 text-sky-300 hover:text-white font-bold py-2 px-3.5 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-sky-700/50 text-xs sm:text-sm"
+                            title="Đồng bộ truyện và cài đặt qua Google Drive"
+                        >
+                            <svg className="w-4 h-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+                            </svg>
+                            Google Drive
+                        </button>
                         <button 
                             onClick={onCreateNew}
                             className="bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-bold py-2 px-4 rounded-lg shadow-md flex items-center gap-1.5 transition-all hover:-translate-y-0.5 border border-white/10 text-xs sm:text-sm"
@@ -301,6 +313,11 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
              <SteamOSInstallModal
                 isOpen={isSteamOSPluginOpen}
                 onClose={() => setIsSteamOSPluginOpen(false)}
+             />
+
+             <GoogleDriveSyncModal
+                isOpen={isDriveSyncOpen}
+                onClose={() => setIsDriveSyncOpen(false)}
              />
         </div>
     );
