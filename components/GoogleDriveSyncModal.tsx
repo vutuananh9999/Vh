@@ -5,7 +5,9 @@ import {
   DriveUserInfo,
   DriveSyncFileItem,
   DriveSyncPayload,
-  DriveAuthError
+  DriveAuthError,
+  DriveUnauthorizedDomainError,
+  DriveInsufficientScopeError
 } from '../services/googleDriveService.ts';
 
 interface Props {
@@ -77,6 +79,8 @@ export const GoogleDriveSyncModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
   const [confirmState, setConfirmState] = useState<ConfirmModalState | null>(null);
   const [statusNotice, setStatusNotice] = useState<{ kind: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [unauthorizedDomainInfo, setUnauthorizedDomainInfo] = useState<{ hostname: string; projectId: string } | null>(null);
+  const [insufficientScopeFlag, setInsufficientScopeFlag] = useState(false);
 
   const loadDriveFiles = useCallback(async () => {
     if (!googleDriveService.getAccessToken()) {
@@ -90,7 +94,15 @@ export const GoogleDriveSyncModal: React.FC<Props> = ({ isOpen, onClose }) => {
       setFiles(result.files);
       setNeedsAuth(false);
     } catch (err: any) {
-      if (err instanceof DriveAuthError) {
+      if (err instanceof DriveUnauthorizedDomainError) {
+        setUnauthorizedDomainInfo({ hostname: err.hostname, projectId: err.projectId });
+        setNeedsAuth(true);
+        setStatusNotice({ kind: 'error', message: err.message });
+      } else if (err instanceof DriveInsufficientScopeError) {
+        setInsufficientScopeFlag(true);
+        setNeedsAuth(true);
+        setStatusNotice({ kind: 'error', message: err.message });
+      } else if (err instanceof DriveAuthError) {
         setNeedsAuth(true);
         setStatusNotice({ kind: 'info', message: err.message });
       } else {
@@ -128,6 +140,8 @@ export const GoogleDriveSyncModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const handleLogin = async () => {
     setIsLoggingIn(true);
     setStatusNotice(null);
+    setUnauthorizedDomainInfo(null);
+    setInsufficientScopeFlag(false);
     try {
       const res = await googleDriveService.googleSignIn();
       setUser(res.user);
@@ -135,6 +149,11 @@ export const GoogleDriveSyncModal: React.FC<Props> = ({ isOpen, onClose }) => {
       setStatusNotice({ kind: 'success', message: `Đã kết nối Google Drive (${res.user.email || res.user.displayName})` });
       await loadDriveFiles();
     } catch (err: any) {
+      if (err instanceof DriveUnauthorizedDomainError) {
+        setUnauthorizedDomainInfo({ hostname: err.hostname, projectId: err.projectId });
+      } else if (err instanceof DriveInsufficientScopeError) {
+        setInsufficientScopeFlag(true);
+      }
       setStatusNotice({ kind: 'error', message: err?.message || 'Đăng nhập Google thất bại.' });
     } finally {
       setIsLoggingIn(false);
@@ -465,6 +484,74 @@ export const GoogleDriveSyncModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 >
                   Đổi sang tài khoản Google khác
                 </button>
+              )}
+
+              {unauthorizedDomainInfo && (
+                <div className="w-full text-left mt-2 p-4 rounded-xl bg-amber-950/35 border border-amber-500/40 space-y-3 text-xs text-amber-100">
+                  <div className="font-semibold text-amber-300">
+                    Hướng dẫn cấp quyền cho tên miền Netlify
+                  </div>
+                  <p className="text-amber-100/90 leading-relaxed">
+                    Để đăng nhập Google trên trang web Netlify, bạn cần thêm tên miền hiện tại vào danh sách <strong>Authorized domains</strong> trong Firebase Project <span className="font-mono text-amber-200">{unauthorizedDomainInfo.projectId}</span> (chỉ cần làm 1 lần):
+                  </p>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800">
+                    <span className="font-mono text-sky-300 truncate">{unauthorizedDomainInfo.hostname}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(unauthorizedDomainInfo.hostname);
+                        setStatusNotice({ kind: 'info', message: `Đã sao chép tên miền: ${unauthorizedDomainInfo.hostname}` });
+                      }}
+                      className="min-h-[36px] sm:min-h-[30px] px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-medium shrink-0"
+                    >
+                      Sao chép domain
+                    </button>
+                  </div>
+
+                  <ol className="list-decimal list-inside space-y-1.5 text-amber-100/85 leading-relaxed">
+                    <li>Bấm <strong>Sao chép domain</strong> ở trên.</li>
+                    <li>
+                      Mở{' '}
+                      <a
+                        href={`https://console.firebase.google.com/project/${unauthorizedDomainInfo.projectId}/authentication/settings`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sky-300 underline font-semibold hover:text-sky-200"
+                      >
+                        Firebase Authentication Settings
+                      </a>
+                      {' '}và kiểm tra góc trên bên phải đã đăng nhập đúng Gmail chủ dự án chưa (chọn đúng dự án <span className="font-mono text-amber-200">{unauthorizedDomainInfo.projectId}</span> ở góc trên trái).
+                    </li>
+                    <li>
+                      Ở trang Authentication: chọn tab <strong>Settings</strong> (hoặc <strong>Cài đặt</strong> — trên iPhone hãy bấm vào menu thả xuống có chữ <em>Users ▾</em> để chuyển sang <em>Settings</em>).
+                    </li>
+                    <li>
+                      Trong Settings, chọn mục <strong>Authorized domains</strong> (tiếng Việt: <strong>Miền được ủy quyền</strong>) → bấm <strong>Add domain</strong> (<strong>Thêm miền</strong>) → dán tên miền Netlify vừa sao chép (chỉ dán phần <span className="font-mono">...netlify.app</span>, không kèm <span className="font-mono">https://</span>) → bấm <strong>Add</strong>.
+                    </li>
+                    <li>Quay lại đây và bấm <strong>Sign in with Google</strong> lại lần nữa.</li>
+                  </ol>
+                </div>
+              )}
+
+              {insufficientScopeFlag && (
+                <div className="w-full text-left mt-2 p-4 rounded-xl bg-amber-950/35 border border-amber-500/40 space-y-2.5 text-xs text-amber-100">
+                  <div className="font-semibold text-amber-300">
+                    Thiếu quyền truy cập Google Drive (403 Insufficient Scopes)
+                  </div>
+                  <p className="text-amber-100/90 leading-relaxed">
+                    Google vừa đăng nhập tài khoản của bạn nhưng <strong>ô quyền truy cập Google Drive chưa được tích chọn</strong> (hoặc phiên cấp quyền cũ chưa bật quyền Drive).
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1 text-amber-100/85 leading-relaxed">
+                    <li>Bấm lại nút <strong>Sign in with Google</strong> ở trên.</li>
+                    <li>
+                      Trên màn hình cấp quyền của Google, tìm dòng{' '}
+                      <em>“Xem, chỉnh sửa, tạo và xóa chỉ các tệp Google Drive cụ thể mà bạn sử dụng với ứng dụng này”</em> (hoặc <strong>Chọn tất cả / Select all</strong>) và{' '}
+                      <strong>nhớ tích dấu ✓ vào ô vuông</strong> trước khi bấm <strong>Continue / Tiếp tục</strong>.
+                    </li>
+                    <li>Nếu màn hình Google hiện cảnh báo “Ứng dụng chưa được xác minh”, chọn <strong>Nâng cao (Advanced)</strong> → <strong>Đi tới ứng dụng (Go to ...)</strong> → tích quyền Drive và tiếp tục.</li>
+                  </ol>
+                </div>
               )}
             </div>
           ) : (

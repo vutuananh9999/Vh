@@ -24,7 +24,10 @@ const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach(scope => provider.addScope(scope));
-provider.setCustomParameters({ prompt: 'select_account' });
+provider.setCustomParameters({
+  prompt: 'consent select_account',
+  include_granted_scopes: 'true'
+});
 
 // Strict in-memory caching ONLY (never store OAuth access tokens in localStorage/sessionStorage)
 let cachedAccessToken: string | null = null;
@@ -90,6 +93,32 @@ export class DriveAuthError extends Error {
   }
 }
 
+export class DriveUnauthorizedDomainError extends Error {
+  public readonly hostname: string;
+  public readonly projectId: string;
+
+  constructor(hostname: string, projectId: string) {
+    super(
+      `Tên miền "${hostname}" chưa được cấp quyền đăng nhập Google trong Firebase Console (auth/unauthorized-domain).`
+    );
+    this.name = 'DriveUnauthorizedDomainError';
+    this.hostname = hostname;
+    this.projectId = projectId;
+  }
+}
+
+export class DriveInsufficientScopeError extends DriveAuthError {
+  public readonly grantedScopes: string[];
+
+  constructor(grantedScopes: string[] = []) {
+    super(
+      'Tài khoản Google đã đăng nhập nhưng CHƯA được cấp quyền truy cập Google Drive (thiếu quyền drive.file). Vui lòng bấm Đăng nhập lại bằng Google và tích chọn ô cấp quyền Google Drive.'
+    );
+    this.name = 'DriveInsufficientScopeError';
+    this.grantedScopes = grantedScopes;
+  }
+}
+
 function toUserInfo(user: User): DriveUserInfo {
   return {
     uid: user.uid,
@@ -146,18 +175,50 @@ export const googleDriveService = {
       if (!credential?.accessToken) {
         throw new Error('Không nhận được mã truy cập Google Drive từ phiên đăng nhập.');
       }
-      cachedAccessToken = credential.accessToken;
+      const token = credential.accessToken;
+
+      // Verify Google Granular OAuth Consent actually granted drive.file
+      try {
+        const infoRes = await fetch(
+          `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
+        );
+        if (infoRes.ok) {
+          const info = await infoRes.json();
+          const granted = String(info?.scope || '').split(/\s+/).filter(Boolean);
+          if (!granted.includes('https://www.googleapis.com/auth/drive.file')) {
+            throw new DriveInsufficientScopeError(granted);
+          }
+        }
+      } catch (scopeErr) {
+        if (scopeErr instanceof DriveInsufficientScopeError) {
+          cachedAccessToken = null;
+          throw scopeErr;
+        }
+      }
+
+      cachedAccessToken = token;
       return {
         user: toUserInfo(result.user),
         accessToken: cachedAccessToken
       };
     } catch (error: any) {
       const code = String(error?.code || '');
-      if (code === 'auth/popup-closed-by-user') {
+      const rawMsg = String(error?.message || '');
+      if (code === 'auth/unauthorized-domain' || rawMsg.includes('auth/unauthorized-domain')) {
+        const hostname = typeof window !== 'undefined' ? window.location.hostname : 'unknown-domain';
+        throw new DriveUnauthorizedDomainError(hostname, firebaseConfig.projectId);
+      }
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         throw new Error('Bạn đã đóng cửa sổ đăng nhập Google trước khi hoàn tất.');
       }
       if (code === 'auth/popup-blocked') {
         throw new Error('Trình duyệt đã chặn cửa sổ bật lên. Vui lòng cho phép pop-up (trên iPhone: Cài đặt > Safari > tắt Chặn cửa sổ bật lên).');
+      }
+      if (code === 'auth/network-request-failed') {
+        throw new Error('Lỗi kết nối mạng khi đăng nhập Google. Vui lòng kiểm tra Wi-Fi / 4G rồi thử lại.');
+      }
+      if (code === 'auth/web-storage-unsupported') {
+        throw new Error('Trình duyệt đang chặn cookie/bộ nhớ phiên. Trên iPhone Safari hãy tắt chế độ Ẩn danh hoặc bật cho phép cookie.');
       }
       throw error;
     } finally {
@@ -195,6 +256,17 @@ export const googleDriveService = {
     if (res.status === 401) {
       cachedAccessToken = null;
       throw new DriveAuthError('Phiên truy cập Google Drive đã hết hạn (401). Vui lòng bấm Đăng nhập lại bằng Google.');
+    }
+    if (res.status === 403) {
+      const clonedText = await res.clone().text();
+      if (
+        clonedText.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') ||
+        clonedText.includes('insufficientPermissions') ||
+        clonedText.includes('insufficient authentication scopes')
+      ) {
+        cachedAccessToken = null;
+        throw new DriveInsufficientScopeError();
+      }
     }
     return res;
   },
