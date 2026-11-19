@@ -384,6 +384,10 @@ class RequestThrottleService {
     this.recentJobs = [job, ...this.recentJobs.slice(0, 49)];
   }
 
+  public getLatestRunningJob(): QueueJob | undefined {
+    return this.recentJobs.find(j => j.status === 'running') || this.recentJobs.find(j => j.status === 'pending');
+  }
+
   public getState(): ThrottleState {
     return {
       environment: this.environment,

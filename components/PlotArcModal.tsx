@@ -633,7 +633,7 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                     </div>
                 )}
 
-                <div className="flex-1 flex overflow-hidden">
+                <div className="flex-1 flex min-h-0 overflow-hidden">
                     {/* Tab 1: Timeline */}
                     {activeTab === 'timeline' && (
                         <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 sm:space-y-10 custom-scrollbar bg-gray-950/20">

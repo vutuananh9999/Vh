@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { plotDebugLogger, PlotDebugLogItem } from '../../services/plotDebugLogger.ts';
 import { geminiService } from '../../services/geminiService.ts';
 import { requestThrottleService, ThrottleState, QueueMode } from '../../services/requestThrottleService.ts';
@@ -7,15 +7,46 @@ interface Props {
   onSwitchToChat?: () => void;
 }
 
+const LOG_TYPE_LABELS: Record<PlotDebugLogItem['type'], { label: string; badgeClass: string }> = {
+  plot_chat: { label: 'Co-Edit Chat', badgeClass: 'bg-emerald-950/70 text-emerald-300 border-emerald-700/50' },
+  plot_analysis: { label: 'Phân tích Mạch', badgeClass: 'bg-indigo-950/70 text-indigo-300 border-indigo-700/50' },
+  entity_scan: { label: 'Quét Nhân vật/Tri thức', badgeClass: 'bg-purple-950/70 text-purple-300 border-purple-700/50' },
+  audit: { label: 'Kiểm toán', badgeClass: 'bg-amber-950/70 text-amber-300 border-amber-700/50' },
+  chapter_summary: { label: 'Tóm tắt chương', badgeClass: 'bg-cyan-950/70 text-cyan-300 border-cyan-700/50' },
+  content_gen: { label: 'Sáng tác / Sửa', badgeClass: 'bg-sky-950/70 text-sky-300 border-sky-700/50' },
+  key_test: { label: 'Test Key', badgeClass: 'bg-teal-950/70 text-teal-300 border-teal-700/50' },
+  system_diagnostic: { label: 'Hệ thống', badgeClass: 'bg-gray-800 text-gray-300 border-gray-700' },
+};
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
-  const [logs, setLogs] = useState<PlotDebugLogItem[]>([]);
+  const [logs, setLogs] = useState<PlotDebugLogItem[]>(() => plotDebugLogger.getLogs());
   const [selectedLog, setSelectedLog] = useState<PlotDebugLogItem | null>(null);
-  const [filter, setFilter] = useState<'all' | '429' | 'errors' | 'chat' | 'analysis'>('all');
+  const [filter, setFilter] = useState<'all' | 'live' | 'scan_audit' | '429' | 'errors' | 'chat' | 'analysis'>('all');
   const [isTestingKeys, setIsTestingKeys] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; statusText: string; latency?: number }>>({});
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
   const [inspectorTab, setInspectorTab] = useState<'overview' | 'system' | 'message' | 'response' | 'error'>('overview');
-  const [throttleState, setThrottleState] = useState<ThrottleState>(requestThrottleService.getState());
+  const [throttleState, setThrottleState] = useState<ThrottleState>(() => requestThrottleService.getState());
+  const [autoFollowLive, setAutoFollowLive] = useState(true);
+  const [nowTime, setNowTime] = useState<number>(() => Date.now());
+
+  const selectedLogIdRef = useRef<string | null>(null);
+  const lastAutoSelectedIdRef = useRef<string | null>(null);
+  const autoFollowRef = useRef<boolean>(true);
+  const responseBoxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    selectedLogIdRef.current = selectedLog?.id || null;
+  }, [selectedLog]);
+
+  useEffect(() => {
+    autoFollowRef.current = autoFollowLive;
+  }, [autoFollowLive]);
 
   const hostEnv = useMemo(() => plotDebugLogger.getHostEnv(), []);
 
@@ -29,13 +60,61 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
   useEffect(() => {
     const unsubscribe = plotDebugLogger.subscribe((updatedLogs) => {
       setLogs(updatedLogs);
-      if (selectedLog) {
-        const found = updatedLogs.find(l => l.id === selectedLog.id);
-        if (found) setSelectedLog(found);
+
+      const currentId = selectedLogIdRef.current;
+      const latestActive = updatedLogs.find(l => l.status === 'streaming' || l.status === 'pending');
+
+      if (autoFollowRef.current && latestActive && latestActive.id !== lastAutoSelectedIdRef.current) {
+        lastAutoSelectedIdRef.current = latestActive.id;
+        setSelectedLog(latestActive);
+        return;
+      }
+
+      if (currentId) {
+        const found = updatedLogs.find(l => l.id === currentId);
+        if (found) {
+          setSelectedLog(found);
+        } else {
+          setSelectedLog(null);
+        }
       }
     });
     return () => unsubscribe();
-  }, [selectedLog]);
+  }, []);
+
+  const activeLiveLogs = useMemo(
+    () => logs.filter(l => l.status === 'pending' || l.status === 'streaming'),
+    [logs]
+  );
+
+  const queuedPendingJobs = useMemo(
+    () => throttleState.jobs.filter(j => j.status === 'pending'),
+    [throttleState.jobs]
+  );
+
+  const hasLiveActivity =
+    activeLiveLogs.length > 0 || throttleState.activeCount > 0 || throttleState.pendingCount > 0;
+
+  useEffect(() => {
+    if (!hasLiveActivity) return;
+    setNowTime(Date.now());
+    const interval = setInterval(() => {
+      setNowTime(Date.now());
+    }, 200);
+    return () => clearInterval(interval);
+  }, [hasLiveActivity]);
+
+  // Auto-scroll live streaming response content when viewing Phản hồi AI
+  useEffect(() => {
+    if (
+      autoFollowLive &&
+      inspectorTab === 'response' &&
+      selectedLog?.status === 'streaming' &&
+      responseBoxRef.current
+    ) {
+      responseBoxRef.current.scrollTop = responseBoxRef.current.scrollHeight;
+    }
+  }, [selectedLog?.fullResponse, selectedLog?.chunksCount, selectedLog?.status, inspectorTab, autoFollowLive]);
 
   const showNotification = (msg: string) => {
     setCopiedNotification(msg);
@@ -59,9 +138,11 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
         remainingSec: Math.ceil(status.remainingMs / 1000)
       };
     });
-  }, [storedKeys, logs]);
+  }, [storedKeys, logs, nowTime]);
 
   const filteredLogs = useMemo(() => {
+    if (filter === 'live') return logs.filter(l => l.status === 'pending' || l.status === 'streaming');
+    if (filter === 'scan_audit') return logs.filter(l => l.type === 'entity_scan' || l.type === 'audit');
     if (filter === '429') return logs.filter(l => l.status === 'rate_limit_429' || l.statusCode === 429);
     if (filter === 'errors') return logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming');
     if (filter === 'chat') return logs.filter(l => l.type === 'plot_chat');
@@ -71,10 +152,12 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
 
   const stats = useMemo(() => {
     const total = logs.length;
+    const live = logs.filter(l => l.status === 'pending' || l.status === 'streaming').length;
     const count429 = logs.filter(l => l.status === 'rate_limit_429' || l.statusCode === 429).length;
     const errors = logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming').length;
+    const scanAudit = logs.filter(l => l.type === 'entity_scan' || l.type === 'audit').length;
     const successes = logs.filter(l => l.status === 'success').length;
-    return { total, count429, errors, successes };
+    return { total, live, count429, errors, scanAudit, successes };
   }, [logs]);
 
   const handleTestAllKeys = async () => {
@@ -89,7 +172,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
       const k = storedKeys[i];
       const start = Date.now();
       const mask = k.length > 8 ? `${k.slice(0, 6)}...${k.slice(-4)}` : `Key #${i + 1}`;
-      
+
       const logId = plotDebugLogger.startLog({
         type: 'key_test',
         title: `Kiểm tra kết nối API Key #${i + 1} (${mask})`,
@@ -99,7 +182,8 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
         totalKeys: storedKeys.length,
         keySource: 'localStorage',
         message: 'Ping test',
-        systemInstruction: 'Test connection'
+        systemInstruction: 'Test connection',
+        currentPhase: `Đang ping Key #${i + 1}...`
       });
 
       try {
@@ -146,7 +230,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-gray-950 text-gray-200 font-sans">
+    <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden bg-gray-950 text-gray-200 font-sans relative">
       {/* Toast */}
       {copiedNotification && (
         <div className="absolute top-16 left-1/2 transform -translate-x-1/2 z-[300] bg-emerald-600 text-white font-bold py-2 px-5 rounded-xl shadow-2xl border border-emerald-400/40 text-xs animate-fadeIn flex items-center gap-2">
@@ -158,14 +242,14 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
       )}
 
       {/* Top Diagnostics Dashboard Bar */}
-      <div className="bg-gradient-to-r from-gray-900 via-gray-900/90 to-gray-950 border-b border-gray-800 p-3 sm:p-4 shrink-0 shadow-md">
+      <div className="bg-gradient-to-r from-gray-900 via-gray-900/90 to-gray-950 border-b border-gray-800 p-3 sm:p-4 shrink-0 max-h-[42%] md:max-h-none overflow-y-auto custom-scrollbar shadow-md">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Environment Status Pills */}
+          {/* Environment Status Badges */}
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
             {/* Host Badge */}
             <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono font-bold ${
-              hostEnv.isNetlify 
-                ? 'bg-sky-950/60 border-sky-600/40 text-sky-300' 
+              hostEnv.isNetlify
+                ? 'bg-sky-950/60 border-sky-600/40 text-sky-300'
                 : 'bg-emerald-950/60 border-emerald-600/40 text-emerald-300'
             }`}>
               <span className={`w-2 h-2 rounded-full ${hostEnv.isNetlify ? 'bg-sky-400 animate-pulse' : 'bg-emerald-400'}`}></span>
@@ -181,7 +265,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               <span>{storedKeys.length} Key đã cấu hình</span>
             </div>
 
-            {/* Model Selector Badge */}
+            {/* Model Selector */}
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-gray-850 border border-gray-700 text-gray-300 font-mono">
               <span className="text-gray-400 text-[10px]">Model:</span>
               <select
@@ -190,7 +274,6 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   const newModel = e.target.value;
                   localStorage.setItem('aetheria_model_flash', newModel);
                   showNotification(`Đã chuyển Model sang: ${newModel}`);
-                  // Force re-render
                   setLogs([...plotDebugLogger.getLogs()]);
                 }}
                 className="bg-transparent text-amber-400 font-bold text-[11px] focus:outline-none cursor-pointer"
@@ -219,6 +302,19 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
 
           {/* Quick Action Buttons */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={() => setAutoFollowLive(prev => !prev)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border active:scale-95 ${
+                autoFollowLive
+                  ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-300 shadow-sm shadow-emerald-900/40'
+                  : 'bg-gray-850 border-gray-700 text-gray-400 hover:text-gray-200'
+              }`}
+              title="Tự động chọn và cuộn theo luồng AI đang chạy theo thời gian thực"
+            >
+              <span className={`w-2 h-2 rounded-full ${autoFollowLive ? 'bg-emerald-400 animate-ping' : 'bg-gray-500'}`}></span>
+              <span>{autoFollowLive ? 'Theo dõi Live: BẬT' : 'Theo dõi Live: TẮT'}</span>
+            </button>
+
             <button
               onClick={handleTestAllKeys}
               disabled={isTestingKeys}
@@ -266,7 +362,10 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             </button>
 
             <button
-              onClick={() => plotDebugLogger.clearLogs()}
+              onClick={() => {
+                plotDebugLogger.clearLogs();
+                setSelectedLog(null);
+              }}
               className="p-1.5 bg-gray-850 hover:bg-rose-950/60 text-gray-400 hover:text-rose-300 rounded-lg text-xs transition-all border border-gray-800"
               title="Xóa toàn bộ log hiện tại"
             >
@@ -279,7 +378,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
 
         {/* Live Key Cooldown Strip */}
         {keyCooldownsInfo.length > 0 && (
-          <div className="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center gap-2 text-[10.5px]">
+          <div className="mt-2 pt-2 border-t border-gray-800/80 flex flex-wrap items-center gap-2 text-[10.5px]">
             <span className="text-gray-500 font-bold uppercase text-[9px] tracking-wider">Trạng thái từng Key:</span>
             {keyCooldownsInfo.map(k => (
               <div
@@ -308,9 +407,8 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
         )}
 
         {/* Request Throttling & Queue Management Bar */}
-        <div className="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center justify-between gap-3 text-[11px]">
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Queue Mode Badge */}
+        <div className="mt-2 pt-2 border-t border-gray-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2">
             <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono font-bold ${
               throttleState.effectiveConcurrency === 1
                 ? 'bg-amber-950/50 border-amber-600/40 text-amber-300'
@@ -324,17 +422,15 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               </span>
             </div>
 
-            {/* Queue Counter Indicators */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-850 border border-gray-700 text-gray-300">
-              <span className={`w-2 h-2 rounded-full ${throttleState.activeCount > 0 ? 'bg-amber-400 animate-ping' : 'bg-gray-500'}`}></span>
-              <span className="font-bold text-gray-200">Đang chạy: {throttleState.activeCount}</span>
+              <span className={`w-2 h-2 rounded-full ${hasLiveActivity ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`}></span>
+              <span className="font-bold text-gray-200">Đang chạy: {Math.max(throttleState.activeCount, activeLiveLogs.length)}</span>
               <span className="text-gray-500">|</span>
               <span className="text-gray-300">Đang chờ: <b className="text-amber-400">{throttleState.pendingCount}</b></span>
               <span className="text-gray-500">|</span>
               <span className="text-gray-400 text-[10px]">Đã xử lý: {throttleState.totalProcessed}</span>
             </div>
 
-            {/* Paused Warning if 429 occurred */}
             {throttleState.isPaused && (
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/80 border border-rose-600/60 text-rose-300 font-bold animate-pulse">
                 <span>⏸️ Hàng đợi tạm nghỉ: {throttleState.pauseReason}</span>
@@ -342,7 +438,6 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             )}
           </div>
 
-          {/* Mode Selector & Delay Tuner */}
           <div className="flex items-center gap-2">
             <span className="text-gray-500 text-[10px] uppercase font-bold">Chế độ Queue:</span>
             <select
@@ -376,13 +471,122 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             </select>
           </div>
         </div>
+
+        {/* Real-time Live AI Activity Monitor Strip */}
+        <div className={`mt-2.5 rounded-xl border px-3 py-2 transition-all ${
+          hasLiveActivity
+            ? 'bg-gradient-to-r from-sky-950/60 via-indigo-950/50 to-purple-950/40 border-sky-500/40 shadow-inner'
+            : 'bg-black/30 border-gray-800/80'
+        }`}>
+          <div className="flex items-center justify-between gap-2 text-[10.5px]">
+            <div className="flex items-center gap-2 font-bold">
+              <span className="relative flex h-2.5 w-2.5">
+                {hasLiveActivity && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                )}
+                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${hasLiveActivity ? 'bg-sky-400' : 'bg-emerald-500/70'}`}></span>
+              </span>
+              <span className={hasLiveActivity ? 'text-sky-300 uppercase tracking-wider' : 'text-gray-400 uppercase tracking-wider'}>
+                {hasLiveActivity
+                  ? `HOẠT ĐỘNG AI TRỰC TIẾP (${activeLiveLogs.length} đang chạy • ${queuedPendingJobs.length} chờ hàng đợi)`
+                  : 'LUỒNG LIVE AI: ĐANG CHỜ TÁC VỤ (Tự động cập nhật theo thời gian thực khi AI hoạt động)'}
+              </span>
+            </div>
+
+            {onSwitchToChat && (
+              <button
+                onClick={onSwitchToChat}
+                className="text-[10px] font-bold text-indigo-300 hover:text-indigo-200 underline underline-offset-2"
+              >
+                Mở Co-Edit để test ngay →
+              </button>
+            )}
+          </div>
+
+          {(activeLiveLogs.length > 0 || queuedPendingJobs.length > 0) && (
+            <div className="mt-2 space-y-1.5 max-h-28 overflow-y-auto custom-scrollbar pr-1">
+              {activeLiveLogs.map(liveLog => {
+                const elapsedMs = Math.max(0, nowTime - liveLog.timestamp);
+                const elapsedSec = Math.max(0.1, elapsedMs / 1000);
+                const chars = liveLog.receivedChars || liveLog.fullResponse?.length || 0;
+                const speed = Math.round(chars / elapsedSec);
+                const liveTail = (liveLog.fullResponse || liveLog.responseSnippet || '').slice(-120).replace(/\s+/g, ' ').trim();
+
+                return (
+                  <div
+                    key={liveLog.id}
+                    onClick={() => {
+                      setSelectedLog(liveLog);
+                      if (liveLog.status === 'streaming') setInspectorTab('response');
+                    }}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-950/80 border border-sky-500/30 hover:border-sky-400/60 cursor-pointer text-[11px]"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 ${
+                        liveLog.status === 'streaming'
+                          ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 animate-pulse'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      }`}>
+                        {liveLog.status === 'streaming' ? 'STREAMING' : 'ĐANG GỬI'}
+                      </span>
+                      <span className="font-bold text-gray-100 truncate">{liveLog.title}</span>
+                      <span className="text-[10px] text-sky-300/90 font-mono truncate hidden md:inline">
+                        • {liveLog.currentPhase || 'Đang xử lý...'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2.5 text-[10px] font-mono shrink-0 text-gray-300">
+                      <span className="text-amber-300">{liveLog.model}</span>
+                      <span className="text-purple-300">Key #{liveLog.keyIndex}/{liveLog.totalKeys}</span>
+                      {chars > 0 && (
+                        <span className="text-emerald-300">
+                          {liveLog.chunksCount || 0} chunks • {chars.toLocaleString()} kt ({speed} kt/s)
+                        </span>
+                      )}
+                      <span className="px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 font-bold border border-sky-800">
+                        ⏱ {formatDuration(elapsedMs)}
+                      </span>
+                    </div>
+
+                    {liveTail && (
+                      <div className="sm:hidden text-[10px] text-gray-400 italic truncate">
+                        &quot;...{liveTail}&quot;
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {queuedPendingJobs.map(job => (
+                <div
+                  key={job.id}
+                  className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-lg bg-gray-900/80 border border-amber-700/30 text-[10.5px] text-amber-200"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/50 text-[9px] font-mono font-bold">
+                      HÀNG ĐỢI
+                    </span>
+                    <span className="truncate font-semibold">{job.name}</span>
+                  </div>
+                  <span className="font-mono text-[10px] text-amber-400 shrink-0">
+                    Chờ {formatDuration(Math.max(0, nowTime - job.createdAt))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Main Content Area: Split List & Inspector */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
         {/* Left Side: Filter Tabs & Request Logs List */}
-        <div className="w-full md:w-1/2 lg:w-5/12 flex flex-col border-r border-gray-800 bg-gray-950 overflow-hidden">
-          {/* Filter Pills */}
+        <div
+          className={`w-full md:w-1/2 lg:w-5/12 flex flex-col min-h-0 border-b md:border-b-0 md:border-r border-gray-800 bg-gray-950 overflow-hidden ${
+            selectedLog ? 'h-[42%] md:h-auto shrink-0 md:shrink' : 'flex-1 md:flex-none'
+          }`}
+        >
+          {/* Filter Tabs */}
           <div className="p-2.5 border-b border-gray-800/80 flex items-center gap-1.5 overflow-x-auto custom-scrollbar shrink-0 bg-gray-900/40">
             <button
               onClick={() => setFilter('all')}
@@ -393,20 +597,24 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               Tất cả ({stats.total})
             </button>
             <button
-              onClick={() => setFilter('429')}
-              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all whitespace-nowrap ${
-                filter === '429' ? 'bg-rose-600 text-white shadow' : 'bg-gray-850 text-rose-400 hover:bg-gray-800'
+              onClick={() => setFilter('live')}
+              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all whitespace-nowrap flex items-center gap-1 ${
+                filter === 'live'
+                  ? 'bg-sky-600 text-white shadow'
+                  : stats.live > 0
+                  ? 'bg-sky-950/70 text-sky-300 border border-sky-600/40 animate-pulse'
+                  : 'bg-gray-850 text-gray-400 hover:text-gray-200'
               }`}
             >
-              Lỗi 429 ({stats.count429})
+              <span>Live ({stats.live})</span>
             </button>
             <button
-              onClick={() => setFilter('errors')}
+              onClick={() => setFilter('scan_audit')}
               className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all whitespace-nowrap ${
-                filter === 'errors' ? 'bg-amber-600 text-white shadow' : 'bg-gray-850 text-gray-400 hover:text-gray-200'
+                filter === 'scan_audit' ? 'bg-amber-600 text-white shadow' : 'bg-gray-850 text-gray-400 hover:text-gray-200'
               }`}
             >
-              Lỗi khác ({stats.errors})
+              Quét & Kiểm toán ({stats.scanAudit})
             </button>
             <button
               onClick={() => setFilter('chat')}
@@ -424,18 +632,34 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             >
               Phân tích Mạch
             </button>
+            <button
+              onClick={() => setFilter('429')}
+              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all whitespace-nowrap ${
+                filter === '429' ? 'bg-rose-600 text-white shadow' : 'bg-gray-850 text-rose-400 hover:bg-gray-800'
+              }`}
+            >
+              Lỗi 429 ({stats.count429})
+            </button>
+            <button
+              onClick={() => setFilter('errors')}
+              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all whitespace-nowrap ${
+                filter === 'errors' ? 'bg-rose-700 text-white shadow' : 'bg-gray-850 text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              Lỗi khác ({stats.errors})
+            </button>
           </div>
 
           {/* Logs Scrollable Feed */}
-          <div className="flex-1 overflow-y-auto p-2 sm:p-3 space-y-2 custom-scrollbar">
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3 space-y-2 custom-scrollbar">
             {filteredLogs.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-48 text-center p-6 text-gray-500">
                 <svg className="w-10 h-10 mb-2 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                <p className="text-xs font-semibold">Chưa có yêu cầu API nào được ghi lại</p>
+                <p className="text-xs font-semibold">Chưa có yêu cầu API nào khớp bộ lọc</p>
                 <p className="text-[11px] text-gray-600 mt-1">
-                  Hãy gửi một tin nhắn trong tab Co-Edit hoặc bấm &quot;Test Tất Cả Key&quot; để quan sát log thực tế.
+                  Mọi thao tác AI (Quét nhân vật, Kiểm toán, Phân tích mạch, Chat, Sáng tác, Việt Hóa) sẽ tự động hiện trực tiếp tại đây.
                 </p>
               </div>
             ) : (
@@ -445,6 +669,11 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 const isSuccess = log.status === 'success';
                 const isStreaming = log.status === 'streaming';
                 const isPending = log.status === 'pending';
+                const isLive = isStreaming || isPending;
+                const typeMeta = LOG_TYPE_LABELS[log.type] || LOG_TYPE_LABELS.system_diagnostic;
+                const displayDuration = log.durationMs
+                  ? formatDuration(log.durationMs)
+                  : formatDuration(Math.max(0, nowTime - log.timestamp));
 
                 return (
                   <div
@@ -453,6 +682,8 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                     className={`p-3 rounded-xl border transition-all cursor-pointer text-xs ${
                       isSelected
                         ? 'bg-purple-950/40 border-purple-500 shadow-md ring-1 ring-purple-500/50'
+                        : isLive
+                        ? 'bg-sky-950/25 border-sky-500/50 hover:bg-sky-950/40'
                         : is429
                         ? 'bg-rose-950/20 hover:bg-rose-950/40 border-rose-900/50'
                         : isSuccess
@@ -462,23 +693,26 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   >
                     {/* Log Card Header */}
                     <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        {/* Status Badge */}
-                        <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase ${
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase shrink-0 ${
                           isSuccess
                             ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
                             : is429
                             ? 'bg-rose-950 text-rose-400 border border-rose-700 animate-pulse'
                             : isStreaming
-                            ? 'bg-sky-950 text-sky-400 border border-sky-700'
+                            ? 'bg-sky-950 text-sky-300 border border-sky-600 animate-pulse'
                             : isPending
-                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                            ? 'bg-amber-950 text-amber-300 border border-amber-700'
                             : 'bg-rose-950 text-rose-300 border border-rose-800'
                         }`}>
-                          {log.statusCode || log.status}
+                          {isStreaming ? 'LIVE' : isPending ? 'RUN' : (log.statusCode || log.status)}
                         </span>
 
-                        <span className="font-bold text-gray-200 truncate max-w-[140px] sm:max-w-[200px]">
+                        <span className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold shrink-0 ${typeMeta.badgeClass}`}>
+                          {typeMeta.label}
+                        </span>
+
+                        <span className="font-bold text-gray-200 truncate">
                           {log.title}
                         </span>
                       </div>
@@ -489,22 +723,31 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                     </div>
 
                     {/* Meta Row */}
-                    <div className="flex flex-wrap items-center gap-2 text-[10.5px] text-gray-400 font-mono mb-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-gray-400 font-mono mb-1.5">
                       <span className="text-amber-400/90">{log.model}</span>
                       <span>•</span>
                       <span>Key: {log.keyMask}</span>
                       <span>•</span>
                       <span>~{log.payloadMetrics.estimatedTokens} tok</span>
-                      {log.durationMs && (
+                      <span>•</span>
+                      <span className={isLive ? 'text-sky-400 font-bold' : 'text-emerald-400'}>
+                        {isLive ? `⏱ ${displayDuration}` : displayDuration}
+                      </span>
+                      {(log.chunksCount || 0) > 0 && (
                         <>
                           <span>•</span>
-                          <span className="text-emerald-400">{log.durationMs}ms</span>
+                          <span className="text-cyan-300">{log.chunksCount} chunks / {(log.receivedChars || 0).toLocaleString()} kt</span>
                         </>
                       )}
                     </div>
 
-                    {/* Excerpt Snippet */}
-                    {log.rawError ? (
+                    {/* Live Phase / Excerpt Snippet */}
+                    {isLive && log.currentPhase ? (
+                      <div className="p-1.5 rounded bg-sky-950/40 border border-sky-800/50 text-[10.5px] text-sky-200 font-mono truncate">
+                        ⚡ {log.currentPhase}
+                        {log.responseSnippet ? ` — "${log.responseSnippet.slice(-80)}"` : ''}
+                      </div>
+                    ) : log.rawError ? (
                       <div className="p-1.5 rounded bg-rose-950/40 border border-rose-900/40 text-[10.5px] text-rose-300 font-mono truncate">
                         ⚠️ {log.rawError}
                       </div>
@@ -521,27 +764,29 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
         </div>
 
         {/* Right Side: Deep Inspector Panel */}
-        <div className="w-full md:w-1/2 lg:w-7/12 flex flex-col bg-gray-950/60 overflow-hidden">
+        <div className="w-full md:w-1/2 lg:w-7/12 flex-1 md:flex-none flex flex-col min-h-0 bg-gray-950/60 overflow-hidden">
           {selectedLog ? (
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
               {/* Inspector Header */}
               <div className="p-3 sm:p-4 border-b border-gray-800 bg-gray-900/60 flex items-center justify-between gap-3 shrink-0">
-                <div className="flex items-center gap-2">
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${
                     selectedLog.status === 'success'
                       ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                      : selectedLog.status === 'streaming'
+                      ? 'bg-sky-950 text-sky-300 border border-sky-600 animate-pulse'
                       : selectedLog.status === 'rate_limit_429'
                       ? 'bg-rose-950 text-rose-300 border border-rose-600'
                       : 'bg-amber-950 text-amber-300 border border-amber-700'
                   }`}>
-                    {selectedLog.statusCode || selectedLog.status}
+                    {selectedLog.status === 'streaming' ? 'STREAMING' : (selectedLog.statusCode || selectedLog.status)}
                   </span>
                   <h4 className="font-bold text-gray-200 text-xs sm:text-sm truncate">
                     {selectedLog.title}
                   </h4>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     onClick={() => handleCopyText(JSON.stringify(selectedLog, null, 2), 'toàn bộ log JSON')}
                     className="p-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-all border border-gray-750"
@@ -564,7 +809,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-800/80 bg-gray-900/30 text-[11px] font-bold overflow-x-auto custom-scrollbar shrink-0">
                 <button
                   onClick={() => setInspectorTab('overview')}
-                  className={`px-3 py-1 rounded-md transition-all ${
+                  className={`px-3 py-1 rounded-md transition-all whitespace-nowrap ${
                     inspectorTab === 'overview' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
@@ -572,15 +817,15 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 </button>
                 <button
                   onClick={() => setInspectorTab('system')}
-                  className={`px-3 py-1 rounded-md transition-all ${
+                  className={`px-3 py-1 rounded-md transition-all whitespace-nowrap ${
                     inspectorTab === 'system' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
-                  System Instruction ({Math.round(selectedLog.payloadMetrics.systemInstructionChars / 1000)}k ký tự)
+                  System Instruction ({Math.round(selectedLog.payloadMetrics.systemInstructionChars / 1000)}k kt)
                 </button>
                 <button
                   onClick={() => setInspectorTab('message')}
-                  className={`px-3 py-1 rounded-md transition-all ${
+                  className={`px-3 py-1 rounded-md transition-all whitespace-nowrap ${
                     inspectorTab === 'message' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
@@ -588,16 +833,19 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 </button>
                 <button
                   onClick={() => setInspectorTab('response')}
-                  className={`px-3 py-1 rounded-md transition-all ${
+                  className={`px-3 py-1 rounded-md transition-all whitespace-nowrap flex items-center gap-1.5 ${
                     inspectorTab === 'response' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
-                  Phản hồi AI
+                  <span>Phản hồi AI</span>
+                  {(selectedLog.status === 'streaming' || selectedLog.status === 'pending') && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping"></span>
+                  )}
                 </button>
                 {selectedLog.rawError && (
                   <button
                     onClick={() => setInspectorTab('error')}
-                    className={`px-3 py-1 rounded-md transition-all ${
+                    className={`px-3 py-1 rounded-md transition-all whitespace-nowrap ${
                       inspectorTab === 'error' ? 'bg-rose-600 text-white' : 'text-rose-400 hover:text-rose-200'
                     }`}
                   >
@@ -607,10 +855,37 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               </div>
 
               {/* Inspector Body Content */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar text-xs">
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 custom-scrollbar text-xs">
                 {/* 1. Overview Tab */}
                 {inspectorTab === 'overview' && (
                   <div className="space-y-4">
+                    {/* Live Phase Banner */}
+                    {selectedLog.currentPhase && (
+                      <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                        selectedLog.status === 'streaming' || selectedLog.status === 'pending'
+                          ? 'bg-sky-950/40 border-sky-500/40 text-sky-200'
+                          : selectedLog.status === 'success'
+                          ? 'bg-emerald-950/30 border-emerald-700/40 text-emerald-200'
+                          : 'bg-rose-950/30 border-rose-700/40 text-rose-200'
+                      }`}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${
+                            selectedLog.status === 'streaming' || selectedLog.status === 'pending'
+                              ? 'bg-sky-400 animate-ping'
+                              : selectedLog.status === 'success'
+                              ? 'bg-emerald-400'
+                              : 'bg-rose-400'
+                          }`}></span>
+                          <span className="font-mono text-[11px] font-bold truncate">{selectedLog.currentPhase}</span>
+                        </div>
+                        {selectedLog.attemptCount && (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40 border border-white/10 shrink-0">
+                            Lần thử: #{selectedLog.attemptCount}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Automated Diagnostic Advice Box */}
                     {selectedLog.diagnosticAdvice && (
                       <div className="p-4 rounded-xl bg-gradient-to-r from-rose-950/60 to-purple-950/40 border border-rose-500/40 shadow-lg space-y-2">
@@ -630,7 +905,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
                         <span className="text-[10px] text-gray-500 font-bold uppercase block">Mô hình AI</span>
-                        <span className="text-sm font-mono font-bold text-amber-400">{selectedLog.model}</span>
+                        <span className="text-sm font-mono font-bold text-amber-400 break-all">{selectedLog.model}</span>
                       </div>
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
                         <span className="text-[10px] text-gray-500 font-bold uppercase block">API Key sử dụng</span>
@@ -638,21 +913,27 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                       </div>
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
                         <span className="text-[10px] text-gray-500 font-bold uppercase block">Thời gian phản hồi</span>
-                        <span className="text-sm font-mono font-bold text-emerald-400">{selectedLog.durationMs ? `${selectedLog.durationMs}ms` : 'Đang xử lý'}</span>
+                        <span className="text-sm font-mono font-bold text-emerald-400">
+                          {selectedLog.durationMs
+                            ? formatDuration(selectedLog.durationMs)
+                            : `⏱ ${formatDuration(Math.max(0, nowTime - selectedLog.timestamp))}`}
+                        </span>
                       </div>
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
-                        <span className="text-[10px] text-gray-500 font-bold uppercase block">Ký tự Payload</span>
+                        <span className="text-[10px] text-gray-500 font-bold uppercase block">Ký tự Payload gửi</span>
                         <span className="text-sm font-mono font-bold text-sky-400">
-                          {selectedLog.payloadMetrics.systemInstructionChars + selectedLog.payloadMetrics.promptChars} ký tự
+                          {(selectedLog.payloadMetrics.systemInstructionChars + selectedLog.payloadMetrics.promptChars).toLocaleString()} kt
                         </span>
                       </div>
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
                         <span className="text-[10px] text-gray-500 font-bold uppercase block">Ước lượng Token</span>
-                        <span className="text-sm font-mono font-bold text-indigo-400">~{selectedLog.payloadMetrics.estimatedTokens} Tokens</span>
+                        <span className="text-sm font-mono font-bold text-indigo-400">~{selectedLog.payloadMetrics.estimatedTokens.toLocaleString()} Tokens</span>
                       </div>
                       <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
-                        <span className="text-[10px] text-gray-500 font-bold uppercase block">Môi trường máy chủ</span>
-                        <span className="text-sm font-mono font-bold text-gray-300 truncate">{selectedLog.hostEnv.hostname}</span>
+                        <span className="text-[10px] text-gray-500 font-bold uppercase block">Dữ liệu đã nhận</span>
+                        <span className="text-sm font-mono font-bold text-cyan-300">
+                          {(selectedLog.receivedChars || selectedLog.fullResponse?.length || 0).toLocaleString()} kt ({selectedLog.chunksCount || 0} chunks)
+                        </span>
                       </div>
                     </div>
 
@@ -687,7 +968,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                         Sao chép
                       </button>
                     </div>
-                    <pre className="p-3 rounded-xl bg-gray-900 border border-gray-800 font-mono text-[11px] text-gray-300 whitespace-pre-wrap max-h-96 overflow-y-auto custom-scrollbar">
+                    <pre className="p-3 rounded-xl bg-gray-900 border border-gray-800 font-mono text-[11px] text-gray-300 whitespace-pre-wrap max-h-[55vh] overflow-y-auto custom-scrollbar">
                       {selectedLog.requestPayload.fullSystemInstruction || selectedLog.requestPayload.systemInstructionSnippet || '(Trống)'}
                     </pre>
                   </div>
@@ -698,7 +979,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-gray-400">
-                        Nội dung người dùng gửi ({selectedLog.payloadMetrics.promptChars} ký tự):
+                        Nội dung gửi đi ({selectedLog.payloadMetrics.promptChars.toLocaleString()} ký tự):
                       </span>
                       <button
                         onClick={() => handleCopyText(selectedLog.requestPayload.message, 'User Prompt')}
@@ -707,7 +988,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                         Sao chép
                       </button>
                     </div>
-                    <div className="p-3 rounded-xl bg-gray-900 border border-gray-800 font-mono text-[11.5px] text-gray-200 whitespace-pre-wrap">
+                    <div className="p-3 rounded-xl bg-gray-900 border border-gray-800 font-mono text-[11.5px] text-gray-200 whitespace-pre-wrap max-h-[55vh] overflow-y-auto custom-scrollbar">
                       {selectedLog.requestPayload.message || '(Không có tin nhắn)'}
                     </div>
                   </div>
@@ -717,9 +998,14 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 {inspectorTab === 'response' && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-400">
-                        Nội dung phản hồi từ Gemini:
-                      </span>
+                      <div className="flex items-center gap-2 text-xs text-gray-400">
+                        <span>Nội dung phản hồi từ Gemini:</span>
+                        {selectedLog.status === 'streaming' && (
+                          <span className="px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-700 font-mono text-[10px] animate-pulse">
+                            Đang stream trực tiếp ({(selectedLog.receivedChars || selectedLog.fullResponse?.length || 0).toLocaleString()} kt)...
+                          </span>
+                        )}
+                      </div>
                       <button
                         onClick={() => handleCopyText(selectedLog.fullResponse || selectedLog.responseSnippet, 'phản hồi AI')}
                         className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-xs font-bold transition-all border border-gray-700"
@@ -727,8 +1013,11 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                         Sao chép
                       </button>
                     </div>
-                    <div className="p-3.5 rounded-xl bg-gray-900 border border-gray-800 text-[12px] text-gray-200 whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto custom-scrollbar">
-                      {selectedLog.fullResponse || selectedLog.responseSnippet || '(Chưa có phản hồi hoặc phản hồi rỗng)'}
+                    <div
+                      ref={responseBoxRef}
+                      className="p-3.5 rounded-xl bg-gray-900 border border-gray-800 text-[12px] text-gray-200 whitespace-pre-wrap leading-relaxed max-h-[55vh] overflow-y-auto custom-scrollbar font-mono"
+                    >
+                      {selectedLog.fullResponse || selectedLog.responseSnippet || (selectedLog.status === 'pending' ? 'Đang chờ phản hồi đầu tiên từ Google Gemini...' : '(Chưa có phản hồi hoặc phản hồi rỗng)')}
                     </div>
                   </div>
                 )}
@@ -740,7 +1029,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                       {selectedLog.rawError}
                     </div>
                     {selectedLog.errorStack && (
-                      <pre className="p-3 rounded-xl bg-gray-900 border border-gray-800 text-[10px] text-gray-400 font-mono whitespace-pre-wrap overflow-x-auto">
+                      <pre className="p-3 rounded-xl bg-gray-900 border border-gray-800 text-[10px] text-gray-400 font-mono whitespace-pre-wrap overflow-x-auto custom-scrollbar">
                         {selectedLog.errorStack}
                       </pre>
                     )}
@@ -755,7 +1044,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               </svg>
               <h5 className="font-bold text-gray-400 text-xs sm:text-sm">Chọn một yêu cầu API từ danh sách bên trái</h5>
               <p className="text-[11px] text-gray-600 max-w-xs mt-1">
-                Bấm vào từng dòng log để kiểm tra toàn bộ System Instruction, Payload Token, Model, và Error Stack Trace tương ứng.
+                Hoặc bật &quot;Theo dõi Live&quot; để tự động hiển thị toàn bộ thông số, phản hồi stream, lượt xoay Key và lỗi theo thời gian thực.
               </p>
             </div>
           )}
