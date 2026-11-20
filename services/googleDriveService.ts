@@ -10,6 +10,7 @@ import {
 import firebaseConfig from '../firebase-applet-config.json';
 import { Story } from '../types.ts';
 import { storageService } from './storage.ts';
+import { providerManagerService } from './providerManagerService.ts';
 
 // Minimal Workspace scope for app-managed sync folder & backup files on Google Drive
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
@@ -355,6 +356,19 @@ export const googleDriveService = {
         settings.queueMode = localStorage.getItem('aetheria_queue_mode');
         settings.interRequestDelayMs = localStorage.getItem('aetheria_inter_request_delay_ms');
       }
+      if (options.includeSettings && typeof localStorage !== 'undefined') {
+        try {
+          const bundle = providerManagerService.exportProvidersBundle({
+            includeApiKeys: Boolean(options.includeApiKeys)
+          });
+          if (bundle.providers.length > 0) {
+            settings.externalProviders = bundle.providers;
+          }
+          settings.providerRouting = bundle.routing;
+        } catch {
+          // ignore
+        }
+      }
       if (options.includeApiKeys && typeof localStorage !== 'undefined') {
         try {
           const raw = localStorage.getItem('aetheria_api_key');
@@ -367,24 +381,17 @@ export const googleDriveService = {
         } catch {
           // ignore malformed localStorage
         }
-        try {
-          const rawExt = localStorage.getItem('aetheria_external_providers_v1');
-          if (rawExt) {
-            const parsedExt = JSON.parse(rawExt);
-            if (Array.isArray(parsedExt) && parsedExt.length > 0) {
-              settings.externalProviders = parsedExt;
+        if (!settings.externalProviders) {
+          try {
+            await providerManagerService.initialize();
+            const bundle = providerManagerService.exportProvidersBundle({ includeApiKeys: true });
+            if (bundle.providers.length > 0) {
+              settings.externalProviders = bundle.providers;
             }
+            settings.providerRouting = bundle.routing;
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
-        try {
-          const rawRouting = localStorage.getItem('aetheria_provider_routing_v1');
-          if (rawRouting) {
-            settings.providerRouting = JSON.parse(rawRouting);
-          }
-        } catch {
-          // ignore
         }
       }
     }
@@ -688,27 +695,26 @@ export const googleDriveService = {
         }
       }
 
-      if (options.restoreApiKeys && Array.isArray(payload.settings.externalProviders) && payload.settings.externalProviders.length > 0) {
+      if (
+        (options.restoreApiKeys || options.restoreSettings) &&
+        Array.isArray(payload.settings.externalProviders) &&
+        payload.settings.externalProviders.length > 0
+      ) {
         try {
-          const curRaw = localStorage.getItem('aetheria_external_providers_v1');
-          const curExt: any[] = curRaw ? JSON.parse(curRaw) : [];
-          const byId = new Map<string, any>();
-          for (const item of Array.isArray(curExt) ? curExt : []) {
-            if (item?.id) byId.set(item.id, item);
+          const sanitizedProviders = options.restoreApiKeys
+            ? payload.settings.externalProviders
+            : payload.settings.externalProviders.map(({ api_key, apiKey, ...rest }: any) => rest);
+          await providerManagerService.restoreFromDriveBackup(sanitizedProviders);
+          if (options.restoreApiKeys) {
+            apiKeysRestored = true;
           }
-          for (const item of payload.settings.externalProviders) {
-            if (item?.id) byId.set(item.id, item);
-          }
-          localStorage.setItem('aetheria_external_providers_v1', JSON.stringify(Array.from(byId.values())));
-          apiKeysRestored = true;
         } catch {
-          localStorage.setItem('aetheria_external_providers_v1', JSON.stringify(payload.settings.externalProviders));
-          apiKeysRestored = true;
+          // ignore
         }
       }
 
       if (options.restoreSettings && payload.settings.providerRouting) {
-        localStorage.setItem('aetheria_provider_routing_v1', JSON.stringify(payload.settings.providerRouting));
+        providerManagerService.saveRoutingConfig(payload.settings.providerRouting);
       }
     }
 

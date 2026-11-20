@@ -6,6 +6,8 @@ import { tokenTracker } from "./tokenTracker.ts";
 import { plotDebugLogger, PlotDebugLogItem } from "./plotDebugLogger.ts";
 import { requestThrottleService } from "./requestThrottleService.ts";
 import { externalProviderService } from "./externalProviderService.ts";
+import { providerManagerService } from "./providerManagerService.ts";
+import { redactSecrets } from "./secureCredentialStorage.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -663,6 +665,7 @@ class DynamicAI {
         let attemptCounter = 0;
 
         try {
+          await providerManagerService.initialize();
           const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
           if (extProfiles.length > 0) {
             try {
@@ -678,7 +681,7 @@ class DynamicAI {
               }
               plotDebugLogger.updateAttempt(logId, {
                 model: requestedModel,
-                phase: `Key ngoài gặp lỗi (${String(extErr?.message || extErr).slice(0, 60)}) — tự động dự phòng về Gemini...`
+                phase: `Key ngoài gặp lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — tự động dự phòng về Gemini...`
               });
             }
           }
@@ -886,6 +889,7 @@ class DynamicAI {
         let attemptCounter = 0;
 
         try {
+          await providerManagerService.initialize();
           const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
           if (extProfiles.length > 0) {
             let extYielded = false;
@@ -905,7 +909,7 @@ class DynamicAI {
               }
               plotDebugLogger.updateAttempt(logId, {
                 model: requestedModel,
-                phase: `Stream Key ngoài lỗi — tự động dự phòng về Gemini...`
+                phase: `Stream Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — tự động dự phòng về Gemini...`
               });
             }
           }
@@ -1243,6 +1247,7 @@ class DynamicAI {
           let attemptCounter = 0;
 
           try {
+            await providerManagerService.initialize();
             const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
             if (extProfiles.length > 0) {
               try {
@@ -1259,7 +1264,7 @@ class DynamicAI {
                 }
                 plotDebugLogger.updateAttempt(logId, {
                   model: requestedModel,
-                  phase: `Chat Key ngoài lỗi — dự phòng về Gemini...`
+                  phase: `Chat Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — dự phòng về Gemini...`
                 });
               }
             }
@@ -1423,6 +1428,7 @@ class DynamicAI {
             let attemptCounter = 0;
 
             try {
+              await providerManagerService.initialize();
               const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
               if (extProfiles.length > 0) {
                 let extYielded = false;
@@ -1443,7 +1449,7 @@ class DynamicAI {
                   }
                   plotDebugLogger.updateAttempt(logId, {
                     model: requestedModel,
-                    phase: `Chat Stream Key ngoài lỗi — dự phòng về Gemini...`
+                    phase: `Chat Stream Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — dự phòng về Gemini...`
                   });
                 }
               }

@@ -1,3 +1,5 @@
+import { redactSecrets } from './secureCredentialStorage.ts';
+
 export interface PlotDebugLogItem {
   id: string;
   timestamp: number;
@@ -312,7 +314,7 @@ class PlotDebugLoggerService {
     if (params.keyIndex !== undefined) item.keyIndex = params.keyIndex;
     if (params.totalKeys !== undefined) item.totalKeys = params.totalKeys;
     if (params.status) item.status = params.status;
-    if (params.phase) item.currentPhase = params.phase;
+    if (params.phase) item.currentPhase = redactSecrets(params.phase);
     if (params.attemptCount !== undefined) item.attemptCount = params.attemptCount;
     if (params.title) item.title = params.title;
     item.lastUpdateAt = Date.now();
@@ -452,9 +454,9 @@ class PlotDebugLoggerService {
     item.statusCode = statusCode;
     item.lastUpdateAt = now;
     item.currentPhase = `Thất bại (${statusCode})`;
-    item.rawError = errMsg;
-    item.errorStack = error?.stack || String(error);
-    item.diagnosticAdvice = advice;
+    item.rawError = redactSecrets(errMsg);
+    item.errorStack = redactSecrets(error?.stack || String(error));
+    item.diagnosticAdvice = redactSecrets(advice);
     item.durationMs = Math.max(1, durationMsOverride ?? (now - item.timestamp));
     this.saveLogsImmediate();
   }

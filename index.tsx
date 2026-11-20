@@ -3,9 +3,11 @@ import React from 'react';
 import * as ReactDOMClient from 'react-dom/client';
 import App from './App.tsx';
 import { registerServiceWorker } from './services/serviceWorkerRegistration.ts';
+import { providerManagerService } from './services/providerManagerService.ts';
 
-// Initialize Service Worker
+// Initialize Service Worker & Secure AI Provider Vault
 registerServiceWorker();
+void providerManagerService.initialize();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

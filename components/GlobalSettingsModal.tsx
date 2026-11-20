@@ -4,11 +4,10 @@ import { tokenTracker } from "../services/tokenTracker.ts";
 import {
     externalProviderService,
     ExternalProviderProfile,
-    ProviderRoutingConfig,
-    AIProviderType,
-    ProviderTaskRole,
-    PROVIDER_PRESETS
+    ProviderRoutingConfig
 } from "../services/externalProviderService.ts";
+import { providerManagerService } from "../services/providerManagerService.ts";
+import { ProviderManagementPanel } from "./providers/ProviderManagementPanel.tsx";
 
 interface Props {
     isOpen: boolean;
@@ -33,16 +32,8 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     // External Multi-Provider Keys State
     const [extProfiles, setExtProfiles] = useState<ExternalProviderProfile[]>([]);
     const [routingConfig, setRoutingConfig] = useState<ProviderRoutingConfig>(() =>
-        externalProviderService.getRoutingConfig()
+        providerManagerService.getRoutingConfig()
     );
-    const [newProviderType, setNewProviderType] = useState<AIProviderType>('openrouter');
-    const [newProfileName, setNewProfileName] = useState('');
-    const [newProfileBaseUrl, setNewProfileBaseUrl] = useState(PROVIDER_PRESETS.openrouter.defaultBaseUrl);
-    const [newProfileModel, setNewProfileModel] = useState(PROVIDER_PRESETS.openrouter.suggestedModels[0]);
-    const [newProfileKey, setNewProfileKey] = useState('');
-    const [newProfileRole, setNewProfileRole] = useState<ProviderTaskRole>('all');
-    const [showNewExtKey, setShowNewExtKey] = useState(false);
-    const [extTestStatus, setExtTestStatus] = useState<Record<string, { loading?: boolean; success?: boolean; message?: string }>>({});
 
     // Timer for live countdown of rate-limit cooldowns
     useEffect(() => {
@@ -84,93 +75,17 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             }
             setModelPro(geminiService.getPro());
             setModelFlash(geminiService.getFlash());
-            setExtProfiles(externalProviderService.getProfiles());
-            setRoutingConfig(externalProviderService.getRoutingConfig());
-            setExtTestStatus({});
+            setExtProfiles(providerManagerService.listProviders());
+            setRoutingConfig(providerManagerService.getRoutingConfig());
+            void providerManagerService.listProvidersAsync().then(hydrated => {
+                setExtProfiles(hydrated);
+            });
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
             setTestingIndex(null);
         }
     }, [isOpen]);
-
-    const handleSelectProviderPreset = (type: AIProviderType) => {
-        const preset = PROVIDER_PRESETS[type];
-        setNewProviderType(type);
-        setNewProfileBaseUrl(preset.defaultBaseUrl);
-        setNewProfileModel(preset.suggestedModels[0] || '');
-    };
-
-    const handleAddExtProfile = () => {
-        if (!newProfileKey.trim() || !newProfileModel.trim()) return;
-        const preset = PROVIDER_PRESETS[newProviderType];
-        const created: ExternalProviderProfile = {
-            id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            name: newProfileName.trim() || `${newProviderType.toUpperCase()} · ${newProfileModel.trim()}`,
-            providerType: newProviderType,
-            apiKey: newProfileKey.trim(),
-            baseUrl: newProfileBaseUrl.trim() || preset.defaultBaseUrl,
-            model: newProfileModel.trim(),
-            role: newProfileRole,
-            enabled: true,
-            priority: extProfiles.length
-        };
-        const updated = [...extProfiles, created];
-        setExtProfiles(updated);
-        externalProviderService.saveProfiles(updated);
-
-        // Auto-activate routing for the selected role on adding an external key
-        const nextRouting: ProviderRoutingConfig = {
-            ...routingConfig,
-            activeProBackend: created.role === 'all' || created.role === 'pro' ? 'external' : routingConfig.activeProBackend,
-            activeFlashBackend: created.role === 'all' || created.role === 'flash' ? 'external' : routingConfig.activeFlashBackend
-        };
-        setRoutingConfig(nextRouting);
-        externalProviderService.saveRoutingConfig(nextRouting);
-
-        setNewProfileName('');
-        setNewProfileKey('');
-    };
-
-    const handleToggleExtProfile = (id: string) => {
-        const updated = extProfiles.map(p => (p.id === id ? { ...p, enabled: !p.enabled } : p));
-        setExtProfiles(updated);
-        externalProviderService.saveProfiles(updated);
-    };
-
-    const handleChangeExtRole = (id: string, role: ProviderTaskRole) => {
-        const updated = extProfiles.map(p => (p.id === id ? { ...p, role } : p));
-        setExtProfiles(updated);
-        externalProviderService.saveProfiles(updated);
-    };
-
-    const handleDeleteExtProfile = (id: string) => {
-        const updated = extProfiles.filter(p => p.id !== id);
-        setExtProfiles(updated);
-        externalProviderService.saveProfiles(updated);
-
-        if (updated.filter(p => p.enabled).length === 0) {
-            const resetRouting: ProviderRoutingConfig = {
-                ...routingConfig,
-                activeProBackend: 'gemini',
-                activeFlashBackend: 'gemini'
-            };
-            setRoutingConfig(resetRouting);
-            externalProviderService.saveRoutingConfig(resetRouting);
-        }
-    };
-
-    const handleTestExtProfile = async (profile: ExternalProviderProfile) => {
-        setExtTestStatus(prev => ({ ...prev, [profile.id]: { loading: true } }));
-        const res = await externalProviderService.testProfile(profile, 15000);
-        if (res.success) {
-            externalProviderService.clearProfileCooldown(profile.id);
-        }
-        setExtTestStatus(prev => ({
-            ...prev,
-            [profile.id]: { loading: false, success: res.success, message: res.message }
-        }));
-    };
 
     const handleTestKey = async (index: number) => {
         const key = apiKeys[index]?.trim();
@@ -323,8 +238,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         
         localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-4-argon');
         localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-4-hydrogen');
-        externalProviderService.saveProfiles(extProfiles);
-        externalProviderService.saveRoutingConfig(routingConfig);
+        providerManagerService.saveRoutingConfig(routingConfig);
         
         // Reset flags for models
         geminiService.resetProModelFailed();
@@ -447,274 +361,12 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 {/* Content Area */}
                 <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar text-sm space-y-6">
                     {activeTab === 'providers' ? (
-                        <div className="space-y-5 animate-fadeIn">
-                            {/* Routing Configuration */}
-                            <div className="p-4 rounded-xl bg-gray-950 border border-gray-800 space-y-3">
-                                <div>
-                                    <h3 className="text-sm font-bold text-white">Điều phối Nguồn AI theo vai trò</h3>
-                                    <p className="text-xs text-gray-400 mt-0.5">
-                                        Bạn có thể cho AI ngoài (Claude / GPT / DeepSeek / OpenRouter) viết truyện chính, còn Gemini lo Embeddings &amp; dự phòng hoặc ngược lại.
-                                    </p>
-                                </div>
-
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] font-semibold text-gray-400 block">Tác vụ Sáng tác &amp; Suy luận (Pro)</span>
-                                        <select
-                                            value={routingConfig.activeProBackend}
-                                            onChange={(e) => {
-                                                const next = { ...routingConfig, activeProBackend: e.target.value as 'gemini' | 'external' };
-                                                setRoutingConfig(next);
-                                                externalProviderService.saveRoutingConfig(next);
-                                            }}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
-                                        >
-                                            <option value="gemini">Google Gemini (Mặc định)</option>
-                                            <option value="external">Dùng Key Ngoài (Theo danh sách bên dưới)</option>
-                                        </select>
-                                    </label>
-
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] font-semibold text-gray-400 block">Tác vụ Nhanh, Chat &amp; Quét (Flash)</span>
-                                        <select
-                                            value={routingConfig.activeFlashBackend}
-                                            onChange={(e) => {
-                                                const next = { ...routingConfig, activeFlashBackend: e.target.value as 'gemini' | 'external' };
-                                                setRoutingConfig(next);
-                                                externalProviderService.saveRoutingConfig(next);
-                                            }}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
-                                        >
-                                            <option value="gemini">Google Gemini (Mặc định)</option>
-                                            <option value="external">Dùng Key Ngoài (Theo danh sách bên dưới)</option>
-                                        </select>
-                                    </label>
-                                </div>
-
-                                <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer pt-1">
-                                    <input
-                                        type="checkbox"
-                                        checked={routingConfig.fallbackToGemini}
-                                        onChange={(e) => {
-                                            const next = { ...routingConfig, fallbackToGemini: e.target.checked };
-                                            setRoutingConfig(next);
-                                            externalProviderService.saveRoutingConfig(next);
-                                        }}
-                                        className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-sky-500"
-                                    />
-                                    <span>Tự động dự phòng sang Gemini Key nếu toàn bộ Key ngoài gặp lỗi hoặc hết hạn mức</span>
-                                </label>
-                            </div>
-
-                            {/* Configured External Keys List */}
-                            <div className="space-y-2.5">
-                                <div className="flex items-center justify-between">
-                                    <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wider">
-                                        Danh sách Key Ngoài đã lưu ({extProfiles.length})
-                                    </h3>
-                                    <span className="text-[11px] text-gray-500">Tự xoay vòng khi chạm 429</span>
-                                </div>
-
-                                {extProfiles.length === 0 ? (
-                                    <div className="p-5 text-center rounded-xl border border-dashed border-gray-800 text-xs text-gray-500">
-                                        Chưa có Key ngoài nào. Thêm OpenRouter, OpenAI, Claude, DeepSeek, Groq hoặc Custom Proxy ở khung bên dưới.
-                                    </div>
-                                ) : (
-                                    <div className="space-y-2">
-                                        {extProfiles.map((p) => {
-                                            const tStatus = extTestStatus[p.id];
-                                            const masked = p.apiKey.length > 10 ? `${p.apiKey.slice(0, 6)}...${p.apiKey.slice(-4)}` : '••••••';
-                                            return (
-                                                <div
-                                                    key={p.id}
-                                                    className={`p-3 rounded-xl border space-y-2 transition-colors ${
-                                                        p.enabled ? 'bg-gray-950 border-gray-800' : 'bg-gray-950/40 border-gray-900 opacity-60'
-                                                    }`}
-                                                >
-                                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                                        <div className="min-w-0">
-                                                            <div className="text-xs font-bold text-white truncate">{p.name}</div>
-                                                            <div className="text-[11px] font-mono text-gray-400 truncate">
-                                                                {p.providerType.toUpperCase()} · {p.model} · {masked}
-                                                            </div>
-                                                        </div>
-                                                        <div className="flex items-center gap-1.5 shrink-0">
-                                                            <select
-                                                                value={p.role}
-                                                                onChange={(e) => handleChangeExtRole(p.id, e.target.value as ProviderTaskRole)}
-                                                                className="bg-gray-900 border border-gray-700 rounded-md px-2 py-1 text-[11px] text-gray-200 outline-none"
-                                                            >
-                                                                <option value="all">Pro + Flash</option>
-                                                                <option value="pro">Chỉ Pro</option>
-                                                                <option value="flash">Chỉ Flash</option>
-                                                            </select>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleTestExtProfile(p)}
-                                                                disabled={tStatus?.loading}
-                                                                className="px-2.5 py-1 rounded-md bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-[11px] font-semibold"
-                                                            >
-                                                                {tStatus?.loading ? 'Đang ping...' : 'Test'}
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleToggleExtProfile(p.id)}
-                                                                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border ${
-                                                                    p.enabled
-                                                                        ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300'
-                                                                        : 'bg-gray-800 border-gray-700 text-gray-400'
-                                                                }`}
-                                                            >
-                                                                {p.enabled ? 'Đang bật' : 'Đang tắt'}
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleDeleteExtProfile(p.id)}
-                                                                className="px-2 py-1 rounded-md bg-rose-950/40 hover:bg-rose-900/50 border border-rose-800/50 text-rose-300 text-[11px]"
-                                                                title="Xóa"
-                                                            >
-                                                                Xóa
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                    {tStatus?.message && (
-                                                        <div
-                                                            className={`text-[11px] font-mono px-2.5 py-1.5 rounded-lg border ${
-                                                                tStatus.success
-                                                                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                                                                    : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
-                                                            }`}
-                                                        >
-                                                            {tStatus.message}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Add New External Provider Key Form */}
-                            <div className="p-4 rounded-xl bg-gray-950/80 border border-gray-800 space-y-3">
-                                <div className="text-xs font-bold text-sky-400">Thêm API Key Nhà Cung Cấp Mới</div>
-
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] text-gray-400 block">Loại API Key / Nền tảng</span>
-                                        <select
-                                            value={newProviderType}
-                                            onChange={(e) => handleSelectProviderPreset(e.target.value as AIProviderType)}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-2 text-xs text-white outline-none focus:border-sky-500"
-                                        >
-                                            {Object.values(PROVIDER_PRESETS).map(preset => (
-                                                <option key={preset.type} value={preset.type}>{preset.label}</option>
-                                            ))}
-                                        </select>
-                                    </label>
-
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] text-gray-400 block">Vai trò sử dụng</span>
-                                        <select
-                                            value={newProfileRole}
-                                            onChange={(e) => setNewProfileRole(e.target.value as ProviderTaskRole)}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-2 text-xs text-white outline-none focus:border-sky-500"
-                                        >
-                                            <option value="all">Mọi tác vụ (Pro + Flash)</option>
-                                            <option value="pro">Chỉ Sáng tác &amp; Kiểm toán (Pro)</option>
-                                            <option value="flash">Chỉ Chat &amp; Quét nhanh (Flash)</option>
-                                        </select>
-                                    </label>
-                                </div>
-
-                                <p className="text-[11px] text-gray-400 leading-relaxed">
-                                    {PROVIDER_PRESETS[newProviderType].note}
-                                </p>
-
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] text-gray-400 block">Tên gợi nhớ (tùy chọn)</span>
-                                        <input
-                                            type="text"
-                                            value={newProfileName}
-                                            onChange={(e) => setNewProfileName(e.target.value)}
-                                            placeholder={`VD: ${newProviderType.toUpperCase()} Chính`}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
-                                        />
-                                    </label>
-
-                                    <label className="space-y-1">
-                                        <span className="text-[11px] text-gray-400 block">Base URL Endpoint</span>
-                                        <input
-                                            type="text"
-                                            value={newProfileBaseUrl}
-                                            onChange={(e) => setNewProfileBaseUrl(e.target.value)}
-                                            placeholder={PROVIDER_PRESETS[newProviderType].defaultBaseUrl}
-                                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-sky-500"
-                                        />
-                                    </label>
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                        <span className="text-[11px] text-gray-400">Model ID</span>
-                                        <div className="flex flex-wrap gap-1">
-                                            {PROVIDER_PRESETS[newProviderType].suggestedModels.map(m => (
-                                                <button
-                                                    key={m}
-                                                    type="button"
-                                                    onClick={() => setNewProfileModel(m)}
-                                                    className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
-                                                        newProfileModel === m
-                                                            ? 'bg-sky-600/25 border-sky-500 text-sky-300'
-                                                            : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'
-                                                    }`}
-                                                >
-                                                    {m}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <input
-                                        type="text"
-                                        value={newProfileModel}
-                                        onChange={(e) => setNewProfileModel(e.target.value)}
-                                        placeholder="Nhập tên model (vd: anthropic/claude-sonnet-4)"
-                                        className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-sky-500"
-                                    />
-                                </div>
-
-                                <div className="space-y-1">
-                                    <span className="text-[11px] text-gray-400 block">API Key</span>
-                                    <div className="flex gap-2">
-                                        <div className="relative flex-1">
-                                            <input
-                                                type={showNewExtKey ? 'text' : 'password'}
-                                                value={newProfileKey}
-                                                onChange={(e) => setNewProfileKey(e.target.value)}
-                                                placeholder={PROVIDER_PRESETS[newProviderType].keyPlaceholder}
-                                                className="w-full bg-gray-900 border border-gray-700 rounded-lg py-2 pl-3 pr-9 text-xs font-mono text-white outline-none focus:border-sky-500"
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => setShowNewExtKey(prev => !prev)}
-                                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-[11px]"
-                                            >
-                                                {showNewExtKey ? 'Ẩn' : 'Hiện'}
-                                            </button>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={handleAddExtProfile}
-                                            disabled={!newProfileKey.trim() || !newProfileModel.trim()}
-                                            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold disabled:opacity-40 shrink-0"
-                                        >
-                                            + Thêm Key
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                        <ProviderManagementPanel
+                            profiles={extProfiles}
+                            routingConfig={routingConfig}
+                            onProfilesChanged={setExtProfiles}
+                            onRoutingChanged={setRoutingConfig}
+                        />
                     ) : activeTab === 'dashboard' ? (
                         /* API USAGE DASHBOARD VIEW */
                         <div className="space-y-6 animate-fadeIn">
