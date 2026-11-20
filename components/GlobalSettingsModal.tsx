@@ -935,6 +935,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 tốt nhất)</option>
                                         <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Flash 2.5 Lite - Tốc độ cao, ít nghẽn 503)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
+                                        <option value="gemma-4-31b-queen">gemma-4-31b-queen (Gemma 4 31B Queen - Open-weight 256K context, mượt &amp; ổn định)</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -959,6 +960,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                         <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite 3.1 - Siêu nhẹ, kháng 429 cực tốt)</option>
                                         <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Flash 2.5 Lite - Tốc độ cao, ít nghẽn 503)</option>
                                         <option value="gemini-flash-latest">gemini-flash-latest (Bản Flash mới nhất của Google)</option>
+                                        <option value="gemma-4-31b-queen">gemma-4-31b-queen (Gemma 4 31B Queen - Open-weight 256K context, mượt &amp; ổn định)</option>
                                     </optgroup>
                                     <optgroup label="Dòng Pro & Deep Reasoning (4.0 Mới nhất → 3.1)">
                                         <option value="gemini-4-argon">gemini-4-argon (Pro 4 Argon - Suy luận sâu dòng 4)</option>

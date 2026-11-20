@@ -76,6 +76,13 @@ export const MODEL_CONTEXT_LIMITS: Record<string, ModelContextDef> = {
     contextLimit: 1048576,
     tpmFreeLimit: 1000000,
     description: '1,048,576 tokens (~1M). Luôn tự động trỏ về phiên bản Flash mới nhất của Google.'
+  },
+  'gemma-4-31b-queen': {
+    id: 'gemma-4-31b-queen',
+    name: 'Gemma 4 31B Queen',
+    contextLimit: 262144, // 256K tokens
+    tpmFreeLimit: 1000000,
+    description: '262,144 tokens (~256K). Gemma 4 31B Queen thế hệ mới, tối ưu sáng tác & độ ổn định cao.'
   }
 };
 

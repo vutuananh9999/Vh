@@ -344,6 +344,7 @@ const VALID_MODELS = new Set([
   'gemini-4-hydrogen',
   'gemini-4-argon',
   'gemini-4-carbon',
+  'gemma-4-31b-queen',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.6-pro',
@@ -357,8 +358,9 @@ const VALID_MODELS = new Set([
 
 function normalizeModel(modelName: string | null | undefined, fallback: string): string {
   if (!modelName) return fallback;
-  const clean = modelName.trim().toLowerCase();
+  const clean = modelName.trim().toLowerCase().replace(/^models\//, '');
   if (VALID_MODELS.has(clean)) return clean;
+  if (clean.includes('gemma') || clean.includes('queen')) return 'gemma-4-31b-queen';
   if (clean.includes('hydrogen') || (clean.includes('4') && !clean.includes('argon') && !clean.includes('carbon'))) return 'gemini-4-hydrogen';
   if (clean.includes('argon')) return 'gemini-4-argon';
   if (clean.includes('carbon')) return 'gemini-4-carbon';
@@ -395,7 +397,8 @@ function getModelCascade(requestedModel: string): string[] {
     'gemini-4-hydrogen',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
-    'gemini-3.1-flash-lite'
+    'gemini-3.1-flash-lite',
+    'gemma-4-31b-queen'
   ];
   const allFlashModels = [
     'gemini-4-hydrogen',
@@ -403,7 +406,8 @@ function getModelCascade(requestedModel: string): string[] {
     'gemini-3.7-flash',
     'gemini-3.1-flash-lite',
     'gemini-flash-latest',
-    'gemini-3.6-flash'
+    'gemini-3.6-flash',
+    'gemma-4-31b-queen'
   ];
 
   if (normalized.includes('pro') || normalized.includes('argon') || normalized.includes('carbon')) {
@@ -457,7 +461,125 @@ function cleanConfigForModel(config: any, targetModel: string): any {
   if (!supportsThinking && newConfig.thinkingConfig) {
     delete newConfig.thinkingConfig;
   }
+
+  // Gemma open-weights models do not support Google Search Grounding tools
+  if (targetModel.startsWith('gemma-') && Array.isArray(newConfig.tools)) {
+    newConfig.tools = newConfig.tools.filter((t: any) => !t.googleSearch);
+    if (newConfig.tools.length === 0) {
+      delete newConfig.tools;
+    }
+  }
   return newConfig;
+}
+
+function adaptGemmaParamsOn400(currentParams: any, errMsg: string): any | null {
+  const model = String(currentParams?.model || '');
+  if (!model.startsWith('gemma-')) return null;
+  const lower = (errMsg || '').toLowerCase();
+  const needsSysFold =
+    lower.includes('developer instruction') ||
+    lower.includes('system instruction') ||
+    lower.includes('system_instruction');
+  const needsJsonStrip =
+    lower.includes('json mode') ||
+    lower.includes('response_mime_type') ||
+    lower.includes('response_schema') ||
+    lower.includes('responsemimetype');
+
+  if (!needsSysFold && !needsJsonStrip) return null;
+
+  const nextConfig = { ...(currentParams.config || {}) };
+  let sysPrefix = '';
+  if (needsSysFold && nextConfig.systemInstruction) {
+    sysPrefix = typeof nextConfig.systemInstruction === 'string'
+      ? nextConfig.systemInstruction
+      : extractDebugText(nextConfig.systemInstruction);
+    delete nextConfig.systemInstruction;
+  }
+  if (needsJsonStrip) {
+    delete nextConfig.responseMimeType;
+    delete nextConfig.responseSchema;
+    sysPrefix = sysPrefix
+      ? `${sysPrefix}\n\n[JSON OUTPUT]: Chỉ trả về JSON thuần hợp lệ.`
+      : `[JSON OUTPUT]: Chỉ trả về JSON thuần hợp lệ.`;
+  }
+
+  let nextContents = currentParams.contents;
+  if (sysPrefix) {
+    const headerText = `[SYSTEM INSTRUCTION]\n${sysPrefix}\n[/SYSTEM INSTRUCTION]\n\n`;
+    if (typeof nextContents === 'string') {
+      nextContents = headerText + nextContents;
+    } else if (Array.isArray(nextContents)) {
+      const cloned = [...nextContents];
+      if (cloned.length > 0 && cloned[0]?.parts && Array.isArray(cloned[0].parts)) {
+        cloned[0] = {
+          ...cloned[0],
+          parts: [{ text: headerText }, ...cloned[0].parts]
+        };
+      } else {
+        cloned.unshift({ role: 'user', parts: [{ text: headerText }] });
+      }
+      nextContents = cloned;
+    }
+  }
+
+  return {
+    ...currentParams,
+    contents: nextContents,
+    config: nextConfig
+  };
+}
+
+function adaptGemmaChatParamsOn400(currentParams: any, sendParams: any, errMsg: string): { sessionParams: any; sendParams: any } | null {
+  const model = String(currentParams?.model || '');
+  if (!model.startsWith('gemma-')) return null;
+  const lower = (errMsg || '').toLowerCase();
+  const needsSysFold =
+    lower.includes('developer instruction') ||
+    lower.includes('system instruction') ||
+    lower.includes('system_instruction');
+  const needsJsonStrip =
+    lower.includes('json mode') ||
+    lower.includes('response_mime_type') ||
+    lower.includes('response_schema') ||
+    lower.includes('responsemimetype');
+
+  if (!needsSysFold && !needsJsonStrip) return null;
+
+  const nextConfig = { ...(currentParams.config || {}) };
+  let sysPrefix = '';
+  if (needsSysFold && nextConfig.systemInstruction) {
+    sysPrefix = typeof nextConfig.systemInstruction === 'string'
+      ? nextConfig.systemInstruction
+      : extractDebugText(nextConfig.systemInstruction);
+    delete nextConfig.systemInstruction;
+  }
+  if (needsJsonStrip) {
+    delete nextConfig.responseMimeType;
+    delete nextConfig.responseSchema;
+    sysPrefix = sysPrefix
+      ? `${sysPrefix}\n\n[JSON OUTPUT]: Chỉ trả về JSON thuần hợp lệ.`
+      : `[JSON OUTPUT]: Chỉ trả về JSON thuần hợp lệ.`;
+  }
+
+  let nextSend = sendParams;
+  if (sysPrefix) {
+    const headerText = `[SYSTEM INSTRUCTION]\n${sysPrefix}\n[/SYSTEM INSTRUCTION]\n\n`;
+    if (typeof sendParams === 'string') {
+      nextSend = headerText + sendParams;
+    } else if (sendParams && typeof sendParams === 'object' && 'message' in sendParams) {
+      const msgVal = sendParams.message;
+      nextSend = {
+        ...sendParams,
+        message: typeof msgVal === 'string' ? headerText + msgVal : `${headerText}${extractDebugText(msgVal)}`
+      };
+    }
+  }
+
+  return {
+    sessionParams: { ...currentParams, config: nextConfig },
+    sendParams: nextSend
+  };
 }
 
 function stripGoogleSearch(config: any): any {
@@ -841,6 +963,36 @@ class DynamicAI {
                   continue;
                 }
 
+                const gemmaAdapted = adaptGemmaParamsOn400(currentParams, msg);
+                if (gemmaAdapted) {
+                  currentParams = gemmaAdapted;
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Điều chỉnh tham số tương thích Gemma cho ${currentModelId} và thử lại...`
+                  });
+                  try {
+                    const retryRes = await rawModels.generateContent(currentParams);
+                    if (retryRes && retryRes.usageMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        retryRes.usageMetadata.promptTokenCount || 0,
+                        retryRes.usageMetadata.candidatesTokenCount || 0,
+                        retryRes.usageMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    if (ownsLog) {
+                      plotDebugLogger.completeSuccess(logId, {
+                        fullResponse: extractResponseText(retryRes),
+                        usageMetadata: retryRes?.usageMetadata
+                      });
+                    }
+                    return retryRes;
+                  } catch (gemmaRetryErr: any) {
+                    lastErr = gemmaRetryErr;
+                  }
+                }
+
                 throw handleApiError(err, currentModelId);
               }
             }
@@ -1123,6 +1275,51 @@ class DynamicAI {
                   continue;
                 }
 
+                const gemmaAdapted = adaptGemmaParamsOn400(currentParams, msg);
+                if (gemmaAdapted) {
+                  currentParams = gemmaAdapted;
+                  plotDebugLogger.updateAttempt(logId, {
+                    phase: `Điều chỉnh tham số tương thích Gemma cho stream ${currentModelId} và thử lại...`
+                  });
+                  try {
+                    const stream = await rawModels.generateContentStream(currentParams);
+                    let finalMetadata: any = null;
+                    let retryAccumulated = "";
+                    for await (const chunk of stream) {
+                      if (chunk && chunk.usageMetadata) {
+                        finalMetadata = chunk.usageMetadata;
+                      }
+                      const chunkText = extractChunkTextSafe(chunk);
+                      if (chunkText) {
+                        retryAccumulated += chunkText;
+                        if (ownsLog) {
+                          plotDebugLogger.updateStreaming(logId, chunkText);
+                        }
+                      }
+                      yield chunk as GenerateContentResponse;
+                    }
+                    if (finalMetadata) {
+                      tokenTracker.recordRequestSuccess(
+                        reqId,
+                        finalMetadata.promptTokenCount || 0,
+                        finalMetadata.candidatesTokenCount || 0,
+                        finalMetadata.totalTokenCount || 0
+                      );
+                    } else {
+                      tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                    }
+                    if (ownsLog) {
+                      plotDebugLogger.completeSuccess(logId, {
+                        fullResponse: retryAccumulated,
+                        usageMetadata: finalMetadata
+                      });
+                    }
+                    return;
+                  } catch (gemmaRetryErr: any) {
+                    lastErr = gemmaRetryErr;
+                  }
+                }
+
                 throw handleApiError(err, currentModelId);
               }
             }
@@ -1383,6 +1580,39 @@ class DynamicAI {
                     continue;
                   }
 
+                  const gemmaChatAdapted = adaptGemmaChatParamsOn400(currentParams, sendParams, msg);
+                  if (gemmaChatAdapted) {
+                    plotDebugLogger.updateAttempt(logId, {
+                      phase: `Điều chỉnh tham số tương thích Gemma cho chat ${currentModelId} và thử lại...`
+                    });
+                    try {
+                      const retrySession = rawChats.create({
+                        ...gemmaChatAdapted.sessionParams,
+                        history: currentHistory
+                      });
+                      const retryRes = await retrySession.sendMessage(gemmaChatAdapted.sendParams);
+                      if (retryRes && retryRes.usageMetadata) {
+                        tokenTracker.recordRequestSuccess(
+                          reqId,
+                          retryRes.usageMetadata.promptTokenCount || 0,
+                          retryRes.usageMetadata.candidatesTokenCount || 0,
+                          retryRes.usageMetadata.totalTokenCount || 0
+                        );
+                      } else {
+                        tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                      }
+                      if (ownsLog) {
+                        plotDebugLogger.completeSuccess(logId, {
+                          fullResponse: extractResponseText(retryRes),
+                          usageMetadata: retryRes?.usageMetadata
+                        });
+                      }
+                      return retryRes;
+                    } catch (gemmaRetryErr: any) {
+                      lastErr = gemmaRetryErr;
+                    }
+                  }
+
                   throw handleApiError(err, currentModelId);
                 }
               }
@@ -1610,6 +1840,54 @@ class DynamicAI {
                         phase: `Key #${keyIdx + 1}/${keysCount} không hợp lệ — xoay Key...`
                       });
                       continue;
+                    }
+
+                    const gemmaChatAdapted = adaptGemmaChatParamsOn400(currentParams, sendParams, msg);
+                    if (gemmaChatAdapted) {
+                      plotDebugLogger.updateAttempt(logId, {
+                        phase: `Điều chỉnh tham số tương thích Gemma cho chat stream ${currentModelId} và thử lại...`
+                      });
+                      try {
+                        const retrySession = rawChats.create({
+                          ...gemmaChatAdapted.sessionParams,
+                          history: currentHistory
+                        });
+                        const rawStream = await retrySession.sendMessageStream(gemmaChatAdapted.sendParams);
+                        let finalMetadata: any = null;
+                        let retryAccumulated = "";
+                        for await (const chunk of rawStream) {
+                          if (chunk && chunk.usageMetadata) {
+                            finalMetadata = chunk.usageMetadata;
+                          }
+                          const chunkText = extractChunkTextSafe(chunk);
+                          if (chunkText) {
+                            retryAccumulated += chunkText;
+                            if (ownsLog) {
+                              plotDebugLogger.updateStreaming(logId, chunkText);
+                            }
+                          }
+                          yield chunk as GenerateContentResponse;
+                        }
+                        if (finalMetadata) {
+                          tokenTracker.recordRequestSuccess(
+                            reqId,
+                            finalMetadata.promptTokenCount || 0,
+                            finalMetadata.candidatesTokenCount || 0,
+                            finalMetadata.totalTokenCount || 0
+                          );
+                        } else {
+                          tokenTracker.recordRequestSuccess(reqId, 0, 0, 0);
+                        }
+                        if (ownsLog) {
+                          plotDebugLogger.completeSuccess(logId, {
+                            fullResponse: retryAccumulated,
+                            usageMetadata: finalMetadata
+                          });
+                        }
+                        return;
+                      } catch (gemmaRetryErr: any) {
+                        lastErr = gemmaRetryErr;
+                      }
                     }
 
                     throw handleApiError(err, currentModelId);

@@ -1928,7 +1928,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                           {/* Quick Model Switch Buttons for Anti-429 */}
                           <div className="pt-2 border-t border-gray-800 space-y-1.5 text-left">
                             <span className="text-[10px] font-semibold text-gray-300 block">Đổi Model nhanh khi bị 429:</span>
-                            <div className="grid grid-cols-4 gap-1">
+                            <div className="grid grid-cols-5 gap-1">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1942,6 +1942,20 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                                 }`}
                               >
                                 4 Hydrogen
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  localStorage.setItem('aetheria_model_flash', 'gemma-4-31b-queen');
+                                  window.dispatchEvent(new CustomEvent('aetheria_token_update'));
+                                }}
+                                className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
+                                  flashStatus.modelId === 'gemma-4-31b-queen'
+                                    ? 'bg-emerald-600 text-white font-bold shadow'
+                                    : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                                }`}
+                              >
+                                4 Queen
                               </button>
                               <button
                                 onClick={(e) => {

@@ -103,7 +103,7 @@ export const TokenUsageMeter: React.FC<TokenUsageMeterProps> = ({
               >
                 {Object.values(MODEL_CONTEXT_LIMITS).map((m) => (
                   <option key={m.id} value={m.id} className="bg-gray-900 text-white">
-                    {m.name} ({(m.contextLimit / 1000000).toFixed(0)}M)
+                    {m.name} ({m.contextLimit >= 1000000 ? `${(m.contextLimit / 1000000).toFixed(0)}M` : `${Math.round(m.contextLimit / 1000)}K`})
                   </option>
                 ))}
               </select>

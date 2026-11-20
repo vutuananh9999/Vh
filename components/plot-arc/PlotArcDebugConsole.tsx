@@ -493,6 +493,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
                   <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Kháng 429)</option>
                   <option value="gemini-flash-latest">gemini-flash-latest</option>
+                  <option value="gemma-4-31b-queen">gemma-4-31b-queen (Gemma 4 31B Queen)</option>
                 </select>
               </label>
 
