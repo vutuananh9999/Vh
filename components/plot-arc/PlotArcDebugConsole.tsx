@@ -2,6 +2,11 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { plotDebugLogger, PlotDebugLogItem } from '../../services/plotDebugLogger.ts';
 import { geminiService } from '../../services/geminiService.ts';
 import { requestThrottleService, ThrottleState, QueueMode } from '../../services/requestThrottleService.ts';
+import { providerManagerService } from '../../services/providerManagerService.ts';
+import { externalProviderService } from '../../services/externalProviderService.ts';
+import { providerClientService } from '../../services/providerClientService.ts';
+import { ExternalProviderProfile, ProviderRoutingConfig } from '../../services/providerTypes.ts';
+import { SearchableModelSelect } from '../providers/SearchableModelSelect.tsx';
 
 interface Props {
   onSwitchToChat?: () => void;
@@ -78,6 +83,18 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
   const [selectedModel, setSelectedModel] = useState(() =>
     geminiService.getFlash ? geminiService.getFlash() : 'gemini-4-hydrogen'
   );
+  const [customProviders, setCustomProviders] = useState<ExternalProviderProfile[]>(() =>
+    providerManagerService.listProviders()
+  );
+  const [routingConfig, setRoutingConfig] = useState<ProviderRoutingConfig>(() =>
+    providerManagerService.getRoutingConfig()
+  );
+  const [customModelDraft, setCustomModelDraft] = useState('');
+  const [isSavingCustomModel, setIsSavingCustomModel] = useState(false);
+  const [isTestingCustomProvider, setIsTestingCustomProvider] = useState(false);
+  const [customTestResults, setCustomTestResults] = useState<
+    Record<string, { ok: boolean; statusText: string; latency?: number }>
+  >({});
   const [nowTime, setNowTime] = useState<number>(() => Date.now());
 
   const selectedLogIdRef = useRef<string | null>(null);
@@ -106,6 +123,30 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
       setThrottleState(state);
     });
     return () => unsubThrottle();
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const syncCustomState = () => {
+      if (!mounted) return;
+      setCustomProviders(providerManagerService.listProviders());
+      setRoutingConfig(providerManagerService.getRoutingConfig());
+      if (geminiService.getFlash) {
+        setSelectedModel(geminiService.getFlash());
+      }
+    };
+
+    const unsubProviders = providerManagerService.subscribe(syncCustomState);
+    void providerManagerService.listProvidersAsync().then((list) => {
+      if (!mounted) return;
+      setCustomProviders(list);
+      setRoutingConfig(providerManagerService.getRoutingConfig());
+    });
+
+    return () => {
+      mounted = false;
+      unsubProviders();
+    };
   }, []);
 
   useEffect(() => {
@@ -193,10 +234,44 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
     });
   }, [storedKeys, logs, nowTime]);
 
+  const configuredCustomProviders = useMemo(
+    () => customProviders.filter(p => p.enabled && providerManagerService.isConfiguredProvider(p)),
+    [customProviders]
+  );
+
+  const activeCustomProvider = useMemo(() => {
+    if (customProviders.length === 0) return null;
+    return (
+      customProviders.find(p => p.enabled && p.isDefault && providerManagerService.isConfiguredProvider(p)) ||
+      configuredCustomProviders[0] ||
+      customProviders.find(p => p.isDefault) ||
+      customProviders[0] ||
+      null
+    );
+  }, [customProviders, configuredCustomProviders]);
+
+  const isUsingCustomApi = useMemo(
+    () =>
+      (routingConfig.activeProBackend === 'external' || routingConfig.activeFlashBackend === 'external') &&
+      customProviders.length > 0,
+    [routingConfig.activeProBackend, routingConfig.activeFlashBackend, customProviders.length]
+  );
+
+  useEffect(() => {
+    setCustomModelDraft(activeCustomProvider?.model || '');
+  }, [activeCustomProvider?.id, activeCustomProvider?.model]);
+
+  const externalCoolingCount = useMemo(
+    () => customProviders.filter(p => externalProviderService.isProfileCoolingDown(p.id)).length,
+    [customProviders, logs, nowTime]
+  );
+
   const coolingKeyCount = useMemo(
     () => keyCooldownsInfo.filter(k => k.isCoolingDown).length,
     [keyCooldownsInfo]
   );
+
+  const totalCoolingCount = coolingKeyCount + externalCoolingCount;
 
   const filteredLogs = useMemo(() => {
     let base = logs;
@@ -234,10 +309,155 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
     }
   };
 
+  const handleCommitCustomModel = useCallback(
+    async (nextModelId: string, providerOverride?: ExternalProviderProfile) => {
+      const target = providerOverride || activeCustomProvider;
+      if (!target) return;
+      const trimmed = nextModelId.trim();
+      if (!trimmed) {
+        showNotification('Tên model không được để trống');
+        return;
+      }
+      if (trimmed === target.model) return;
+
+      setIsSavingCustomModel(true);
+      try {
+        await providerManagerService.updateProvider(target.id, { model: trimmed });
+        externalProviderService.clearProfileCooldown(target.id);
+        showNotification(`Đã đổi model ${target.name} → ${trimmed}`);
+      } catch (err: any) {
+        showNotification(err?.message || 'Không thể cập nhật model Custom API');
+      } finally {
+        setIsSavingCustomModel(false);
+      }
+    },
+    [activeCustomProvider, showNotification]
+  );
+
+  const handleSwitchActiveCustomProvider = useCallback(
+    async (providerId: string) => {
+      try {
+        const updated = await providerManagerService.setDefaultProvider(providerId, true);
+        externalProviderService.clearAllCooldowns();
+        if (updated) {
+          showNotification(`Đã chuyển sang Custom Provider: ${updated.name} (${updated.model || 'chưa chọn model'})`);
+        }
+      } catch (err: any) {
+        showNotification(err?.message || 'Không thể chuyển Custom Provider');
+      }
+    },
+    [showNotification]
+  );
+
+  const handleSwitchBackendRouting = useCallback(
+    (backend: 'gemini' | 'external') => {
+      if (backend === 'external' && configuredCustomProviders.length === 0) {
+        showNotification('Hãy chọn và cấu hình ít nhất 1 Custom Provider hoàn chỉnh trước');
+        return;
+      }
+      providerManagerService.saveRoutingConfig({
+        ...routingConfig,
+        activeProBackend: backend,
+        activeFlashBackend: backend
+      });
+      showNotification(
+        backend === 'external'
+          ? 'Đã bật luồng AI qua Custom API (Pro & Flash)'
+          : 'Đã chuyển luồng AI về Google Gemini'
+      );
+    },
+    [configuredCustomProviders.length, routingConfig, showNotification]
+  );
+
+  const handleTestSingleCustomProvider = useCallback(
+    async (profile: ExternalProviderProfile, overrideModel?: string) => {
+      if (isTestingCustomProvider) return;
+      const modelToTest = (overrideModel ?? customModelDraft ?? profile.model).trim() || profile.model;
+      const targetProfile: ExternalProviderProfile = {
+        ...profile,
+        model: modelToTest
+      };
+
+      setIsTestingCustomProvider(true);
+      const start = Date.now();
+      const idx = Math.max(1, customProviders.findIndex(p => p.id === profile.id) + 1);
+      const logId = plotDebugLogger.startLog({
+        type: 'key_test',
+        title: `Test Custom API: ${profile.name} (${modelToTest})`,
+        model: `${profile.providerType}:${modelToTest}`,
+        apiKey: profile.apiKey || '',
+        keyIndex: idx,
+        totalKeys: Math.max(1, customProviders.length),
+        keySource: 'localStorage',
+        message: 'Ping. Reply OK.',
+        systemInstruction: `Custom provider test (${profile.baseUrl})`,
+        currentPhase: `Đang ping ${profile.name} (${modelToTest})...`
+      });
+
+      try {
+        const res = await providerClientService.testConnection(targetProfile, 15000);
+        const elapsed = res.latencyMs || Math.max(1, Date.now() - start);
+        await providerManagerService.recordTestResult(profile.id, {
+          success: res.success,
+          message: res.message
+        });
+
+        if (res.success) {
+          setCustomTestResults(prev => ({
+            ...prev,
+            [profile.id]: {
+              ok: true,
+              statusText: `200 OK · ${formatDuration(elapsed)} · ${modelToTest}`,
+              latency: elapsed
+            }
+          }));
+          plotDebugLogger.completeSuccess(logId, {
+            fullResponse: res.message,
+            durationMs: elapsed
+          });
+          showNotification(`Custom API OK: ${modelToTest} (${formatDuration(elapsed)})`);
+        } else {
+          setCustomTestResults(prev => ({
+            ...prev,
+            [profile.id]: {
+              ok: false,
+              statusText: res.message.slice(0, 60),
+              latency: elapsed
+            }
+          }));
+          plotDebugLogger.recordFailure(logId, new Error(res.message), undefined, elapsed);
+          showNotification(`Lỗi Custom API: ${res.message}`);
+        }
+      } catch (err: any) {
+        const elapsed = Math.max(1, Date.now() - start);
+        const msg = err?.message || String(err);
+        setCustomTestResults(prev => ({
+          ...prev,
+          [profile.id]: { ok: false, statusText: msg.slice(0, 60), latency: elapsed }
+        }));
+        plotDebugLogger.recordFailure(logId, err, undefined, elapsed);
+        showNotification(`Lỗi test Custom API: ${msg}`);
+      } finally {
+        setIsTestingCustomProvider(false);
+      }
+    },
+    [customModelDraft, customProviders, isTestingCustomProvider, showNotification]
+  );
+
   const handleTestAllKeys = async () => {
     if (isTestingKeys) return;
-    if (storedKeys.length === 0) {
-      showNotification('Chưa có API Key nào được cài đặt!');
+    if (storedKeys.length === 0 && configuredCustomProviders.length === 0) {
+      showNotification('Chưa có API Key hoặc Custom Provider nào được cài đặt!');
+      return;
+    }
+
+    if (isUsingCustomApi && activeCustomProvider) {
+      await handleTestSingleCustomProvider(activeCustomProvider);
+      return;
+    }
+
+    if (storedKeys.length === 0 && configuredCustomProviders.length > 0) {
+      await handleTestSingleCustomProvider(configuredCustomProviders[0]);
       return;
     }
 
@@ -338,7 +558,8 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
 
   const handleResetCooldowns = () => {
     geminiService.clearAllCooldowns();
-    showNotification('Đã mở khóa toàn bộ Key đang hạ nhiệt');
+    externalProviderService.clearAllCooldowns();
+    showNotification('Đã mở khóa toàn bộ Key & Custom Provider đang hạ nhiệt');
   };
 
   const handleCopyReport = () => {
@@ -382,12 +603,41 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             <div className="flex items-center gap-2 text-xs sm:text-[13px] font-display font-semibold text-slate-100 truncate">
               <span>{hostEnv.isNetlify ? 'Netlify Production' : 'Preview Sandbox'}</span>
               <span className="text-slate-600" aria-hidden="true">·</span>
-              <span className="font-mono text-sky-400 truncate">{selectedModel}</span>
+              <button
+                type="button"
+                onClick={() => setShowConfigDrawer(true)}
+                className="font-mono text-sky-400 hover:text-sky-300 truncate flex items-center gap-1 text-left"
+                title="Nhấn để đổi Model hoặc Custom API Provider"
+              >
+                {isUsingCustomApi && activeCustomProvider ? (
+                  <span className="truncate">
+                    <span className="text-emerald-400">Custom:</span> {activeCustomProvider.name} ·{' '}
+                    {activeCustomProvider.model || 'chưa chọn model'}
+                  </span>
+                ) : (
+                  <span className="truncate">{selectedModel}</span>
+                )}
+                <svg className="w-3 h-3 shrink-0 opacity-75" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
             </div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400 font-mono tabular-nums">
               <span>{throttleState.effectiveConcurrency === 1 ? 'Tuần tự 1 luồng' : `Song song ${throttleState.effectiveConcurrency} luồng`}</span>
               <span aria-hidden="true">·</span>
-              <span>{storedKeys.length} API Key</span>
+              <span>{storedKeys.length} Gemini Key</span>
+              {configuredCustomProviders.length > 0 && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfigDrawer(true)}
+                    className={isUsingCustomApi ? 'text-emerald-400 font-semibold hover:underline' : 'text-slate-400 hover:underline'}
+                  >
+                    {configuredCustomProviders.length} Custom API
+                  </button>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <span>Đang chạy {Math.max(throttleState.activeCount, activeLiveLogs.length)}</span>
               {throttleState.pendingCount > 0 && (
@@ -396,14 +646,14 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   <span className="text-amber-400">Chờ {throttleState.pendingCount}</span>
                 </>
               )}
-              {coolingKeyCount > 0 && (
+              {totalCoolingCount > 0 && (
                 <>
                   <span aria-hidden="true">·</span>
                   <button
                     onClick={() => setShowConfigDrawer(true)}
                     className="text-rose-400 hover:underline font-semibold"
                   >
-                    {coolingKeyCount} Key tạm khóa
+                    {totalCoolingCount} Key tạm khóa
                   </button>
                 </>
               )}
@@ -453,9 +703,14 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             ) : (
               <button
                 onClick={handleTestAllKeys}
-                className="min-h-[40px] sm:min-h-[34px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap"
+                disabled={isTestingCustomProvider}
+                className="min-h-[40px] sm:min-h-[34px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap"
               >
-                Test Key
+                {isTestingCustomProvider
+                  ? 'Đang test...'
+                  : isUsingCustomApi
+                    ? 'Test Custom'
+                    : 'Test Key'}
               </button>
             )}
           </div>
@@ -463,23 +718,179 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
 
         {/* Collapsible Netlify & API Key Drawer (saves vertical space on iPhone 13 Pro Max) */}
         {showConfigDrawer && (
-          <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-3 max-h-[46vh] overflow-y-auto ios-scroll custom-scrollbar pr-1">
+          <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-3 max-h-[62vh] overflow-y-auto ios-scroll custom-scrollbar pr-1">
             {throttleState.isPaused && (
               <div className="p-2.5 rounded-lg bg-rose-950/50 border border-rose-500/40 text-xs text-rose-200 font-medium">
                 Hàng đợi tạm dừng: {throttleState.pauseReason}
               </div>
             )}
 
+            {/* Custom AI Provider Quick Model Switcher */}
+            {customProviders.length > 0 && (
+              <div
+                className={`p-3 rounded-xl border space-y-3 ${
+                  isUsingCustomApi
+                    ? 'bg-emerald-950/20 border-emerald-500/40'
+                    : 'bg-slate-900/70 border-slate-800/90'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        isUsingCustomApi ? 'bg-emerald-400' : 'bg-slate-500'
+                      }`}
+                    />
+                    <span className="text-xs font-semibold text-slate-100">
+                      Custom AI API &amp; Đổi Model nhanh
+                    </span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-medium ${
+                        isUsingCustomApi
+                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      }`}
+                    >
+                      {isUsingCustomApi ? 'Đang kích hoạt' : 'Đang dùng Gemini'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchBackendRouting('external')}
+                      className={`min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                        isUsingCustomApi
+                          ? 'bg-emerald-600/25 border-emerald-500/50 text-emerald-200'
+                          : 'bg-slate-950 border-slate-700 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      Dùng Custom API
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchBackendRouting('gemini')}
+                      className={`min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                        !isUsingCustomApi
+                          ? 'bg-sky-600/25 border-sky-500/50 text-sky-200'
+                          : 'bg-slate-950 border-slate-700 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      Dùng Gemini
+                    </button>
+                  </div>
+                </div>
+
+                {activeCustomProvider && (
+                  <div className="space-y-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-medium text-slate-400">
+                          Custom Provider đang chọn ({customProviders.length})
+                        </span>
+                        <select
+                          value={activeCustomProvider.id}
+                          onChange={(e) => void handleSwitchActiveCustomProvider(e.target.value)}
+                          className="min-h-[42px] sm:min-h-[36px] bg-slate-950 border border-slate-800 text-slate-100 text-[15px] md:text-xs rounded-lg px-2.5 focus:outline-none focus:border-sky-500"
+                        >
+                          {customProviders.map(p => (
+                            <option key={p.id} value={p.id}>
+                              {p.isDefault ? '★ ' : ''}
+                              {p.name} ({p.model || 'chưa chọn model'})
+                              {!p.enabled ? ' [Đang tắt]' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="flex flex-wrap items-center gap-2 justify-between sm:justify-end">
+                        <div className="text-[11px] font-mono text-slate-400 truncate max-w-full sm:max-w-[220px]">
+                          {activeCustomProvider.baseUrl}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isTestingCustomProvider}
+                          onClick={() => void handleTestSingleCustomProvider(activeCustomProvider)}
+                          className="min-h-[36px] px-3 py-1.5 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap transition-colors"
+                        >
+                          {isTestingCustomProvider ? 'Đang test...' : 'Test Custom API'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-2">
+                      <SearchableModelSelect
+                        inlineDropdown
+                        label={`Model của ${activeCustomProvider.name}`}
+                        providerType={activeCustomProvider.providerType}
+                        baseUrl={activeCustomProvider.baseUrl}
+                        apiKey={activeCustomProvider.apiKey}
+                        authScheme={activeCustomProvider.authScheme}
+                        authHeaderName={activeCustomProvider.authHeaderName}
+                        customHeaders={activeCustomProvider.customHeaders}
+                        value={customModelDraft}
+                        onChange={(val) => setCustomModelDraft(val)}
+                        onSelectModel={(modelId) => {
+                          setCustomModelDraft(modelId);
+                          void handleCommitCustomModel(modelId, activeCustomProvider);
+                        }}
+                      />
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                        <div className="text-[11px] text-slate-400">
+                          {customTestResults[activeCustomProvider.id] ? (
+                            <span
+                              className={
+                                customTestResults[activeCustomProvider.id].ok
+                                  ? 'text-emerald-400 font-mono'
+                                  : 'text-rose-400 font-mono'
+                              }
+                            >
+                              {customTestResults[activeCustomProvider.id].statusText}
+                            </span>
+                          ) : externalProviderService.isProfileCoolingDown(activeCustomProvider.id) ? (
+                            <span className="text-rose-400 font-medium">
+                              Provider đang hạ nhiệt sau lỗi 429/5xx
+                            </span>
+                          ) : (
+                            <span>
+                              Model đang lưu:{' '}
+                              <strong className="font-mono text-slate-200">
+                                {activeCustomProvider.model || '(trống)'}
+                              </strong>
+                            </span>
+                          )}
+                        </div>
+
+                        {customModelDraft.trim() !== (activeCustomProvider.model || '').trim() && (
+                          <button
+                            type="button"
+                            disabled={isSavingCustomModel || !customModelDraft.trim()}
+                            onClick={() => void handleCommitCustomModel(customModelDraft, activeCustomProvider)}
+                            className="min-h-[34px] px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-semibold transition-colors"
+                          >
+                            {isSavingCustomModel ? 'Đang lưu...' : 'Áp dụng Model'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <label className="flex flex-col gap-1">
-                <span className="text-[11px] font-medium text-slate-400">Mô hình mặc định</span>
+                <span className="text-[11px] font-medium text-slate-400">
+                  {isUsingCustomApi ? 'Mô hình Gemini (Fallback)' : 'Mô hình Gemini mặc định'}
+                </span>
                 <select
                   value={selectedModel}
                   onChange={(e) => {
                     const newModel = e.target.value;
                     localStorage.setItem('aetheria_model_flash', newModel);
                     setSelectedModel(newModel);
-                    showNotification(`Đã chuyển sang ${newModel}`);
+                    showNotification(`Đã chuyển model Gemini sang ${newModel}`);
                   }}
                   className="min-h-[42px] sm:min-h-[36px] bg-slate-950 border border-slate-800 text-slate-100 font-mono text-[15px] md:text-xs rounded-lg px-2.5 focus:outline-none focus:border-sky-500"
                 >

@@ -19,7 +19,10 @@ interface SearchableModelSelectProps {
   customHeaders?: Record<string, string>;
   value: string;
   onChange: (modelId: string) => void;
+  onSelectModel?: (modelId: string) => void;
   onProviderDetected?: (detected: AIProviderType) => void;
+  inlineDropdown?: boolean;
+  label?: string;
 }
 
 function formatContextTokens(n?: number): string {
@@ -38,7 +41,10 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
   customHeaders,
   value,
   onChange,
-  onProviderDetected
+  onSelectModel,
+  onProviderDetected,
+  inlineDropdown = false,
+  label = 'Model AI *'
 }) => {
   const [discovery, setDiscovery] = useState<ModelDiscoveryResult>({
     status: 'idle',
@@ -207,7 +213,7 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
     <div ref={containerRef} className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold text-gray-300">Model AI *</span>
+          <span className="text-[11px] font-semibold text-gray-300">{label}</span>
           {discovery.status === 'loading' && (
             <span className="inline-flex items-center gap-1 text-[10px] text-sky-400">
               <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
@@ -306,7 +312,13 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
           </button>
 
           {isDropdownOpen && (
-            <div className="absolute z-40 mt-1.5 w-full rounded-xl bg-gray-950 border border-gray-700 shadow-2xl overflow-hidden">
+            <div
+              className={
+                inlineDropdown
+                  ? 'mt-1.5 w-full rounded-xl bg-gray-950 border border-gray-700 shadow-2xl overflow-hidden'
+                  : 'absolute z-40 mt-1.5 w-full rounded-xl bg-gray-950 border border-gray-700 shadow-2xl overflow-hidden'
+              }
+            >
               <div className="p-2 border-b border-gray-800 bg-gray-900/90">
                 <input
                   type="text"
@@ -314,7 +326,7 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder="Tìm kiếm model theo ID, tên hoặc hãng..."
                   autoFocus
-                  className="w-full bg-gray-950 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-sky-500"
+                  className="w-full bg-gray-950 border border-gray-700 rounded-lg px-2.5 py-1.5 text-[15px] md:text-xs text-white placeholder-gray-500 outline-none focus:border-sky-500"
                 />
               </div>
 
@@ -333,6 +345,7 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
                         type="button"
                         onClick={() => {
                           onChange(m.id);
+                          onSelectModel?.(m.id);
                           setMissingSelectedWarning(null);
                           setIsDropdownOpen(false);
                         }}
@@ -377,7 +390,7 @@ export const SearchableModelSelect: React.FC<SearchableModelSelectProps> = ({
               ? 'Nhập Base URL + API Key để tự quét model, hoặc nhập thủ công...'
               : 'Nhập Model ID thủ công (vd: gpt-4o, claude-sonnet-4...)'
           }
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-gray-500 outline-none focus:border-sky-500"
+          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-[15px] md:text-xs font-mono text-white placeholder-gray-500 outline-none focus:border-sky-500"
         />
       )}
 
