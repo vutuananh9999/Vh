@@ -7,6 +7,7 @@ import {
   ProviderProtocolFormat
 } from './providerTypes.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
+import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
 
 export const PROVIDER_PRESETS: Record<AIProviderType, ProviderPreset> = {
   openai_compatible: {
@@ -479,6 +480,18 @@ export const modelDiscoveryService = {
         fromCache: false,
         fetchedAt: Date.now()
       };
+    }
+
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      return serverSyncClient.discoverModels({
+        providerType: params.providerType,
+        baseUrl: params.baseUrl,
+        apiKey: params.apiKey,
+        authScheme: params.authScheme,
+        authHeaderName: params.authHeaderName,
+        customHeaders: params.customHeaders,
+        forceRefresh: params.forceRefresh
+      });
     }
 
     const headersHash = hashFingerprint(JSON.stringify(params.customHeaders || {}));

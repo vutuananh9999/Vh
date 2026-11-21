@@ -5,6 +5,7 @@ import { fastWordCount } from '../utils/wordCount.ts';
 import { ChapterTimelineCard } from './plot-arc/ChapterTimelineCard.tsx';
 import { PlotArcDebugConsole } from './plot-arc/PlotArcDebugConsole.tsx';
 import { plotDebugLogger } from '../services/plotDebugLogger.ts';
+import { runtimeKV } from '../services/runtimeAdapter.ts';
 
 interface Props {
     isOpen: boolean;
@@ -65,7 +66,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     const chatEndRef = useRef<HTMLDivElement>(null);
 
     const [isAutoAnalyze, setIsAutoAnalyze] = useState(() => {
-        return localStorage.getItem('aetheria_auto_analyze_plot') !== 'false';
+        return runtimeKV.getItem('aetheria_auto_analyze_plot') !== 'false';
     });
 
     const prevHashRef = useRef('');
@@ -181,7 +182,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
     }, []);
 
     useEffect(() => {
-        localStorage.setItem('aetheria_auto_analyze_plot', String(isAutoAnalyze));
+        runtimeKV.setItem('aetheria_auto_analyze_plot', String(isAutoAnalyze));
     }, [isAutoAnalyze]);
 
     // Auto scroll chat to bottom

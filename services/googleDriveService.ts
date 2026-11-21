@@ -11,6 +11,7 @@ import firebaseConfig from '../firebase-applet-config.json';
 import { Story } from '../types.ts';
 import { storageService } from './storage.ts';
 import { providerManagerService } from './providerManagerService.ts';
+import { runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 
 // Minimal Workspace scope for app-managed sync folder & backup files on Google Drive
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
@@ -349,14 +350,14 @@ export const googleDriveService = {
     let settings: DriveSettingsPayload | undefined = undefined;
     if (options.includeSettings || options.includeApiKeys) {
       settings = {};
-      if (options.includeSettings && typeof localStorage !== 'undefined') {
-        settings.modelFlash = localStorage.getItem('aetheria_model_flash');
-        settings.modelPro = localStorage.getItem('aetheria_model_pro');
-        settings.userStyle = localStorage.getItem('aetheria_user_style');
-        settings.queueMode = localStorage.getItem('aetheria_queue_mode');
-        settings.interRequestDelayMs = localStorage.getItem('aetheria_inter_request_delay_ms');
+      if (options.includeSettings) {
+        settings.modelFlash = runtimeKV.getItem('aetheria_model_flash');
+        settings.modelPro = runtimeKV.getItem('aetheria_model_pro');
+        settings.userStyle = runtimeKV.getItem('aetheria_user_style');
+        settings.queueMode = runtimeKV.getItem('aetheria_queue_mode');
+        settings.interRequestDelayMs = runtimeKV.getItem('aetheria_inter_request_delay_ms');
       }
-      if (options.includeSettings && typeof localStorage !== 'undefined') {
+      if (options.includeSettings) {
         try {
           const bundle = providerManagerService.exportProvidersBundle({
             includeApiKeys: Boolean(options.includeApiKeys)
@@ -369,9 +370,9 @@ export const googleDriveService = {
           // ignore
         }
       }
-      if (options.includeApiKeys && typeof localStorage !== 'undefined') {
+      if (options.includeApiKeys) {
         try {
-          const raw = localStorage.getItem('aetheria_api_key');
+          const raw = runtimeKV.getItem('aetheria_api_key');
           if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) {
@@ -379,7 +380,7 @@ export const googleDriveService = {
             }
           }
         } catch {
-          // ignore malformed localStorage
+          // ignore malformed stored keys
         }
         if (!settings.externalProviders) {
           try {
@@ -668,29 +669,29 @@ export const googleDriveService = {
     let settingsRestored = false;
     let apiKeysRestored = false;
 
-    if (payload.settings && typeof localStorage !== 'undefined') {
+    if (payload.settings) {
       if (options.restoreSettings) {
-        if (payload.settings.modelFlash) localStorage.setItem('aetheria_model_flash', payload.settings.modelFlash);
-        if (payload.settings.modelPro) localStorage.setItem('aetheria_model_pro', payload.settings.modelPro);
+        if (payload.settings.modelFlash) runtimeKV.setItem('aetheria_model_flash', payload.settings.modelFlash);
+        if (payload.settings.modelPro) runtimeKV.setItem('aetheria_model_pro', payload.settings.modelPro);
         if (payload.settings.userStyle !== undefined && payload.settings.userStyle !== null) {
-          localStorage.setItem('aetheria_user_style', payload.settings.userStyle);
+          runtimeKV.setItem('aetheria_user_style', payload.settings.userStyle);
         }
-        if (payload.settings.queueMode) localStorage.setItem('aetheria_queue_mode', payload.settings.queueMode);
+        if (payload.settings.queueMode) runtimeKV.setItem('aetheria_queue_mode', payload.settings.queueMode);
         if (payload.settings.interRequestDelayMs) {
-          localStorage.setItem('aetheria_inter_request_delay_ms', payload.settings.interRequestDelayMs);
+          runtimeKV.setItem('aetheria_inter_request_delay_ms', payload.settings.interRequestDelayMs);
         }
         settingsRestored = true;
       }
 
       if (options.restoreApiKeys && Array.isArray(payload.settings.apiKeys) && payload.settings.apiKeys.length > 0) {
         try {
-          const currentRaw = localStorage.getItem('aetheria_api_key');
+          const currentRaw = runtimeKV.getItem('aetheria_api_key');
           const currentKeys: string[] = currentRaw ? JSON.parse(currentRaw) : [];
           const mergedKeys = Array.from(new Set([...(Array.isArray(currentKeys) ? currentKeys : []), ...payload.settings.apiKeys]));
-          localStorage.setItem('aetheria_api_key', JSON.stringify(mergedKeys));
+          await serverSyncClient.saveGeminiKeys(mergedKeys);
           apiKeysRestored = true;
         } catch {
-          localStorage.setItem('aetheria_api_key', JSON.stringify(payload.settings.apiKeys));
+          await serverSyncClient.saveGeminiKeys(payload.settings.apiKeys);
           apiKeysRestored = true;
         }
       }

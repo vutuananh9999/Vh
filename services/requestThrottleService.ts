@@ -1,14 +1,10 @@
 /**
- * Request Throttling & Environment-Aware Sequential Queuing Middleware
- * 
- * Automatically detects hosting environment:
- * - On Netlify (Free Tier / Strict Quotas): Enforces sequential FIFO queuing (concurrency = 1)
- *   with inter-request cooldown buffering to prevent 429 Rate Limits and browser connection drops.
- * - On Preview (Cloud Run / Localhost / High Quotas): Allows parallel processing (concurrency = 4+)
- *   for high-speed simultaneous operations.
+ * Request Throttling & Server-Aware Sequential/Parallel Queuing Middleware
  */
 
-export type EnvironmentType = 'netlify' | 'preview' | 'custom';
+import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+
+export type EnvironmentType = 'netlify' | 'preview' | 'custom' | 'server';
 export type QueuePriority = 'critical' | 'high' | 'normal' | 'low';
 export type QueueMode = 'auto' | 'sequential' | 'parallel';
 
@@ -46,13 +42,13 @@ const STORAGE_MODE_KEY = 'aetheria_queue_mode_pref';
 const STORAGE_DELAY_KEY = 'aetheria_queue_delay_pref';
 
 class RequestThrottleService {
-  private environment: EnvironmentType = 'custom';
-  private hostname: string = '';
+  private environment: EnvironmentType = 'server';
+  private hostname: string = 'steamdeck-server';
   private isNetlify: boolean = false;
   private isPreview: boolean = false;
   private userModePref: QueueMode = 'auto';
-  private interRequestDelayMs: number = 800; // Netlify pacing delay in ms
-  
+  private interRequestDelayMs: number = 150;
+
   private activeJobsCount: number = 0;
   private queue: Array<{
     job: QueueJob;
@@ -60,73 +56,83 @@ class RequestThrottleService {
     resolve: (val: any) => void;
     reject: (err: any) => void;
   }> = [];
-  
+
   private recentJobs: QueueJob[] = [];
   private listeners: Array<(state: ThrottleState) => void> = [];
+  private broadcastHook: ((state: ThrottleState) => void) | null = null;
   private lastRequestCompletedTime: number = 0;
   private isProcessing: boolean = false;
   private isPaused: boolean = false;
   private pauseReason?: string;
   private pauseTimer?: any;
 
+  // Browser-side remote mirror state
+  private remoteMirroredState: ThrottleState | null = null;
+
   constructor() {
     this.detectEnvironment();
     this.loadPreferences();
   }
 
+  public setBroadcastHook(hook: (state: ThrottleState) => void): void {
+    this.broadcastHook = hook;
+  }
+
+  public hydrateFromServer(state: ThrottleState): void {
+    if (!state) return;
+    this.remoteMirroredState = state;
+    this.userModePref = state.mode;
+    this.interRequestDelayMs = state.interRequestDelayMs;
+    this.environment = state.environment || 'server';
+    this.hostname = state.hostname || 'steamdeck-server';
+    this.isNetlify = false;
+    this.isPreview = false;
+    this.listeners.forEach(l => {
+      try {
+        l(state);
+      } catch {
+        // ignore
+      }
+    });
+  }
+
+  public reloadPreferences(): void {
+    this.detectEnvironment();
+    this.loadPreferences();
+    this.notifyState();
+  }
+
   private detectEnvironment() {
-    if (typeof window === 'undefined') {
-      this.environment = 'custom';
-      this.hostname = 'server';
+    if (isServerRuntime() || typeof window === 'undefined') {
+      this.environment = 'server';
+      this.hostname = 'steamdeck-server';
       this.isPreview = false;
       this.isNetlify = false;
+      this.interRequestDelayMs = 150;
       return;
     }
 
     this.hostname = window.location.hostname || '';
-    
-    // Check if running on Google Cloud Run preview or localhost
-    const isCloudRun = this.hostname.includes('run.app') || 
-                       this.hostname.includes('googleusercontent.com') || 
-                       this.hostname.includes('localhost') || 
-                       this.hostname.includes('127.0.0.1');
-
-    // Check if running on Netlify
-    const isNetlifyHost = this.hostname.includes('netlify.app') || 
-                          this.hostname.includes('viethoa.netlify.app');
-
-    this.isPreview = isCloudRun;
-    this.isNetlify = isNetlifyHost || (!isCloudRun && this.hostname.length > 0);
-
-    if (this.isNetlify) {
-      this.environment = 'netlify';
-      this.interRequestDelayMs = 900; // Safe inter-call gap on Netlify
-    } else if (this.isPreview) {
-      this.environment = 'preview';
-      this.interRequestDelayMs = 50; // Minimal gap in high-capacity preview
-    } else {
-      this.environment = 'custom';
-      this.interRequestDelayMs = 500;
-    }
-
-    console.log(`[RequestThrottle] Environment detected: ${this.environment} (Hostname: ${this.hostname}) | Netlify: ${this.isNetlify} | Preview: ${this.isPreview}`);
+    this.environment = 'server';
+    this.isPreview = false;
+    this.isNetlify = false;
+    this.interRequestDelayMs = 150;
   }
 
   private loadPreferences() {
-    if (typeof window === 'undefined') return;
     try {
-      const savedMode = localStorage.getItem(STORAGE_MODE_KEY) as QueueMode;
+      const savedMode = runtimeKV.getItem(STORAGE_MODE_KEY) as QueueMode | null;
       if (savedMode && ['auto', 'sequential', 'parallel'].includes(savedMode)) {
         this.userModePref = savedMode;
       }
-      const savedDelay = localStorage.getItem(STORAGE_DELAY_KEY);
+      const savedDelay = runtimeKV.getItem(STORAGE_DELAY_KEY);
       if (savedDelay) {
         const num = parseInt(savedDelay, 10);
         if (!isNaN(num) && num >= 0 && num <= 5000) {
           this.interRequestDelayMs = num;
         }
       }
-    } catch (e) {
+    } catch {
       // Ignore storage errors
     }
   }
@@ -134,65 +140,77 @@ class RequestThrottleService {
   public getEffectiveConcurrency(): number {
     if (this.userModePref === 'sequential') return 1;
     if (this.userModePref === 'parallel') return 4;
-    
-    // Auto mode: Netlify = 1 (Strict Sequential), Preview = 4 (Parallel)
     return this.isNetlify ? 1 : 4;
   }
 
   public setMode(mode: QueueMode) {
     this.userModePref = mode;
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(STORAGE_MODE_KEY, mode);
-      } catch (e) {}
+    if (isServerRuntime()) {
+      runtimeKV.setItem(STORAGE_MODE_KEY, mode);
+      this.notifyState();
+      void this.processQueue();
+      return;
+    }
+
+    if (this.remoteMirroredState) {
+      this.remoteMirroredState = {
+        ...this.remoteMirroredState,
+        mode,
+        effectiveConcurrency: mode === 'sequential' ? 1 : 4
+      };
     }
     this.notifyState();
-    this.processQueue();
+    void serverSyncClient.updateThrottle({ mode }).catch(() => {});
   }
 
   public setInterRequestDelay(ms: number) {
-    this.interRequestDelayMs = Math.max(0, Math.min(5000, ms));
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(STORAGE_DELAY_KEY, String(this.interRequestDelayMs));
-      } catch (e) {}
+    const cleanMs = Math.max(0, Math.min(5000, ms));
+    this.interRequestDelayMs = cleanMs;
+    if (isServerRuntime()) {
+      runtimeKV.setItem(STORAGE_DELAY_KEY, String(cleanMs));
+      this.notifyState();
+      return;
+    }
+
+    if (this.remoteMirroredState) {
+      this.remoteMirroredState = {
+        ...this.remoteMirroredState,
+        interRequestDelayMs: cleanMs
+      };
     }
     this.notifyState();
+    void serverSyncClient.updateThrottle({ interRequestDelayMs: cleanMs }).catch(() => {});
   }
 
   public getPriorityWeight(priority: QueuePriority): number {
     switch (priority) {
-      case 'critical': return 100;
-      case 'high': return 50;
-      case 'normal': return 20;
-      case 'low': return 5;
-      default: return 10;
+      case 'critical':
+        return 100;
+      case 'high':
+        return 50;
+      case 'normal':
+        return 20;
+      case 'low':
+        return 5;
+      default:
+        return 10;
     }
   }
 
-  /**
-   * Pause queue temporarily when 429 is hit to let the quota bucket cool down
-   */
-  public pauseForCooldown(cooldownMs: number, reason: string = "Google 429 Quota Exhausted") {
+  public pauseForCooldown(cooldownMs: number, reason: string = 'Google 429 Quota Exhausted') {
     if (this.pauseTimer) clearTimeout(this.pauseTimer);
     this.isPaused = true;
     this.pauseReason = reason;
     this.notifyState();
 
-    console.warn(`[RequestThrottle] Queue paused for ${Math.round(cooldownMs / 1000)}s: ${reason}`);
-
     this.pauseTimer = setTimeout(() => {
       this.isPaused = false;
       this.pauseReason = undefined;
-      console.log(`[RequestThrottle] Queue resumed after cooldown.`);
       this.notifyState();
-      this.processQueue();
+      void this.processQueue();
     }, cooldownMs);
   }
 
-  /**
-   * Enqueue a standard Promise-returning API call
-   */
   public enqueuePromise<T>(
     task: () => Promise<T>,
     options: {
@@ -219,18 +237,13 @@ class RequestThrottleService {
         reject
       });
 
-      // Sort queue by priority (descending) and then creation time (ascending)
       this.sortQueue();
       this.recordJob(job);
       this.notifyState();
-      this.processQueue();
+      void this.processQueue();
     });
   }
 
-  /**
-   * Enqueue an Async Generator (Streaming) API call
-   * Ensures on Netlify that the active stream occupies the slot until the stream has finished!
-   */
   public async *enqueueStream<T = any>(
     streamFactory: () => AsyncGenerator<T, void, unknown>,
     options: {
@@ -252,7 +265,6 @@ class RequestThrottleService {
     this.recordJob(job);
     this.notifyState();
 
-    // Wait until our turn arrives according to concurrency limit
     await this.acquireSlot(job);
 
     try {
@@ -288,13 +300,12 @@ class RequestThrottleService {
   private async acquireSlot(job: QueueJob): Promise<void> {
     const maxConcurrency = this.getEffectiveConcurrency();
     if (this.activeJobsCount < maxConcurrency && !this.isPaused && this.queue.length === 0) {
-      // Check inter-request delay if needed
       await this.enforceInterRequestGap();
       this.activeJobsCount++;
       return;
     }
 
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const checkAndAcquire = async () => {
         if (this.activeJobsCount < this.getEffectiveConcurrency() && !this.isPaused) {
           await this.enforceInterRequestGap();
@@ -304,16 +315,15 @@ class RequestThrottleService {
           setTimeout(checkAndAcquire, 150);
         }
       };
-      checkAndAcquire();
+      void checkAndAcquire();
     });
   }
 
-  private releaseSlot(job: QueueJob) {
+  private releaseSlot(_job: QueueJob) {
     this.activeJobsCount = Math.max(0, this.activeJobsCount - 1);
     this.lastRequestCompletedTime = Date.now();
     this.notifyState();
-    // Process next queued task
-    setTimeout(() => this.processQueue(), 50);
+    setTimeout(() => void this.processQueue(), 50);
   }
 
   private async enforceInterRequestGap(): Promise<void> {
@@ -343,14 +353,12 @@ class RequestThrottleService {
       const { job, task, resolve, reject } = item;
       this.activeJobsCount++;
 
-      // Enforce inter-request gap on sequential / Netlify
       await this.enforceInterRequestGap();
 
       job.status = 'running';
       job.startedAt = Date.now();
       this.notifyState();
 
-      // Execute task
       (async () => {
         try {
           const result = await task();
@@ -362,9 +370,8 @@ class RequestThrottleService {
           job.error = err?.message || String(err);
           job.completedAt = Date.now();
 
-          // If 429 rate limit is detected in the error, pause queue
           if (err?.status === 429 || String(err).includes('429') || String(err).includes('RESOURCE_EXHAUSTED')) {
-            this.pauseForCooldown(25000, "Phát hiện mã lỗi 429 (Đã tạm dừng hàng đợi 25s để hồi Quota)");
+            this.pauseForCooldown(25000, 'Phát hiện mã lỗi 429 (Đã tạm dừng hàng đợi 25s để hồi Quota)');
           }
 
           reject(err);
@@ -372,7 +379,7 @@ class RequestThrottleService {
           this.activeJobsCount = Math.max(0, this.activeJobsCount - 1);
           this.lastRequestCompletedTime = Date.now();
           this.notifyState();
-          this.processQueue();
+          void this.processQueue();
         }
       })();
     }
@@ -385,10 +392,14 @@ class RequestThrottleService {
   }
 
   public getLatestRunningJob(): QueueJob | undefined {
-    return this.recentJobs.find(j => j.status === 'running') || this.recentJobs.find(j => j.status === 'pending');
+    const jobs = this.getState().jobs;
+    return jobs.find(j => j.status === 'running') || jobs.find(j => j.status === 'pending');
   }
 
   public getState(): ThrottleState {
+    if (!isServerRuntime() && this.remoteMirroredState) {
+      return this.remoteMirroredState;
+    }
     return {
       environment: this.environment,
       hostname: this.hostname,
@@ -417,8 +428,19 @@ class RequestThrottleService {
 
   private notifyState() {
     const state = this.getState();
+    if (isServerRuntime() && this.broadcastHook) {
+      try {
+        this.broadcastHook(state);
+      } catch {
+        // ignore
+      }
+    }
     this.listeners.forEach(l => {
-      try { l(state); } catch (e) {}
+      try {
+        l(state);
+      } catch {
+        // ignore
+      }
     });
   }
 

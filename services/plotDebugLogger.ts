@@ -1,4 +1,5 @@
 import { redactSecrets } from './secureCredentialStorage.ts';
+import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 
 export interface PlotDebugLogItem {
   id: string;
@@ -66,7 +67,6 @@ export interface PlotDebugLogItem {
   };
 }
 
-const STORAGE_KEY = 'aetheria_plot_debug_logs';
 const MAX_LOGS = 80;
 const MAX_STORED_RESPONSE_CHARS = 120000;
 const EVENT_NAME = 'aetheria_plot_debug_update';
@@ -83,77 +83,41 @@ class PlotDebugLoggerService {
   private logs: PlotDebugLogItem[] = [];
   private listeners: Array<(logs: PlotDebugLogItem[]) => void> = [];
   private notifyTimer: ReturnType<typeof setTimeout> | null = null;
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private broadcastHook: ((logs: PlotDebugLogItem[]) => void) | null = null;
 
-  constructor() {
-    this.loadLogs();
+  public setBroadcastHook(hook: (logs: PlotDebugLogItem[]) => void): void {
+    this.broadcastHook = hook;
   }
 
-  private loadLogs() {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = sessionStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const now = Date.now();
-          this.logs = parsed.map((item: PlotDebugLogItem) => {
-            // Reap dangling live statuses left over from a page refresh
-            if ((item.status === 'pending' || item.status === 'streaming') && now - (item.lastUpdateAt || item.timestamp) > 60000) {
-              return {
-                ...item,
-                status: 'error',
-                statusCode: 'ABORTED',
-                currentPhase: 'Phiên xử lý trước đã bị ngắt',
-                durationMs: item.durationMs || ((item.lastUpdateAt || item.timestamp) - item.timestamp)
-              };
-            }
-            return item;
-          });
-        }
-      }
-    } catch {
-      this.logs = [];
-    }
-  }
-
-  private persistNow() {
-    if (typeof window === 'undefined') return;
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    try {
-      const trimmed = this.logs.slice(0, MAX_LOGS).map(l => ({
-        ...l,
-        fullResponse: l.fullResponse && l.fullResponse.length > 30000
-          ? l.fullResponse.slice(0, 30000) + '\n... [Đã rút gọn bản lưu sessionStorage]'
-          : l.fullResponse,
-        requestPayload: {
-          ...l.requestPayload,
-          fullSystemInstruction: l.requestPayload.fullSystemInstruction && l.requestPayload.fullSystemInstruction.length > 25000
-            ? l.requestPayload.fullSystemInstruction.slice(0, 25000) + '\n... [Đã rút gọn bản lưu sessionStorage]'
-            : l.requestPayload.fullSystemInstruction
-        }
-      }));
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-    } catch (e) {
-      console.warn('Failed to persist plot debug logs:', e);
-    }
+  public hydrateFromServer(serverLogs: PlotDebugLogItem[]): void {
+    if (!Array.isArray(serverLogs)) return;
+    this.logs = serverLogs.slice(0, MAX_LOGS);
+    this.emitNow();
   }
 
   private emitNow() {
-    if (typeof window === 'undefined') return;
     if (this.notifyTimer) {
       clearTimeout(this.notifyTimer);
       this.notifyTimer = null;
     }
     const snapshot = this.getLogs();
-    try {
-      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: snapshot }));
-    } catch {
-      // ignore
+
+    if (isServerRuntime() && this.broadcastHook) {
+      try {
+        this.broadcastHook(snapshot);
+      } catch {
+        // ignore broadcast errors
+      }
     }
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: snapshot }));
+      } catch {
+        // ignore
+      }
+    }
+
     this.listeners.forEach(l => {
       try {
         l(snapshot);
@@ -165,20 +129,13 @@ class PlotDebugLoggerService {
 
   private saveLogsImmediate() {
     this.emitNow();
-    this.persistNow();
   }
 
   private scheduleStreamSync() {
-    if (typeof window === 'undefined') return;
     if (!this.notifyTimer) {
       this.notifyTimer = setTimeout(() => {
         this.emitNow();
-      }, 75);
-    }
-    if (!this.persistTimer) {
-      this.persistTimer = setTimeout(() => {
-        this.persistNow();
-      }, 1200);
+      }, 100);
     }
   }
 
@@ -196,17 +153,17 @@ class PlotDebugLoggerService {
 
   public clearLogs() {
     this.logs = [];
-    if (typeof window !== 'undefined') {
-      sessionStorage.removeItem(STORAGE_KEY);
-    }
     this.saveLogsImmediate();
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      void serverSyncClient.clearDebugLogs().catch(() => {});
+    }
   }
 
   public getHostEnv() {
-    if (typeof window === 'undefined') {
+    if (isServerRuntime() || typeof window === 'undefined') {
       return {
-        hostname: 'server',
-        origin: '',
+        hostname: 'steamdeck-server',
+        origin: process.env.TAILSCALE_HOST || 'http://localhost:3000',
         isPreview: false,
         isNetlify: false
       };
@@ -218,7 +175,7 @@ class PlotDebugLoggerService {
       hostname.includes('googleusercontent.com') ||
       hostname.includes('localhost') ||
       hostname.includes('127.0.0.1');
-    const isNetlify = hostname.includes('netlify.app') || (!isPreview && !hostname.includes('localhost'));
+    const isNetlify = hostname.includes('netlify.app');
     return {
       hostname,
       origin,
@@ -399,11 +356,9 @@ class PlotDebugLoggerService {
       status = 'network_error';
       statusCode = 'TIMEOUT';
       advice = `[LỖI TIMEOUT — PHẢN HỒI QUÁ THỜI GIAN CHO PHÉP]
-1. Nguyên nhân: Kết nối từ trình duyệt (Safari / Netlify) tới máy chủ Google cho model "${item.model}" bị treo hoặc mất gói tin nên hệ thống đã tự ngắt sau giới hạn chờ để không làm đơ máy.
-2. Lưu ý trên iPhone Safari: Nếu bạn khóa màn hình hoặc chuyển sang ứng dụng khác khi đang gọi API, iOS Safari có thể tạm đóng băng kết nối mạng của tab.
-3. Giải pháp:
-• Giữ màn hình sáng khi test hoặc chuyển sang model nhẹ 'gemini-3.1-flash-lite' / 'gemini-4-hydrogen'.
-• Kiểm tra lại kết nối Wi-Fi / 4G hoặc tắt VPN/iCloud Private Relay nếu bị nghẽn.`;
+1. Nguyên nhân: Kết nối từ máy chủ tới API cho model "${item.model}" bị treo hoặc quá thời gian chờ.
+2. Giải pháp:
+• Kiểm tra lại mạng Internet trên máy chủ Steam Deck hoặc chuyển sang model phản hồi nhanh ('gemini-4-hydrogen' / 'gemini-3.1-flash-lite').`;
     } else if (
       errLower.includes('503') ||
       errLower.includes('high demand') ||
@@ -412,25 +367,23 @@ class PlotDebugLoggerService {
     ) {
       status = 'error';
       statusCode = 503;
-      advice = `[LỖI 503 MÁY CHỦ GOOGLE QUÁ TẢI (HIGH DEMAND)]
-1. Nguyên nhân: Model "${item.model}" trên máy chủ Google đang bị quá tải đột biến do lượng truy cập toàn cầu quá lớn.
+      advice = `[LỖI 503 MÁY CHỦ AI QUÁ TẢI (HIGH DEMAND)]
+1. Nguyên nhân: Model "${item.model}" đang bị quá tải tạm thời.
 2. Giải pháp Khắc phục tức thì:
-• Chuyển sang model 'gemini-4-hydrogen' hoặc 'gemini-3.1-flash-lite' trong Cài đặt ⚙️ (phản hồi siêu tốc, ổn định, ít bị nghẽn 503).
-• Hoặc thử model 'gemini-3.8-flash' / 'gemini-flash-latest' trong danh sách dự phòng.`;
+• Chuyển sang model 'gemini-4-hydrogen' hoặc 'gemini-3.1-flash-lite' trong Cài đặt ⚙️.`;
     } else if (errLower.includes('429') || errLower.includes('resource_exhausted') || errLower.includes('quota')) {
       status = 'rate_limit_429';
       statusCode = 429;
-      advice = `[LỖI 429 GOOGLE FREE TIER QUOTA EXCEEDED]
-1. Nguyên nhân: Key "${item.keyMask}" đã chạm hạn mức Tần suất (15 RPM) hoặc Dung lượng Token/phút (TPM) của Google.
+      advice = `[LỖI 429 QUOTA EXCEEDED]
+1. Nguyên nhân: Key "${item.keyMask}" đã chạm hạn mức Tần suất (RPM) hoặc Token/phút (TPM).
 2. Giải pháp:
-• Chuyển sang model 'gemini-4-hydrogen' hoặc 'gemini-3.1-flash-lite' (có TPM cao hơn nhiều so với dòng Pro/Argon/Carbon).
-• Thêm các Key từ tài khoản Google khác nhau (không cùng Project) vào Cài đặt ⚙️.
-• Chờ 30-60s để Google tự động giải phóng hạn mức.`;
+• Thêm các Key từ tài khoản khác nhau vào Cài đặt ⚙️ để hệ thống tự xoay vòng.
+• Chờ 30-60s để hạn mức tự giải phóng.`;
     } else if (errLower.includes('403') || errLower.includes('permission_denied')) {
       status = 'error_403';
       statusCode = 403;
       advice = `[LỖI 403 PERMISSION DENIED]
-1. Key "${item.keyMask}" không có quyền truy cập model "${item.model}" hoặc tính năng Search Grounding bị khóa.
+1. Key "${item.keyMask}" không có quyền truy cập model "${item.model}".
 2. Kiểm tra lại Google Cloud Console -> APIs & Services xem Generative Language API đã được Bật (Enabled) hay chưa.`;
     } else if (
       errLower.includes('400') ||
@@ -441,13 +394,12 @@ class PlotDebugLoggerService {
       statusCode = 400;
       advice = `[LỖI 400 INVALID API KEY / PARAMETERS]
 1. Chuỗi API Key bị sai hoặc tham số model không tương thích.
-2. Hãy vào Cài đặt Toàn cầu ⚙️ -> Kiểm tra lại định dạng Key bắt đầu bằng AIzaSy...`;
+2. Hãy vào Cài đặt Toàn cầu ⚙️ -> Kiểm tra lại API Key hoặc Model.`;
     } else if (errLower.includes('failed to fetch') || errLower.includes('network') || errLower.includes('cors')) {
       status = 'network_error';
-      statusCode = 'CORS/NET';
-      advice = `[LỖI KẾT NỐI MẠNG HOẶC CORS]
-1. Trình duyệt bị chặn khi gửi request từ domain ${item.hostEnv.hostname} tới Google API.
-2. Kiểm tra xem trên Google Cloud Console API Key có đang cài đặt "HTTP Referrers" hạn chế domain hay không.`;
+      statusCode = 'NET';
+      advice = `[LỖI KẾT NỐI MẠNG]
+1. Máy chủ không thể kết nối tới API endpoint.`;
     }
 
     item.status = status;
@@ -466,9 +418,9 @@ class PlotDebugLoggerService {
     let storedKeysCount = 0;
     let keyMasks: string[] = [];
 
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('aetheria_api_key') || '';
+    try {
+      const stored = runtimeKV.getItem('aetheria_api_key') || '';
+      if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
           storedKeysCount = parsed.length;
@@ -476,10 +428,10 @@ class PlotDebugLoggerService {
             k.length > 8 ? `${k.slice(0, 6)}...${k.slice(-4)}` : 'KEY'
           );
         }
-      } catch {
-        if (localStorage.getItem('aetheria_api_key')) {
-          storedKeysCount = 1;
-        }
+      }
+    } catch {
+      if (runtimeKV.getItem('aetheria_api_key')) {
+        storedKeysCount = 1;
       }
     }
 
@@ -488,9 +440,8 @@ class PlotDebugLoggerService {
       environment: {
         hostname: env.hostname,
         origin: env.origin,
-        isNetlifyDomain: env.isNetlify,
-        isPreviewContainer: env.isPreview,
-        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'
+        isServerExecution: isServerRuntime(),
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js Server'
       },
       apiKeyStatus: {
         totalKeysConfigured: storedKeysCount,

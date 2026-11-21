@@ -17,6 +17,7 @@ import {
   providerManagerService
 } from './providerManagerService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
+import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
 
 export type {
   AIProviderType,
@@ -73,6 +74,27 @@ export const externalProviderService = {
 
   clearAllCooldowns(): void {
     externalCooldowns.clear();
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      void serverSyncClient.resetAllCooldowns().catch(() => {});
+    }
+  },
+
+  getCoolingProfileIdsSnapshot(): string[] {
+    const now = Date.now();
+    const ids: string[] = [];
+    for (const [id, exp] of externalCooldowns.entries()) {
+      if (exp > now) ids.push(id);
+      else externalCooldowns.delete(id);
+    }
+    return ids;
+  },
+
+  hydrateCooldownsFromServer(ids: string[]): void {
+    externalCooldowns.clear();
+    const until = Date.now() + 25000;
+    for (const id of ids || []) {
+      if (id) externalCooldowns.set(id, until);
+    }
   },
 
   getCandidateProfilesForTask(tier: 'pro' | 'flash'): ExternalProviderProfile[] {

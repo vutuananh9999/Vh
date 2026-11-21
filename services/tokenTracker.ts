@@ -1,4 +1,4 @@
-import { ChatMessage } from "../types.ts";
+import { isServerRuntime, runtimeKV } from './runtimeAdapter.ts';
 
 export interface RequestLogItem {
   id: string;
@@ -31,49 +31,90 @@ export interface ModelLimitStatus {
 const STORAGE_KEY = 'aetheria_api_usage';
 const UPDATE_EVENT = 'aetheria_token_update';
 
-// Google Free API standard limits
 const LIMITS = {
   pro: {
-    rpm: 2,         // 2 requests per minute
-    tpm: 32000,     // 32,000 tokens per minute
-    rpd: 50,        // 50 requests per day
+    rpm: 2,
+    tpm: 32000,
+    rpd: 50
   },
   flash: {
-    rpm: 15,        // 15 requests per minute
-    tpm: 1000000,   // 1,000,000 tokens per minute
-    rpd: 1500,      // 1,500 requests per day
+    rpm: 15,
+    tpm: 1000000,
+    rpd: 1500
   }
 };
 
 class TokenTrackerService {
   private log: RequestLogItem[] = [];
+  private broadcastHook: ((logs: RequestLogItem[]) => void) | null = null;
+  private listeners = new Set<() => void>();
 
   constructor() {
     this.loadLog();
   }
 
+  public setBroadcastHook(hook: (logs: RequestLogItem[]) => void): void {
+    this.broadcastHook = hook;
+  }
+
+  public reloadFromStorage(): void {
+    this.loadLog();
+    this.emitUpdate();
+  }
+
+  public getLogs(): RequestLogItem[] {
+    this.cleanOldEntries();
+    return [...this.log];
+  }
+
+  public hydrateFromServer(logs: RequestLogItem[]): void {
+    if (!Array.isArray(logs)) return;
+    this.log = logs;
+    this.cleanOldEntries();
+    this.emitUpdate();
+  }
+
   private loadLog() {
-    if (typeof window === 'undefined') return;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = runtimeKV.getItem(STORAGE_KEY);
       if (stored) {
         this.log = JSON.parse(stored);
         this.cleanOldEntries();
       }
-    } catch (e) {
-      console.error("Failed to load token usage log:", e);
+    } catch {
       this.log = [];
     }
   }
 
+  private emitUpdate() {
+    if (isServerRuntime() && this.broadcastHook) {
+      try {
+        this.broadcastHook([...this.log]);
+      } catch {
+        // ignore
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(UPDATE_EVENT));
+    }
+    for (const cb of this.listeners) {
+      try {
+        cb();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private saveLog() {
-    if (typeof window === 'undefined') return;
     try {
       this.cleanOldEntries();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.log));
-      window.dispatchEvent(new CustomEvent(UPDATE_EVENT));
+      if (isServerRuntime()) {
+        runtimeKV.setItem(STORAGE_KEY, JSON.stringify(this.log));
+      }
+      this.emitUpdate();
     } catch (e) {
-      console.error("Failed to save token usage log:", e);
+      console.error('Failed to save token usage log:', e);
     }
   }
 
@@ -87,13 +128,13 @@ class TokenTrackerService {
     if (id.includes('pro') || id.includes('argon') || id.includes('carbon')) {
       return 'pro';
     }
-    return 'flash'; // Default to flash for anything else
+    return 'flash';
   }
 
   public recordRequestStart(modelId: string, estimatedTokens = 1000, apiKey?: string): string {
     const modelType = this.getModelType(modelId);
     const requestId = Math.random().toString(36).substring(2, 11);
-    
+
     const newItem: RequestLogItem = {
       id: requestId,
       timestamp: Date.now(),
@@ -111,13 +152,18 @@ class TokenTrackerService {
     return requestId;
   }
 
-  public recordRequestSuccess(requestId: string, promptTokens: number, candidatesTokens: number, totalTokens: number) {
+  public recordRequestSuccess(
+    requestId: string,
+    promptTokens: number,
+    candidatesTokens: number,
+    totalTokens: number
+  ) {
     const item = this.log.find(i => i.id === requestId);
     if (item) {
       item.status = 'success';
       item.promptTokens = promptTokens;
       item.candidatesTokens = candidatesTokens;
-      item.totalTokens = totalTokens || (promptTokens + candidatesTokens);
+      item.totalTokens = totalTokens || promptTokens + candidatesTokens;
       this.saveLog();
     }
   }
@@ -126,7 +172,7 @@ class TokenTrackerService {
     const item = this.log.find(i => i.id === requestId);
     if (item) {
       item.status = 'failure';
-      item.totalTokens = 0; // Failures don't consume tokens, but they took an RPM slot
+      item.totalTokens = 0;
       this.saveLog();
     }
   }
@@ -139,7 +185,6 @@ class TokenTrackerService {
     const oneMinuteAgo = now - 60 * 1000;
     const oneDayAgo = now - 24 * 60 * 60 * 1000;
 
-    // Filter logs
     const minuteLogs = this.log.filter(item => item.modelType === modelType && item.timestamp >= oneMinuteAgo);
     const dayLogs = this.log.filter(item => item.modelType === modelType && item.timestamp >= oneDayAgo);
 
@@ -150,40 +195,32 @@ class TokenTrackerService {
     let isLimited = false;
     let limitReason: 'rpm' | 'tpm' | 'rpd' | null = null;
     let cooldownSeconds = 0;
-    let workTimeRemaining = "Sẵn sàng";
+    let workTimeRemaining = 'Sẵn sàng';
 
-    // 1. Check RPD (Day)
     if (rpdUsed >= limits.rpd) {
       isLimited = true;
       limitReason = 'rpd';
-      const oldestDayLog = dayLogs.sort((a, b) => a.timestamp - b.timestamp)[0];
+      const oldestDayLog = [...dayLogs].sort((a, b) => a.timestamp - b.timestamp)[0];
       const resetMs = (oldestDayLog ? oldestDayLog.timestamp : now) + 24 * 60 * 60 * 1000 - now;
       cooldownSeconds = Math.max(0, Math.ceil(resetMs / 1000));
-      
+
       const hours = Math.floor(cooldownSeconds / 3600);
       const minutes = Math.floor((cooldownSeconds % 3600) / 60);
       workTimeRemaining = `Hết lượt ngày (Chờ ${hours}g ${minutes}p)`;
-    }
-    // 2. Check RPM (Minute requests count)
-    else if (rpmUsed >= limits.rpm) {
+    } else if (rpmUsed >= limits.rpm) {
       isLimited = true;
       limitReason = 'rpm';
-      
-      // Sort ascending to find when slots will free up
+
       const sortedMinute = [...minuteLogs].sort((a, b) => a.timestamp - b.timestamp);
-      // To free up 1 slot, we need the oldest request to slide out of the 1-minute window
       const oldestRequest = sortedMinute[0];
       const resetMs = (oldestRequest ? oldestRequest.timestamp : now) + 60 * 1000 - now;
       cooldownSeconds = Math.max(0, Math.ceil(resetMs / 1000));
       workTimeRemaining = `Hồi chiêu RPM (${cooldownSeconds}s)`;
-    }
-    // 3. Check TPM (Minute token count)
-    else if (tpmUsed >= limits.tpm) {
+    } else if (tpmUsed >= limits.tpm) {
       isLimited = true;
       limitReason = 'tpm';
-      
+
       const sortedMinute = [...minuteLogs].sort((a, b) => a.timestamp - b.timestamp);
-      // We need enough tokens to free up. Let's find when TPM falls below limit.
       let currentTpm = tpmUsed;
       let targetTime = now;
       for (const item of sortedMinute) {
@@ -256,10 +293,15 @@ class TokenTrackerService {
   }
 
   public subscribe(callback: () => void): () => void {
-    if (typeof window === 'undefined') return () => {};
-    window.addEventListener(UPDATE_EVENT, callback);
+    this.listeners.add(callback);
+    if (typeof window !== 'undefined') {
+      window.addEventListener(UPDATE_EVENT, callback);
+    }
     return () => {
-      window.removeEventListener(UPDATE_EVENT, callback);
+      this.listeners.delete(callback);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(UPDATE_EVENT, callback);
+      }
     };
   }
 }

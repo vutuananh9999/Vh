@@ -11,6 +11,7 @@ import { TranslationSettingsModal } from './TranslationSettingsModal.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { tokenTracker } from '../services/tokenTracker.ts';
 import { geminiService } from '../services/geminiService.ts';
+import { runtimeKV } from '../services/runtimeAdapter.ts';
 
 type EditorTab = 'refine' | 'sensory' | 'transform' | 'critique';
 
@@ -114,7 +115,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
 
   const [readerSettings, setReaderSettings] = useState<ReaderSettings>(() => {
     try {
-      const saved = localStorage.getItem('aetheria_reader_settings');
+      const saved = runtimeKV.getItem('aetheria_reader_settings');
       if (saved) return JSON.parse(saved);
     } catch {}
     return {
@@ -133,7 +134,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     setReaderSettings(prev => {
       const next = { ...prev, [key]: value };
       try {
-        localStorage.setItem('aetheria_reader_settings', JSON.stringify(next));
+        runtimeKV.setItem('aetheria_reader_settings', JSON.stringify(next));
       } catch {}
       return next;
     });
@@ -1932,7 +1933,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-4-hydrogen');
+                                  runtimeKV.setItem('aetheria_model_flash', 'gemini-4-hydrogen');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
@@ -1946,7 +1947,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemma-4-31b-queen');
+                                  runtimeKV.setItem('aetheria_model_flash', 'gemma-4-31b-queen');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
@@ -1960,7 +1961,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.8-flash');
+                                  runtimeKV.setItem('aetheria_model_flash', 'gemini-3.8-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
@@ -1974,7 +1975,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.7-flash');
+                                  runtimeKV.setItem('aetheria_model_flash', 'gemini-3.7-flash');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${
@@ -1988,7 +1989,7 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  localStorage.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
+                                  runtimeKV.setItem('aetheria_model_flash', 'gemini-3.1-flash-lite');
                                   window.dispatchEvent(new CustomEvent('aetheria_token_update'));
                                 }}
                                 className={`px-1.5 py-1 rounded text-[9px] font-medium transition-all text-center ${

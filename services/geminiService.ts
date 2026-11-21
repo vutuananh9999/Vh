@@ -8,12 +8,42 @@ import { requestThrottleService } from "./requestThrottleService.ts";
 import { externalProviderService } from "./externalProviderService.ts";
 import { providerManagerService } from "./providerManagerService.ts";
 import { redactSecrets } from "./secureCredentialStorage.ts";
+import { isServerRuntime, runtimeKV, serverSyncClient } from "./runtimeAdapter.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
 
 // Map to track keys that are temporarily rate-limited (cooling down)
 const keyCooldowns = new Map<string, number>();
+let cooldownChangeHook: ((snapshot: Array<{ key: string; remainingMs: number }>) => void) | null = null;
+
+export function setCooldownChangeHook(hook: ((snapshot: Array<{ key: string; remainingMs: number }>) => void) | null): void {
+  cooldownChangeHook = hook;
+}
+
+function getActiveCooldownsSnapshot(): Array<{ key: string; remainingMs: number }> {
+  const now = Date.now();
+  const result: Array<{ key: string; remainingMs: number }> = [];
+  for (const [k, exp] of keyCooldowns.entries()) {
+    const diff = exp - now;
+    if (diff > 0) {
+      result.push({ key: k, remainingMs: diff });
+    } else {
+      keyCooldowns.delete(k);
+    }
+  }
+  return result;
+}
+
+function notifyCooldownChanged() {
+  if (cooldownChangeHook) {
+    try {
+      cooldownChangeHook(getActiveCooldownsSnapshot());
+    } catch {
+      // ignore
+    }
+  }
+}
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -46,17 +76,21 @@ function clearKeyCooldown(key: string) {
   if (key) {
     const cleanK = cleanKey(key);
     keyCooldowns.delete(cleanK);
-    // Also delete any model-specific keys
     for (const k of Array.from(keyCooldowns.keys())) {
       if (k.startsWith(cleanK)) {
         keyCooldowns.delete(k);
       }
     }
+    notifyCooldownChanged();
   }
 }
 
 function clearAllCooldowns() {
   keyCooldowns.clear();
+  notifyCooldownChanged();
+  if (typeof window !== 'undefined' && !isServerRuntime()) {
+    void serverSyncClient.resetAllCooldowns().catch(() => {});
+  }
 }
 
 function markKeyRateLimited(key: string, cooldownMs: number = 25000, model?: string) {
@@ -69,6 +103,7 @@ function markKeyRateLimited(key: string, cooldownMs: number = 25000, model?: str
   }
   const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
   console.warn(`[Network Layer API Key Rotation] API Key (${masked}) trên model (${model || 'chung'}) đã chạm 429. Hồi chiêu ${cooldownMs / 1000}s.`);
+  notifyCooldownChanged();
 }
 
 function markKeyTransientFailure(key: string, cooldownMs: number = 12000, model?: string) {
@@ -81,6 +116,7 @@ function markKeyTransientFailure(key: string, cooldownMs: number = 12000, model?
   }
   const masked = `${cleanK.slice(0, 6)}...${cleanK.slice(-4)}`;
   console.warn(`[Network Layer API Key Rotation] API Key (${masked}) trên model (${model || 'chung'}) gặp 503/tạm gián đoạn. Tạm nghỉ ${cooldownMs / 1000}s để xoay key.`);
+  notifyCooldownChanged();
 }
 
 function cleanKey(val: string): string {
@@ -139,10 +175,7 @@ function getAllKeys(): string[] {
     || (typeof import.meta !== 'undefined' && (import.meta as any).env && ((import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY))
     || '';
 
-  if (typeof window === 'undefined') {
-    return envKey ? [envKey] : [];
-  }
-  const stored = localStorage.getItem('aetheria_api_key') || '';
+  const stored = runtimeKV.getItem('aetheria_api_key') || '';
   const userKeys = extractKeys(stored);
   if (userKeys.length > 0) {
     return userKeys;
@@ -379,12 +412,12 @@ function normalizeModel(modelName: string | null | undefined, fallback: string):
   return fallback;
 }
 
-const getFlash = () => normalizeModel(localStorage.getItem('aetheria_model_flash'), DEFAULT_FLASH_MODEL);
+const getFlash = () => normalizeModel(runtimeKV.getItem('aetheria_model_flash'), DEFAULT_FLASH_MODEL);
 const getPro = () => {
   if (proModelFailed || Date.now() < proModelFailedUntil) {
     return getFlash();
   }
-  return normalizeModel(localStorage.getItem('aetheria_model_pro'), DEFAULT_PRO_MODEL);
+  return normalizeModel(runtimeKV.getItem('aetheria_model_pro'), DEFAULT_PRO_MODEL);
 };
 
 function getModelCascade(requestedModel: string): string[] {
@@ -2319,6 +2352,12 @@ export const geminiService = {
     if (!key || !key.trim()) {
       return { success: false, message: "Vui lòng nhập API Key để kiểm tra." };
     }
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      return serverSyncClient.testGeminiKey({
+        apiKey: key.trim(),
+        mode: 'simple'
+      });
+    }
     try {
       const testAI = createGenAI(key.trim());
       const modelsToTry = ["gemini-4-hydrogen", "gemini-3.1-flash-lite", "gemini-flash-latest"];
@@ -3802,6 +3841,16 @@ TRẢ VỀ JSON:
       onPhase?: (phase: string, model: string) => void;
     }
   ): Promise<{ text: string; usageMetadata?: any; modelUsed: string; latencyMs: number }> {
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      const primaryModel = modelToTest || getFlash();
+      options?.onPhase?.(`Đang nhờ máy chủ Steam Deck ping ${primaryModel}...`, primaryModel);
+      return serverSyncClient.testGeminiKey({
+        apiKey,
+        model: primaryModel,
+        mode: 'direct',
+        timeoutMs: options?.timeoutMs
+      });
+    }
     const rawAi = createGenAI(apiKey);
     const primaryModel = modelToTest || getFlash();
     const timeoutMs = options?.timeoutMs ?? 15000;
@@ -3884,6 +3933,16 @@ TRẢ VỀ JSON:
   getFlash,
   getPro,
   getKeyCooldownStatus,
+  getActiveCooldownsSnapshot,
+  hydrateCooldownsFromServer(entries: Array<{ key: string; remainingMs: number }>) {
+    keyCooldowns.clear();
+    const now = Date.now();
+    for (const entry of entries || []) {
+      if (entry?.key && entry.remainingMs > 0) {
+        keyCooldowns.set(entry.key, now + entry.remainingMs);
+      }
+    }
+  },
   clearKeyCooldown,
   clearAllCooldowns,
   markKeyRateLimited

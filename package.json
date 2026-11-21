@@ -4,18 +4,24 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "vite build",
+    "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^1.31.0",
+    "@types/express": "^5.0.6",
     "@types/jszip": "^3.4.1",
+    "@types/ws": "^8.18.2",
+    "express": "^5.3.0",
     "firebase": "^13.4.0",
     "jszip": "^3.10.2",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "tsx": "^4.23.15",
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

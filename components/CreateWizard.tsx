@@ -6,6 +6,7 @@ import { Character, EntityType } from '../types';
 import { TokenUsageMeter } from './TokenUsageMeter';
 import { calculateWizardMetrics } from '../services/tokenEstimator';
 import { geminiService } from '../services/geminiService';
+import { runtimeKV } from '../services/runtimeAdapter';
 import { parseEpubFile } from '../utils/epubHelper';
 
 const SUGGESTED_GENRES = [
@@ -113,9 +114,7 @@ export const CreateWizard: React.FC<{ onCancel: () => void }> = ({ onCancel }) =
 
   const handleModelChange = (newModelId: string) => {
     setActiveModel(newModelId);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('aetheria_model_flash', newModelId);
-    }
+    runtimeKV.setItem('aetheria_model_flash', newModelId);
   };
 
   const getFinalPronounPrompt = () => {

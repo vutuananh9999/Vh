@@ -7,6 +7,7 @@ import { externalProviderService } from '../../services/externalProviderService.
 import { providerClientService } from '../../services/providerClientService.ts';
 import { ExternalProviderProfile, ProviderRoutingConfig } from '../../services/providerTypes.ts';
 import { SearchableModelSelect } from '../providers/SearchableModelSelect.tsx';
+import { runtimeKV } from '../../services/runtimeAdapter.ts';
 
 interface Props {
   onSwitchToChat?: () => void;
@@ -888,7 +889,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   value={selectedModel}
                   onChange={(e) => {
                     const newModel = e.target.value;
-                    localStorage.setItem('aetheria_model_flash', newModel);
+                    runtimeKV.setItem('aetheria_model_flash', newModel);
                     setSelectedModel(newModel);
                     showNotification(`Đã chuyển model Gemini sang ${newModel}`);
                   }}
@@ -909,7 +910,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               </label>
 
               <label className="flex flex-col gap-1">
-                <span className="text-[11px] font-medium text-slate-400">Điều tiết hàng đợi (Netlify)</span>
+                <span className="text-[11px] font-medium text-slate-400">Điều tiết hàng đợi (Máy chủ)</span>
                 <select
                   value={throttleState.mode}
                   onChange={(e) => {
@@ -919,8 +920,8 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   }}
                   className="min-h-[42px] sm:min-h-[36px] bg-slate-950 border border-slate-800 text-slate-100 text-[15px] md:text-xs rounded-lg px-2.5 focus:outline-none focus:border-sky-500"
                 >
-                  <option value="auto">Tự động theo Host (Khuyên dùng)</option>
-                  <option value="sequential">Tuần tự 1 luồng (An toàn Netlify)</option>
+                  <option value="auto">Tự động theo Host (4 luồng Server)</option>
+                  <option value="sequential">Tuần tự 1 luồng (Tiết kiệm Quota)</option>
                   <option value="parallel">Song song 4 luồng (Tốc độ cao)</option>
                 </select>
               </label>

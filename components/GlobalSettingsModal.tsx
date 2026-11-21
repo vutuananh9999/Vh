@@ -8,6 +8,7 @@ import {
 } from "../services/externalProviderService.ts";
 import { providerManagerService } from "../services/providerManagerService.ts";
 import { ProviderManagementPanel } from "./providers/ProviderManagementPanel.tsx";
+import { runtimeKV, serverSyncClient } from "../services/runtimeAdapter.ts";
 
 interface Props {
     isOpen: boolean;
@@ -28,6 +29,13 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [isFetchingAllStatuses, setIsFetchingAllStatuses] = useState(false);
     const [nowTime, setNowTime] = useState(Date.now());
     const [dashboardFilter, setDashboardFilter] = useState<'all' | 'active' | 'limited'>('all');
+
+    // Optional Server Password Lock State
+    const [passwordEnabled, setPasswordEnabled] = useState(false);
+    const [envForcedPassword, setEnvForcedPassword] = useState(false);
+    const [newServerPassword, setNewServerPassword] = useState("");
+    const [securityMsg, setSecurityMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [isUpdatingSecurity, setIsUpdatingSecurity] = useState(false);
 
     // External Multi-Provider Keys State
     const [extProfiles, setExtProfiles] = useState<ExternalProviderProfile[]>([]);
@@ -54,7 +62,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
     useEffect(() => {
         if (isOpen) {
-            const stored = localStorage.getItem('aetheria_api_key') || "";
+            const stored = runtimeKV.getItem('aetheria_api_key') || "";
             if (!stored) {
                 setApiKeys([""]);
             } else {
@@ -80,6 +88,12 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             void providerManagerService.listProvidersAsync().then(hydrated => {
                 setExtProfiles(hydrated);
             });
+            void serverSyncClient.getAuthStatus().then(st => {
+                setPasswordEnabled(st.passwordEnabled);
+                setEnvForcedPassword(st.envForcedPassword);
+            }).catch(() => {});
+            setNewServerPassword("");
+            setSecurityMsg(null);
             setShowBulkInput(false);
             setBulkText("");
             setTestResults({});
@@ -97,7 +111,10 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         }
         
         if (!keyToTest) {
-            alert("Vui lòng nhập API Key để kiểm tra.");
+            setTestResults(prev => ({
+                ...prev,
+                [index]: { success: false, message: "Vui lòng nhập API Key để kiểm tra." }
+            }));
             return;
         }
 
@@ -189,11 +206,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         const resultKeys = newKeys.length > 0 ? newKeys : [""];
         setApiKeys(resultKeys);
         const filteredKeys = resultKeys.map(k => k.trim()).filter(Boolean);
-        if (filteredKeys.length > 0) {
-            localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
-        } else {
-            localStorage.removeItem('aetheria_api_key');
-        }
+        void serverSyncClient.saveGeminiKeys(filteredKeys);
     };
 
     const handleKeyChange = (index: number, val: string) => {
@@ -201,11 +214,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         newKeys[index] = val;
         setApiKeys(newKeys);
         const filteredKeys = newKeys.map(k => k.trim()).filter(Boolean);
-        if (filteredKeys.length > 0) {
-            localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
-        } else {
-            localStorage.removeItem('aetheria_api_key');
-        }
+        void serverSyncClient.saveGeminiKeys(filteredKeys);
     };
 
     const handleBulkImport = () => {
@@ -222,22 +231,57 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             setBulkText("");
             setShowBulkInput(false);
             const filteredKeys = resultKeys.map(k => k.trim()).filter(Boolean);
-            if (filteredKeys.length > 0) {
-                localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
-            }
+            void serverSyncClient.saveGeminiKeys(filteredKeys);
         }
     };
 
-    const handleSave = () => {
-        const filteredKeys = apiKeys.map(k => k.trim()).filter(Boolean);
-        if (filteredKeys.length > 0) {
-            localStorage.setItem('aetheria_api_key', JSON.stringify(filteredKeys));
-        } else {
-            localStorage.removeItem('aetheria_api_key');
+    const handleEnableOrUpdatePassword = async () => {
+        if (newServerPassword.trim().length < 4) {
+            setSecurityMsg({ type: 'error', text: 'Mật khẩu phải có ít nhất 4 ký tự.' });
+            return;
         }
+        setIsUpdatingSecurity(true);
+        setSecurityMsg(null);
+        try {
+            const res = await serverSyncClient.updateServerPassword(newServerPassword.trim());
+            setPasswordEnabled(res.passwordEnabled);
+            setEnvForcedPassword(res.envForcedPassword);
+            setNewServerPassword("");
+            setSecurityMsg({ type: 'success', text: 'Đã bật/cập nhật mật khẩu bảo vệ máy chủ.' });
+        } catch (err: any) {
+            setSecurityMsg({ type: 'error', text: err?.message || 'Không thể cập nhật mật khẩu.' });
+        } finally {
+            setIsUpdatingSecurity(false);
+        }
+    };
+
+    const handleDisablePassword = async () => {
+        setIsUpdatingSecurity(true);
+        setSecurityMsg(null);
+        try {
+            const res = await serverSyncClient.updateServerPassword(null);
+            setPasswordEnabled(res.passwordEnabled);
+            setEnvForcedPassword(res.envForcedPassword);
+            setSecurityMsg({ type: 'success', text: 'Đã tắt khóa mật khẩu — truy cập trực tiếp qua Tailscale.' });
+        } catch (err: any) {
+            setSecurityMsg({ type: 'error', text: err?.message || 'Không thể tắt mật khẩu.' });
+        } finally {
+            setIsUpdatingSecurity(false);
+        }
+    };
+
+    const handleLockDeviceNow = async () => {
+        await serverSyncClient.logout();
+        onClose();
+        window.dispatchEvent(new CustomEvent('aetheria_auth_required'));
+    };
+
+    const handleSave = async () => {
+        const filteredKeys = apiKeys.map(k => k.trim()).filter(Boolean);
+        await serverSyncClient.saveGeminiKeys(filteredKeys).catch(() => {});
         
-        localStorage.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-4-argon');
-        localStorage.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-4-hydrogen');
+        runtimeKV.setItem('aetheria_model_pro', modelPro.trim() || 'gemini-4-argon');
+        runtimeKV.setItem('aetheria_model_flash', modelFlash.trim() || 'gemini-4-hydrogen');
         providerManagerService.saveRoutingConfig(routingConfig);
         
         // Reset flags for models
@@ -970,6 +1014,81 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     </optgroup>
                                 </select>
                             </div>
+
+                            {/* Optional Server Password Security Card */}
+                            <div className="p-4 bg-gray-950 border border-gray-800 rounded-2xl space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                                            <span>🔒 Bảo mật Máy chủ (Mật khẩu tùy chọn)</span>
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                passwordEnabled
+                                                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                                    : 'bg-gray-800 text-gray-400 border border-gray-700'
+                                            }`}>
+                                                {passwordEnabled ? 'Đang bật' : 'Đang tắt'}
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-gray-400 mt-0.5">
+                                            Tùy chọn khóa truy cập web khi mở qua Tailscale hoặc mạng nội bộ. Tắt để vào thẳng không cần mật khẩu.
+                                        </p>
+                                    </div>
+
+                                    {passwordEnabled && (
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleLockDeviceNow()}
+                                            className="px-2.5 py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-[11px] font-semibold"
+                                        >
+                                            Khóa thiết bị này
+                                        </button>
+                                    )}
+                                </div>
+
+                                {envForcedPassword ? (
+                                    <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5">
+                                        Mật khẩu hiện đang được cấu hình cố định qua biến môi trường <code className="font-mono">APP_PASSWORD</code> trong file <code className="font-mono">.env</code>.
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col sm:flex-row gap-2">
+                                        <input
+                                            type="password"
+                                            value={newServerPassword}
+                                            onChange={e => setNewServerPassword(e.target.value)}
+                                            placeholder={passwordEnabled ? "Nhập mật khẩu mới (>= 4 ký tự)..." : "Đặt mật khẩu khóa máy chủ (tùy chọn)..."}
+                                            className="flex-1 bg-gray-900 border border-gray-700 focus:border-sky-500 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                                        />
+                                        <button
+                                            type="button"
+                                            disabled={isUpdatingSecurity || newServerPassword.trim().length < 4}
+                                            onClick={() => void handleEnableOrUpdatePassword()}
+                                            className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white text-xs font-bold whitespace-nowrap"
+                                        >
+                                            {passwordEnabled ? 'Đổi mật khẩu' : 'Bật mật khẩu'}
+                                        </button>
+                                        {passwordEnabled && (
+                                            <button
+                                                type="button"
+                                                disabled={isUpdatingSecurity}
+                                                onClick={() => void handleDisablePassword()}
+                                                className="px-3.5 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-bold whitespace-nowrap"
+                                            >
+                                                Tắt khóa
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+
+                                {securityMsg && (
+                                    <div className={`text-[11px] rounded-lg px-3 py-2 ${
+                                        securityMsg.type === 'success'
+                                            ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+                                            : 'bg-red-500/10 border border-red-500/30 text-red-300'
+                                    }`}>
+                                        {securityMsg.text}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>
@@ -987,7 +1106,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         <button onClick={onClose} className="px-5 py-2 text-gray-400 hover:text-white font-bold transition-colors text-xs">
                             Hủy
                         </button>
-                        <button onClick={handleSave} className="bg-primary-600 hover:bg-primary-500 text-white font-bold py-2 px-6 rounded-xl shadow-lg transition-colors text-xs">
+                        <button onClick={() => void handleSave()} className="bg-primary-600 hover:bg-primary-500 text-white font-bold py-2 px-6 rounded-xl shadow-lg transition-colors text-xs">
                             Lưu Thay Đổi
                         </button>
                     </div>

@@ -1,45 +1,71 @@
-
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { Story, Chapter, Character, VectorData, BackupData, PinnedMemory, ChatMessage, ReferenceDocument, WebInspiration, EvolutionLog, DocumentAnalysis, ExtractionCategory, KnowledgeLog, WritingDNA, TranslationOptions, TranslationStyleMode } from '../types.ts';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import {
+  Story,
+  Chapter,
+  Character,
+  BackupData,
+  ChatMessage,
+  WebInspiration,
+  ExtractionCategory,
+  KnowledgeLog,
+  WritingDNA,
+  TranslationOptions
+} from '../types.ts';
 import { storageService } from '../services/storage.ts';
-import { geminiService } from '../services/geminiService.ts';
-import { ragService, getMagnitude } from '../services/ragService.ts';
+import { ragService } from '../services/ragService.ts';
+import { tokenTracker } from '../services/tokenTracker.ts';
+import {
+  runtimeKV,
+  serverSyncClient,
+  ServerJobState
+} from '../services/runtimeAdapter.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
-import { cleanAndDeduplicateTranslation } from '../utils/textDeduplication.ts';
 import { parseEpubFile, downloadEpubFile } from '../utils/epubHelper.ts';
 
 const generateId = () => {
-    try {
-        return crypto.randomUUID();
-    } catch (e) {
-        return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    }
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  }
 };
 
 interface TokenUsage {
-    promptTokens: number;
-    candidatesTokens: number;
-    totalTokens: number;
+  promptTokens: number;
+  candidatesTokens: number;
+  totalTokens: number;
 }
 
 interface PendingEdit {
-    chapterId: string;
-    original: string;
-    modified: string;
-    isTranslation?: boolean;
+  chapterId: string;
+  original: string;
+  modified: string;
+  isTranslation?: boolean;
 }
 
 interface ChapterHistory {
-    past: string[];
-    future: string[];
+  past: string[];
+  future: string[];
 }
 
 interface ChapterSuggestion {
-    title: string;
-    conflict: string;
-    emotionalGoal: string;
-    outline: string;
-    logicCheck: string;
+  title: string;
+  conflict: string;
+  emotionalGoal: string;
+  outline: string;
+  logicCheck: string;
+}
+
+export interface ToastMessage {
+  id: string;
+  type: 'info' | 'success' | 'error';
+  text: string;
+}
+
+export interface ServerMetaInfo {
+  dataDir?: string;
+  passwordEnabled: boolean;
+  envForcedPassword: boolean;
 }
 
 interface StoryContextType {
@@ -48,11 +74,11 @@ interface StoryContextType {
   isStoriesLoaded: boolean;
   activeChapterId: string | null;
   isGenerating: boolean;
-  isSummarizing: boolean; 
+  isSummarizing: boolean;
   isSequentiallySummarizing: boolean;
   sequentialSummaryProgress: { current: number; total: number; chapterTitle: string } | null;
-  generationProgress: number; 
-  generationStatus: string; 
+  generationProgress: number;
+  generationStatus: string;
   isPlanning: boolean;
   isLearning: boolean;
   isSearchingWeb: boolean;
@@ -73,7 +99,7 @@ interface StoryContextType {
   auditReport: any | null;
   chapterAuditReport: any | null;
   vocabularyInsights: any | null;
-  webInspiration: { insights: string, sources: WebInspiration[] } | null;
+  webInspiration: { insights: string; sources: WebInspiration[] } | null;
   plotArcAnalysis: any | null;
   plotArcError: string | null;
   isAnalyzingPlotArc: boolean;
@@ -85,7 +111,7 @@ interface StoryContextType {
   setTargetWordCount: (count: number) => void;
   pendingEdit: PendingEdit | null;
   setPendingEdit: (edit: PendingEdit | null) => void;
-  
+
   // Token Tracking
   lastTokenUsage: TokenUsage | null;
   sessionTotalTokens: number;
@@ -94,12 +120,22 @@ interface StoryContextType {
   chapterSuggestion: ChapterSuggestion | null;
   setChapterSuggestion: (s: ChapterSuggestion | null) => void;
   isSuggestingChapter: boolean;
-  
+
   canUndo: boolean;
   canRedo: boolean;
   undo: () => void;
   redo: () => void;
-  
+
+  // Server Remote Control State & Controls
+  activeServerJobs: ServerJobState[];
+  isWsConnected: boolean;
+  cancelServerJob: (jobId: string) => Promise<void>;
+  serverMeta: ServerMetaInfo;
+  setServerMeta: React.Dispatch<React.SetStateAction<ServerMetaInfo>>;
+  toastMessage: ToastMessage | null;
+  showToast: (text: string, type?: ToastMessage['type']) => void;
+  dismissToast: () => void;
+
   loadStories: () => Promise<void>;
   refreshFromStorage: (updatedStoryIds?: string[]) => Promise<void>;
   createStory: (params: any) => Promise<void>;
@@ -134,7 +170,7 @@ interface StoryContextType {
   updateChapterTimeSetting: (id: string, time: string) => void;
   updateChapterSummary: (id: string, summary: string) => void;
   reorderChapter: (id: string, direction: 'up' | 'down') => Promise<void>;
-  
+
   generateContinue: (mode?: 'append' | 'regenerate') => Promise<void>;
   suggestNewChapter: () => Promise<void>;
   balanceChapterLength: () => Promise<void>;
@@ -153,20 +189,23 @@ interface StoryContextType {
     synopsisSuggestion?: string;
   }) => Promise<void>;
   learnStyleFromText: (text: string) => Promise<void>;
-  learnWritingDNA: (text: string) => Promise<void>; 
+  learnWritingDNA: (text: string) => Promise<void>;
   learnFromInteraction: (original: string, modified: string) => Promise<void>;
   toggleEvolutionLog: (id: string) => Promise<void>;
   deleteEvolutionLog: (id: string) => Promise<void>;
-  toggleKnowledgeLog: (id: string) => Promise<void>; 
-  deleteKnowledgeLog: (id: string) => Promise<void>; 
-  fetchWebInspiration: (topic?: string) => Promise<void>; 
+  toggleKnowledgeLog: (id: string) => Promise<void>;
+  deleteKnowledgeLog: (id: string) => Promise<void>;
+  fetchWebInspiration: (topic?: string) => Promise<void>;
   clearWebInspiration: () => void;
   auditStory: () => Promise<void>;
   auditActiveChapter: () => Promise<void>;
   analyzeActiveChapterQuality: () => Promise<void>;
   summarizeChapter: (id: string) => Promise<void>;
   summarizeAllChaptersSequentially: () => Promise<void>;
-  generateChapterContentFromPlot: (id: string, options?: { repairInstruction?: string; continuityNotes?: string }) => Promise<string>;
+  generateChapterContentFromPlot: (
+    id: string,
+    options?: { repairInstruction?: string; continuityNotes?: string }
+  ) => Promise<string>;
   translateChapter: (id: string, options?: TranslationOptions) => Promise<void>;
   translationOptions: TranslationOptions;
   setTranslationOptions: React.Dispatch<React.SetStateAction<TranslationOptions>>;
@@ -181,7 +220,7 @@ interface StoryContextType {
   expandSettingWithAI: (input: string) => Promise<string>;
   suggestWorldSettings: (title: string, genre: string, synopsis: string, timeline: string) => Promise<any>;
   suggestMainCharacter: (title: string, genre: string, synopsis: string) => Promise<any>;
-  
+
   exportStory: (id?: string) => void;
   exportStoryEpub: (id?: string) => Promise<void>;
   exportAllStories: () => Promise<void>;
@@ -196,10 +235,16 @@ interface StoryContextType {
   updateCharacter: (id: string, updates: Partial<Character>) => Promise<void>;
   deleteCharacter: (id: string) => Promise<void>;
   autoUpdateCharacter: (charId: string) => Promise<Character | null>;
-  
-  splitChapter: (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => Promise<void>;
-  mergeChapters: (chapterIds: string[], options: { newTitle: string; separator?: string; mergeTranslations?: boolean }) => Promise<void>;
-  
+
+  splitChapter: (
+    chapterId: string,
+    segments: { title: string; content: string; outline?: string; summary?: string }[]
+  ) => Promise<void>;
+  mergeChapters: (
+    chapterIds: string[],
+    options: { newTitle: string; separator?: string; mergeTranslations?: boolean }
+  ) => Promise<void>;
+
   applyPendingEdit: (mode?: 'overwrite' | 'new_chapter') => void;
   discardPendingEdit: () => void;
   editorSyncToken: number;
@@ -218,486 +263,744 @@ interface StoryContextType {
 const StoryContext = createContext<StoryContextType | undefined>(undefined);
 
 const MAX_HISTORY = 15;
-const TOKEN_LIMIT_ESTIMATE = 1000000; // Giả lập giới hạn context 1M tokens
+const TOKEN_LIMIT_ESTIMATE = 1000000;
 const MAX_WORDS_PER_CHAPTER = 1200;
 
-const countWords = fastWordCount;
-
 const splitContentIntoChunks = (content: string, maxWords: number): string[] => {
-    const paragraphs = content.split(/\n/);
-    const chunks: string[] = [];
-    let currentChunk: string[] = [];
-    let currentWordCount = 0;
+  const paragraphs = content.split(/\n/);
+  const chunks: string[] = [];
+  let currentChunk: string[] = [];
+  let currentWordCount = 0;
 
-    for (const para of paragraphs) {
-        const paraWordCount = fastWordCount(para);
-        
-        // Nếu một đoạn văn đơn lẻ đã quá dài, ta phải chia nhỏ nó ra (hiếm nhưng có thể xảy ra)
-        if (paraWordCount > maxWords) {
-            // Đẩy chunk hiện tại đi nếu có
-            if (currentChunk.length > 0) {
-                chunks.push(currentChunk.join('\n'));
-                currentChunk = [];
-                currentWordCount = 0;
-            }
-            
-            // Chia nhỏ đoạn văn dài này
-            const words = para.split(/\s+/);
-            for (let i = 0; i < words.length; i += maxWords) {
-                chunks.push(words.slice(i, i + maxWords).join(' '));
-            }
-            continue;
-        }
-
-        if (currentWordCount + paraWordCount > maxWords && currentChunk.length > 0) {
-            chunks.push(currentChunk.join('\n'));
-            currentChunk = [para];
-            currentWordCount = paraWordCount;
-        } else {
-            currentChunk.push(para);
-            currentWordCount += paraWordCount;
-        }
-    }
-    
-    if (currentChunk.length > 0) {
+  for (const para of paragraphs) {
+    const paraWordCount = fastWordCount(para);
+    if (paraWordCount > maxWords) {
+      if (currentChunk.length > 0) {
         chunks.push(currentChunk.join('\n'));
+        currentChunk = [];
+        currentWordCount = 0;
+      }
+      const words = para.split(/\s+/);
+      for (let i = 0; i < words.length; i += maxWords) {
+        chunks.push(words.slice(i, i + maxWords).join(' '));
+      }
+      continue;
     }
 
-    return chunks;
+    if (currentWordCount + paraWordCount > maxWords && currentChunk.length > 0) {
+      chunks.push(currentChunk.join('\n'));
+      currentChunk = [para];
+      currentWordCount = paraWordCount;
+    } else {
+      currentChunk.push(para);
+      currentWordCount += paraWordCount;
+    }
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join('\n'));
+  }
+
+  return chunks;
 };
 
-export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+interface StoryProviderProps {
+  children: React.ReactNode;
+  initialJobs?: ServerJobState[];
+  serverMeta?: ServerMetaInfo;
+}
+
+export const StoryProvider: React.FC<StoryProviderProps> = ({
+  children,
+  initialJobs = [],
+  serverMeta: initialServerMeta = { passwordEnabled: false, envForcedPassword: false }
+}) => {
   const [story, setStory] = useState<Story | null>(null);
   const [storiesList, setStoriesList] = useState<Story[]>([]);
-  const [isStoriesLoaded, setIsStoriesLoaded] = useState(false); 
+  const [isStoriesLoaded, setIsStoriesLoaded] = useState(false);
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isSummarizing, setIsSummarizing] = useState(false);
-  const [isSequentiallySummarizing, setIsSequentiallySummarizing] = useState(false);
-  const [sequentialSummaryProgress, setSequentialSummaryProgress] = useState<{ current: number; total: number; chapterTitle: string } | null>(null);
-  const [generationProgress, setGenerationProgress] = useState(0); 
-  const [generationStatus, setGenerationStatus] = useState("");
-  const [isPlanning, setIsPlanning] = useState(false);
-  const [isPlotPlanning, setIsPlotPlanning] = useState(false);
-  const [isLearning, setIsLearning] = useState(false);
-  const [isSearchingWeb, setIsSearchingWeb] = useState(false);
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [isAuditingChapter, setIsAuditingChapter] = useState(false);
-  const [isCheckingErrors, setIsCheckingErrors] = useState(false);
-  const [isGeneratingOutline, setIsGeneratingOutline] = useState(false);
+
+  const [serverJobs, setServerJobs] = useState<ServerJobState[]>(initialJobs);
+  const [isWsConnected, setIsWsConnected] = useState<boolean>(true);
+  const [serverMeta, setServerMeta] = useState<ServerMetaInfo>(initialServerMeta);
+  const [isCreatingStory, setIsCreatingStory] = useState(false);
   const [isSavingManual, setIsSavingManual] = useState(false);
   const [saveTrigger, setSaveTrigger] = useState(0);
   const [learnTrigger, setLearnTrigger] = useState(0);
   const [editorSyncToken, setEditorSyncToken] = useState(0);
   const bumpEditorSyncToken = useCallback(() => setEditorSyncToken(prev => prev + 1), []);
-  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
-  const [videoGenerationStatus, setVideoGenerationStatus] = useState("");
+
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   const [consistencyReport, setConsistencyReport] = useState<any | null>(null);
   const [auditReport, setAuditReport] = useState<any | null>(null);
   const [chapterAuditReport, setChapterAuditReport] = useState<any | null>(null);
   const [vocabularyInsights, setVocabularyInsights] = useState<any | null>(null);
-  const [webInspiration, setWebInspiration] = useState<{ insights: string, sources: WebInspiration[] } | null>(null);
+  const [webInspiration, setWebInspiration] = useState<{ insights: string; sources: WebInspiration[] } | null>(null);
   const [plotArcAnalysis, setPlotArcAnalysis] = useState<any | null>(null);
   const [plotArcError, setPlotArcError] = useState<string | null>(null);
-  const [isAnalyzingPlotArc, setIsAnalyzingPlotArc] = useState(false);
-  const [isScanningStory, setIsScanningStory] = useState(false);
-  const [scanProgress, setScanProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [userInstruction, setUserInstruction] = useState('');
-  const [targetWordCount, setTargetWordCount] = useState(2000); 
+  const [targetWordCount, setTargetWordCount] = useState(2000);
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
   const [chapterSuggestion, setChapterSuggestion] = useState<ChapterSuggestion | null>(null);
-  const [isSuggestingChapter, setIsSuggestingChapter] = useState(false);
   const [isAutoTranslateEnabled, setIsAutoTranslateEnabled] = useState(false);
   const [editorVersion, setEditorVersion] = useState<'original' | 'translation'>('original');
+
+  const [toastMessage, setToastMessage] = useState<ToastMessage | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((text: string, type: ToastMessage['type'] = 'info') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    const id = generateId();
+    setToastMessage({ id, type, text });
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(prev => (prev?.id === id ? null : prev));
+    }, type === 'error' ? 6000 : 4000);
+  }, []);
+
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToastMessage(null);
+  }, []);
+
   const [translationOptions, setTranslationOptions] = useState<TranslationOptions>(() => {
     try {
-      const saved = localStorage.getItem('aetheria_translation_options');
+      const saved = runtimeKV.getItem('aetheria_translation_options');
       if (saved) {
         const parsed = JSON.parse(saved);
         return { outputTarget: 'new_chapter', ...parsed };
       }
-    } catch (e) {}
+    } catch {
+      // ignore
+    }
     return { styleMode: 'natural', outputTarget: 'new_chapter' };
   });
 
   useEffect(() => {
     try {
-      localStorage.setItem('aetheria_translation_options', JSON.stringify(translationOptions));
-    } catch (e) {}
+      runtimeKV.setItem('aetheria_translation_options', JSON.stringify(translationOptions));
+    } catch {
+      // ignore
+    }
   }, [translationOptions]);
-  
-  // Token State
+
+  // Token State synced from server tokenTracker logs
   const [lastTokenUsage, setLastTokenUsage] = useState<TokenUsage | null>(null);
   const [sessionTotalTokens, setSessionTotalTokens] = useState(0);
   const [remainingTokensEstimate, setRemainingTokensEstimate] = useState(TOKEN_LIMIT_ESTIMATE);
 
+  useEffect(() => {
+    const syncTokens = () => {
+      const logs = tokenTracker.getLogs().filter(l => l.status === 'success');
+      const total = logs.reduce((s, item) => s + (item.totalTokens || 0), 0);
+      setSessionTotalTokens(total);
+      setRemainingTokensEstimate(Math.max(0, TOKEN_LIMIT_ESTIMATE - total));
+      const newest = logs[logs.length - 1];
+      if (newest) {
+        setLastTokenUsage({
+          promptTokens: newest.promptTokens || 0,
+          candidatesTokens: newest.candidatesTokens || 0,
+          totalTokens: newest.totalTokens || 0
+        });
+      }
+    };
+    syncTokens();
+    return tokenTracker.subscribe(syncTokens);
+  }, []);
+
   const [history, setHistory] = useState<Record<string, ChapterHistory>>({});
-  
   const storyRef = useRef<Story | null>(null);
   const activeChapterIdRef = useRef<string | null>(null);
+  const handledJobIdsRef = useRef<Set<string>>(new Set());
+  const awaitingJobPromisesRef = useRef<
+    Map<string, { resolve: (val: any) => void; reject: (err: Error) => void }>
+  >(new Map());
+  const lastLocalDeltaAtRef = useRef<number>(0);
 
-  useEffect(() => { storyRef.current = story; }, [story]);
-  useEffect(() => { activeChapterIdRef.current = activeChapterId; }, [activeChapterId]);
+  useEffect(() => {
+    storyRef.current = story;
+  }, [story]);
 
-  const recordUsage = useCallback((usage: any) => {
-      if (!usage) return;
-      const metrics: TokenUsage = {
-          promptTokens: usage.promptTokenCount || 0,
-          candidatesTokens: usage.candidatesTokenCount || 0,
-          totalTokens: usage.totalTokenCount || 0
-      };
-      setLastTokenUsage(metrics);
-      setSessionTotalTokens(prev => prev + metrics.totalTokens);
-      setRemainingTokensEstimate(prev => Math.max(0, prev - metrics.totalTokens));
-  }, []);
+  useEffect(() => {
+    activeChapterIdRef.current = activeChapterId;
+  }, [activeChapterId]);
 
   const triggerSave = useCallback(() => setSaveTrigger(prev => prev + 1), []);
   const triggerLearn = useCallback(() => setLearnTrigger(prev => prev + 1), []);
 
-  const loadStories = async (skipAutoOpen = false) => {
-    try {
-      const list = await storageService.getAllStorySummaries();
-      const sorted = list.sort((a, b) => (b.createdAt - a.createdAt));
-      setStoriesList(sorted);
+  // Derive legacy boolean flags cleanly from running server jobs
+  const runningJobs = useMemo(
+    () => serverJobs.filter(j => j.status === 'running'),
+    [serverJobs]
+  );
 
-      if (!skipAutoOpen) {
-        const savedStoryId = localStorage.getItem('aetheria_active_story_id');
-        if (savedStoryId && sorted.some(s => s.id === savedStoryId) && !storyRef.current) {
-          await openStory(savedStoryId);
+  const activeServerJobs = runningJobs;
+
+  const genJob = useMemo(
+    () =>
+      runningJobs.find(j =>
+        [
+          'generate_continue',
+          'refine_chapter',
+          'refine_selection',
+          'generate_from_plot',
+          'translate_chapter',
+          'balance_chapter_length'
+        ].includes(j.type)
+      ),
+    [runningJobs]
+  );
+
+  const seqSumJob = useMemo(
+    () => runningJobs.find(j => j.type === 'summarize_all_sequential'),
+    [runningJobs]
+  );
+
+  const videoJob = useMemo(
+    () => runningJobs.find(j => j.type === 'generate_video'),
+    [runningJobs]
+  );
+
+  const scanJob = useMemo(
+    () => runningJobs.find(j => j.type === 'scan_story_entities'),
+    [runningJobs]
+  );
+
+  const isGenerating = Boolean(genJob) || isCreatingStory;
+  const generationProgress = genJob?.progress ?? 0;
+  const generationStatus = genJob?.statusText ?? (isCreatingStory ? 'Đang khởi tạo truyện mới...' : '');
+  const isSummarizing = runningJobs.some(j => j.type === 'summarize_chapter');
+  const isSequentiallySummarizing = Boolean(seqSumJob);
+  const sequentialSummaryProgress = seqSumJob?.subProgress
+    ? {
+        current: seqSumJob.subProgress.current,
+        total: seqSumJob.subProgress.total,
+        chapterTitle: seqSumJob.subProgress.label
+      }
+    : null;
+  const isPlanning = runningJobs.some(j => j.type === 'chat_planning');
+  const isPlotPlanning = runningJobs.some(j => j.type === 'chat_plot');
+  const isLearning = runningJobs.some(j =>
+    [
+      'extract_knowledge',
+      'learn_writing_dna',
+      'learn_style_from_text',
+      'learn_from_interaction'
+    ].includes(j.type)
+  );
+  const isSearchingWeb = runningJobs.some(j => j.type === 'fetch_web_inspiration');
+  const isAuditing = runningJobs.some(j => j.type === 'audit_story');
+  const isAuditingChapter = runningJobs.some(j => j.type === 'audit_chapter');
+  const isCheckingErrors = runningJobs.some(j => j.type === 'analyze_vocabulary');
+  const isGeneratingOutline = runningJobs.some(j => j.type === 'suggest_outline');
+  const isGeneratingVideo = Boolean(videoJob);
+  const videoGenerationStatus = videoJob?.statusText ?? '';
+  const isAnalyzingPlotArc = runningJobs.some(j => j.type === 'analyze_plot_arc');
+  const isScanningStory = Boolean(scanJob);
+  const scanProgress = scanJob?.subProgress || null;
+  const isSuggestingChapter = runningJobs.some(j => j.type === 'suggest_new_chapter');
+
+  const applyCompletedJobResult = useCallback(
+    (job: ServerJobState) => {
+      if (handledJobIdsRef.current.has(job.id)) return;
+      handledJobIdsRef.current.add(job.id);
+
+      const pendingPromise = awaitingJobPromisesRef.current.get(job.id);
+      if (pendingPromise) {
+        awaitingJobPromisesRef.current.delete(job.id);
+      }
+
+      if (job.status === 'failed') {
+        if (job.type === 'analyze_plot_arc') {
+          setPlotArcError(job.error || 'Không thể phân tích mạch truyện.');
+        } else if (!job.acknowledged) {
+          showToast(job.error || job.statusText || 'Tác vụ AI gặp lỗi.', 'error');
+        }
+        pendingPromise?.reject(new Error(job.error || 'Tác vụ thất bại.'));
+        if (!job.acknowledged) {
+          void serverSyncClient.ackJob(job.id).catch(() => {});
+        }
+        return;
+      }
+
+      if (job.status === 'cancelled') {
+        pendingPromise?.reject(new Error('Người dùng đã hủy tác vụ.'));
+        if (!job.acknowledged) {
+          void serverSyncClient.ackJob(job.id).catch(() => {});
+        }
+        return;
+      }
+
+      if (job.status === 'completed') {
+        const res = job.result;
+        if (res?.pendingEdit) setPendingEdit(res.pendingEdit);
+        if (res?.consistencyReport !== undefined) setConsistencyReport(res.consistencyReport);
+        if (res?.auditReport !== undefined) setAuditReport(res.auditReport);
+        if (res?.chapterAuditReport !== undefined) setChapterAuditReport(res.chapterAuditReport);
+        if (res?.vocabularyInsights !== undefined) setVocabularyInsights(res.vocabularyInsights);
+        if (res?.plotArcAnalysis !== undefined) {
+          setPlotArcError(null);
+          setPlotArcAnalysis(res.plotArcAnalysis);
+        }
+        if (res?.chapterSuggestion !== undefined) setChapterSuggestion(res.chapterSuggestion);
+        if (res?.webInspiration !== undefined) setWebInspiration(res.webInspiration);
+        if (res?.generatedVideoUrl) setGeneratedVideoUrl(res.generatedVideoUrl);
+
+        if (pendingPromise) {
+          pendingPromise.resolve(res?.generatedText || '');
+        }
+
+        if (storyRef.current && job.storyId === storyRef.current.id) {
+          void storageService.getStory(job.storyId).then(fresh => {
+            if (fresh && storyRef.current?.id === job.storyId) {
+              setStory(fresh);
+              bumpEditorSyncToken();
+            }
+          });
+        }
+
+        if (!job.acknowledged) {
+          if (job.type === 'learn_writing_dna' || job.type === 'learn_style_from_text' || job.type === 'translate_chapter') {
+            showToast(job.statusText, 'success');
+          }
+          void serverSyncClient.ackJob(job.id).catch(() => {});
         }
       }
-    } catch (err) {
-      console.error("Failed to load stories from storage:", err);
-      setStoriesList([]);
-    } finally {
-      setIsStoriesLoaded(true);
+    },
+    [bumpEditorSyncToken, showToast]
+  );
+
+  // Process any already-completed unacknowledged jobs when phone opens/reconnects
+  useEffect(() => {
+    for (const job of initialJobs) {
+      if (job.status !== 'running' && !job.acknowledged) {
+        applyCompletedJobResult(job);
+      }
     }
-  };
+  }, [initialJobs, applyCompletedJobResult]);
 
-  useEffect(() => { loadStories(); }, []);
+  // Real-time WebSocket subscription for Server Jobs & Remote Story Updates
+  useEffect(() => {
+    const unsubWs = serverSyncClient.subscribe('ws:status', payload => {
+      setIsWsConnected(Boolean(payload?.connected));
+    });
 
-  const refreshFromStorage = useCallback(async (updatedStoryIds?: string[]) => {
-    await loadStories(true);
-    const active = storyRef.current;
-    if (active && (!updatedStoryIds || updatedStoryIds.includes(active.id))) {
-      const refreshed = await storageService.getStory(active.id);
-      if (refreshed) {
-        setStory(refreshed);
-        const currentChId = activeChapterIdRef.current;
-        if (!currentChId || !refreshed.chapters.some(c => c.id === currentChId)) {
-          setActiveChapterId(refreshed.chapters[0]?.id || null);
+    const unsubJob = serverSyncClient.subscribe('job:updated', (job: ServerJobState) => {
+      if (!job?.id) return;
+      setServerJobs(prev => {
+        const idx = prev.findIndex(j => j.id === job.id);
+        if (idx === -1) return [job, ...prev].slice(0, 30);
+        const copy = [...prev];
+        copy[idx] = job;
+        return copy;
+      });
+
+      if (job.status === 'running' && job.type === 'translate_chapter' && job.chapterId) {
+        if (activeChapterIdRef.current !== job.chapterId && isAutoTranslateEnabled) {
+          setActiveChapterId(job.chapterId);
         }
-        setEditorSyncToken(t => t + 1);
       }
+
+      if (job.status !== 'running') {
+        applyCompletedJobResult(job);
+      }
+    });
+
+    const unsubStory = serverSyncClient.subscribe(
+      'story:updated',
+      (payload: { storyId: string; action: 'save' | 'delete' | 'chapter'; story?: Story }) => {
+        if (!payload?.storyId) return;
+        const { storyId, action, story: remoteStory } = payload;
+
+        if (action === 'delete') {
+          setStoriesList(prev => prev.filter(s => s.id !== storyId));
+          if (storyRef.current?.id === storyId) {
+            setStory(null);
+            setActiveChapterId(null);
+            runtimeKV.removeItem('aetheria_active_story_id');
+          }
+          return;
+        }
+
+        if (action === 'chapter') {
+          // Skip redundant reload if triggered immediately by local typing & no server AI job running on this story
+          const recentlyTypedLocally = Date.now() - lastLocalDeltaAtRef.current < 1500;
+          if (recentlyTypedLocally && serverJobs.every(j => j.status !== 'running')) {
+            return;
+          }
+          if (storyRef.current?.id === storyId) {
+            void storageService.getStory(storyId).then(fresh => {
+              if (fresh && storyRef.current?.id === storyId) {
+                setStory(fresh);
+                bumpEditorSyncToken();
+              }
+            });
+          }
+          return;
+        }
+
+        if (remoteStory) {
+          setStoriesList(prev => {
+            const exists = prev.some(s => s.id === storyId);
+            const nextSummary = { ...remoteStory };
+            if (!exists) return [nextSummary, ...prev];
+            return prev.map(s => (s.id === storyId ? nextSummary : s));
+          });
+
+          if (storyRef.current?.id === storyId) {
+            setStory(remoteStory);
+            bumpEditorSyncToken();
+          }
+        }
+      }
+    );
+
+    const unsubBootstrap = serverSyncClient.subscribe('bootstrap:loaded', (data: any) => {
+      if (Array.isArray(data?.jobs)) {
+        setServerJobs(data.jobs);
+        for (const job of data.jobs) {
+          if (job.status !== 'running' && !job.acknowledged) {
+            applyCompletedJobResult(job);
+          }
+        }
+      }
+      if (Array.isArray(data?.storiesList)) {
+        setStoriesList(data.storiesList.sort((a: Story, b: Story) => b.createdAt - a.createdAt));
+      }
+      if (storyRef.current) {
+        void storageService.getStory(storyRef.current.id).then(fresh => {
+          if (fresh) {
+            setStory(fresh);
+            bumpEditorSyncToken();
+          }
+        });
+      }
+    });
+
+    return () => {
+      unsubWs();
+      unsubJob();
+      unsubStory();
+      unsubBootstrap();
+    };
+  }, [applyCompletedJobResult, bumpEditorSyncToken, isAutoTranslateEnabled, serverJobs]);
+
+  const cancelServerJob = useCallback(
+    async (jobId: string) => {
+      try {
+        await serverSyncClient.cancelJob(jobId);
+        showToast('Đã gửi lệnh hủy tác vụ AI trên máy chủ.', 'info');
+      } catch (err: any) {
+        showToast(err?.message || 'Không thể hủy tác vụ.', 'error');
+      }
+    },
+    [showToast]
+  );
+
+  const openStory = useCallback(async (id: string) => {
+    try {
+      runtimeKV.setItem('aetheria_active_story_id', id);
+    } catch {
+      // ignore
+    }
+    const found = await storageService.getStory(id);
+    if (found) {
+      const fixedChapters = found.chapters.map(c => ({
+        ...c,
+        wordGoal: c.wordGoal || 2000
+      }));
+      const cleanHistory = (historyList: ChatMessage[] | undefined) => {
+        if (!historyList) return [];
+        return historyList.map(msg => ({
+          ...msg,
+          parts: (msg.parts || []).map(p => ({
+            ...p,
+            text: (p.text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim()
+          }))
+        }));
+      };
+      const fixedStory: Story = {
+        ...found,
+        chapters: fixedChapters,
+        planningChatHistory: cleanHistory(found.planningChatHistory),
+        plotChatHistory: cleanHistory(found.plotChatHistory)
+      };
+      setStory(fixedStory);
+      setPlotArcAnalysis(null);
+      setPlotArcError(null);
+      setAuditReport(null);
+      setChapterAuditReport(null);
+      setConsistencyReport(null);
+      if (fixedStory.chapters.length > 0) {
+        const sorted = [...fixedStory.chapters].sort((a, b) => a.order - b.order);
+        setActiveChapterId(sorted[0].id);
+      }
+      setHistory({});
     }
   }, []);
 
-  const createStory = async (params: any) => {
-    setIsGenerating(true);
-    setGenerationProgress(0);
-    setGenerationStatus("Khởi tạo vũ trụ...");
-    try {
-        const storyId = generateId();
-        const newStory: Story = {
-          id: storyId,
-          title: params.title || "Vũ Trụ Mới",
-          synopsis: params.synopsis || "",
-          genre: params.genre || "Chưa xác định",
-          planning: params.planning || "",
-          persistentDirectives: params.persistentDirectives || "",
-          setting: params.setting || "",
-          currentTimeline: params.currentTimeline || "", 
-          mechanics: params.mechanics || "", 
-          interactionRules: params.interactionRules || "",
-          logistics: params.logistics || "",
-          trade: params.trade || "", 
-          economy: params.economy || "",
-          maps: params.maps || "",
-          officials: params.officials || "",
-          writingStyle: params.writingStyle || "",
-          pov: params.pov || "",
-          pronounStyle: params.pronounStyle || "",
-          negativePrompt: params.negativePrompt || "",
-          nsfw: params.nsfw,
-          hasSystem: params.hasSystem, 
-          isFanfiction: params.isFanfiction, 
-          fandomName: params.fandomName, 
-          referenceDocs: params.referenceDocs || [],
-          evolutionLogs: [],
-          knowledgeLogs: [],
-          styleReference: "", 
-          pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
-          planningChatHistory: [],
-          plotChatHistory: [],
-          characters: params.characters || [], 
-          createdAt: Date.now(),
-          chapters: [{ 
-              id: generateId(), 
-              title: 'Chương 1', 
-              content: '', 
-              summary: '', 
-              outline: '', 
-              order: 1, 
-              wordGoal: 2000, 
-              lastUpdated: Date.now() 
-          }]
-        };
-        await storageService.saveStory(newStory);
-        try { localStorage.setItem('aetheria_active_story_id', storyId); } catch (_) {}
-        setStory(newStory);
-        setActiveChapterId(newStory.chapters[0].id);
-        await loadStories();
-    } catch (e) {
-        alert("Lỗi khi tạo truyện.");
-    } finally {
-        setIsGenerating(false);
-        setGenerationStatus("");
-    }
-  };
+  const loadStories = useCallback(
+    async (skipAutoOpen = false) => {
+      try {
+        const list = await storageService.getAllStorySummaries();
+        const sorted = list.sort((a, b) => b.createdAt - a.createdAt);
+        setStoriesList(sorted);
 
-  const openStory = async (id: string) => {
-    try { localStorage.setItem('aetheria_active_story_id', id); } catch (_) {}
-    const found = await storageService.getStory(id);
-    if (found) {
-        const fixedChapters = found.chapters.map(c => ({
-          ...c,
-          wordGoal: c.wordGoal || 2000
-        }));
-        const cleanHistory = (historyList: ChatMessage[] | undefined) => {
-          if (!historyList) return [];
-          return historyList.map(msg => ({
-            ...msg,
-            parts: (msg.parts || []).map(p => ({
-              ...p,
-              text: (p.text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim()
-            }))
-          }));
-        };
-        const fixedStory = { 
-          ...found, 
-          chapters: fixedChapters,
-          planningChatHistory: cleanHistory(found.planningChatHistory),
-          plotChatHistory: cleanHistory(found.plotChatHistory)
-        };
-        setStory(fixedStory);
-        setPlotArcAnalysis(null);
-        setPlotArcError(null);
-        setAuditReport(null);
-        setChapterAuditReport(null);
-        setConsistencyReport(null);
-        if (fixedStory.chapters.length > 0) {
-            const sorted = [...fixedStory.chapters].sort((a, b) => a.order - b.order);
-            setActiveChapterId(sorted[0].id);
+        if (!skipAutoOpen) {
+          const savedStoryId = runtimeKV.getItem('aetheria_active_story_id');
+          if (savedStoryId && sorted.some(s => s.id === savedStoryId) && !storyRef.current) {
+            await openStory(savedStoryId);
+          }
         }
-        setHistory({});
+      } catch (err) {
+        console.error('Failed to load stories from server:', err);
+        setStoriesList([]);
+      } finally {
+        setIsStoriesLoaded(true);
+      }
+    },
+    [openStory]
+  );
+
+  useEffect(() => {
+    void loadStories();
+  }, [loadStories]);
+
+  const refreshFromStorage = useCallback(
+    async (updatedStoryIds?: string[]) => {
+      await loadStories(true);
+      const active = storyRef.current;
+      if (active && (!updatedStoryIds || updatedStoryIds.includes(active.id))) {
+        const refreshed = await storageService.getStory(active.id);
+        if (refreshed) {
+          setStory(refreshed);
+          const currentChId = activeChapterIdRef.current;
+          if (!currentChId || !refreshed.chapters.some(c => c.id === currentChId)) {
+            setActiveChapterId(refreshed.chapters[0]?.id || null);
+          }
+          setEditorSyncToken(t => t + 1);
+        }
+      }
+    },
+    [loadStories]
+  );
+
+  const createStory = async (params: any) => {
+    setIsCreatingStory(true);
+    try {
+      const storyId = generateId();
+      const newStory: Story = {
+        id: storyId,
+        title: params.title || 'Vũ Trụ Mới',
+        synopsis: params.synopsis || '',
+        genre: params.genre || 'Chưa xác định',
+        planning: params.planning || '',
+        persistentDirectives: params.persistentDirectives || '',
+        setting: params.setting || '',
+        currentTimeline: params.currentTimeline || '',
+        mechanics: params.mechanics || '',
+        interactionRules: params.interactionRules || '',
+        logistics: params.logistics || '',
+        trade: params.trade || '',
+        economy: params.economy || '',
+        maps: params.maps || '',
+        officials: params.officials || '',
+        writingStyle: params.writingStyle || '',
+        pov: params.pov || '',
+        pronounStyle: params.pronounStyle || '',
+        negativePrompt: params.negativePrompt || '',
+        nsfw: params.nsfw,
+        hasSystem: params.hasSystem,
+        isFanfiction: params.isFanfiction,
+        fandomName: params.fandomName,
+        referenceDocs: params.referenceDocs || [],
+        evolutionLogs: [],
+        knowledgeLogs: [],
+        styleReference: '',
+        pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
+        planningChatHistory: [],
+        plotChatHistory: [],
+        characters: params.characters || [],
+        createdAt: Date.now(),
+        chapters: [
+          {
+            id: generateId(),
+            title: 'Chương 1',
+            content: '',
+            summary: '',
+            outline: '',
+            order: 1,
+            wordGoal: 2000,
+            lastUpdated: Date.now()
+          }
+        ]
+      };
+      await storageService.saveStory(newStory, true);
+      try {
+        runtimeKV.setItem('aetheria_active_story_id', storyId);
+      } catch {
+        // ignore
+      }
+      setStory(newStory);
+      setActiveChapterId(newStory.chapters[0].id);
+      await loadStories(true);
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi tạo truyện.', 'error');
+    } finally {
+      setIsCreatingStory(false);
     }
   };
 
-  const closeStory = () => { 
-    try { localStorage.removeItem('aetheria_active_story_id'); } catch (_) {}
-    storageService.flushSaves();
-    setStory(null); 
-    setActiveChapterId(null); 
+  const closeStory = () => {
+    try {
+      runtimeKV.removeItem('aetheria_active_story_id');
+    } catch {
+      // ignore
+    }
+    void storageService.flushSaves();
+    setStory(null);
+    setActiveChapterId(null);
     setPlotArcAnalysis(null);
     setPlotArcError(null);
     setAuditReport(null);
     setChapterAuditReport(null);
     setConsistencyReport(null);
-    loadStories(true); 
-    setHistory({}); 
+    void loadStories(true);
+    setHistory({});
   };
 
   const updateStorySettings = useCallback(async (settings: Partial<Story>) => {
     setStory(prev => {
-        if (!prev) return null;
-        const updated = { ...prev, ...settings };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updated = { ...prev, ...settings };
+      void storageService.saveStory(updated);
+      return updated;
     });
   }, []);
 
   const addPersistentDirective = async (directive: string) => {
     if (!storyRef.current || !directive.trim()) return;
-    const currentDirectives = storyRef.current.persistentDirectives || "";
+    const currentDirectives = storyRef.current.persistentDirectives || '';
     if (currentDirectives.includes(directive)) return;
 
-    const updatedDirectives = currentDirectives 
-        ? `${currentDirectives}\n- ${directive}` 
-        : `- ${directive}`;
-        
+    const updatedDirectives = currentDirectives ? `${currentDirectives}\n- ${directive}` : `- ${directive}`;
     await updateStorySettings({ persistentDirectives: updatedDirectives });
   };
 
   const deleteStory = async (id: string) => {
     await storageService.deleteStory(id);
-    await loadStories();
+    await loadStories(true);
   };
 
   const updateChapterOutline = useCallback((id: string, outline: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, outline, lastUpdated: Date.now() } : c) };
-        storageService.saveStory(newState);
-        return newState;
+      if (!prev) return null;
+      const newState = {
+        ...prev,
+        chapters: prev.chapters.map(c => (c.id === id ? { ...c, outline, lastUpdated: Date.now() } : c))
+      };
+      void storageService.saveStory(newState);
+      return newState;
     });
   }, []);
 
   const updateChapterGoal = useCallback((id: string, goal: number) => {
     const clampedGoal = Math.max(100, Math.min(15000, goal));
     setStory(prev => {
-        if (!prev) return null;
-        const updatedChapters = prev.chapters.map(c => 
-            c.id === id ? { ...c, wordGoal: clampedGoal, lastUpdated: Date.now() } : c
-        );
-        const newState = { ...prev, chapters: updatedChapters };
-        storageService.saveStory(newState).catch(console.error);
-        return newState;
+      if (!prev) return null;
+      const updatedChapters = prev.chapters.map(c =>
+        c.id === id ? { ...c, wordGoal: clampedGoal, lastUpdated: Date.now() } : c
+      );
+      const newState = { ...prev, chapters: updatedChapters };
+      storageService.saveStory(newState).catch(console.error);
+      return newState;
     });
   }, []);
 
   const updateChapterTimeSetting = useCallback((id: string, time: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, timeSetting: time, lastUpdated: Date.now() } : c) };
-        storageService.saveStory(newState);
-        return newState;
+      if (!prev) return null;
+      const newState = {
+        ...prev,
+        chapters: prev.chapters.map(c => (c.id === id ? { ...c, timeSetting: time, lastUpdated: Date.now() } : c))
+      };
+      void storageService.saveStory(newState);
+      return newState;
     });
   }, []);
 
   const updateChapterSummary = useCallback((id: string, summary: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, summary, lastUpdated: Date.now() } : c) };
-        storageService.saveStory(newState);
-        return newState;
+      if (!prev) return null;
+      const newState = {
+        ...prev,
+        chapters: prev.chapters.map(c => (c.id === id ? { ...c, summary, lastUpdated: Date.now() } : c))
+      };
+      void storageService.saveStory(newState);
+      return newState;
     });
   }, []);
 
-  const sendPlanningMessage = async (message: string) => {
-    if (!storyRef.current) return;
-    setIsPlanning(true);
-    const currentStory = storyRef.current;
-    const history = currentStory.planningChatHistory || [];
-    const updatedHistoryWithUser = [...history, { role: 'user', parts: [{ text: message }] } as ChatMessage];
-    setStory({ ...currentStory, planningChatHistory: updatedHistoryWithUser });
+  // --- Authoritative Server Background AI Job Launchers ---
+  const launchServerJob = useCallback(
+    async (type: any, payload: any): Promise<ServerJobState> => {
+      const job = await serverSyncClient.startJob(type, payload);
+      setServerJobs(prev => [job, ...prev.filter(j => j.id !== job.id)].slice(0, 30));
+      return job;
+    },
+    []
+  );
 
+  const sendPlanningMessage = async (message: string) => {
+    if (!storyRef.current || !message.trim()) return;
+    const currentStory = storyRef.current;
+    const optimisticHistory: ChatMessage[] = [
+      ...(currentStory.planningChatHistory || []),
+      { role: 'user', parts: [{ text: message }] }
+    ];
+    setStory({ ...currentStory, planningChatHistory: optimisticHistory });
     try {
-        const stream = geminiService.chatPlanningStream(history, message, currentStory);
-        let fullResponse = "";
-        for await (const chunk of stream) {
-            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
-            if (chunkText) {
-                fullResponse += chunkText;
-            }
-            // Record usage from last chunk
-            if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
-            
-            const cleanDisplay = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '');
-            setStory(prev => {
-                if (!prev) return null;
-                const currentHist = prev.planningChatHistory || [];
-                const newHist = [...currentHist];
-                if (newHist.length > 0 && newHist[newHist.length - 1].role === 'model') {
-                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: cleanDisplay }] };
-                } else {
-                    newHist.push({ role: 'model', parts: [{ text: cleanDisplay }] });
-                }
-                return { ...prev, planningChatHistory: newHist };
-            });
-        }
-        if (storyRef.current) {
-            const finalClean = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-            const updatedStory = {
-                ...storyRef.current,
-                planningChatHistory: (storyRef.current.planningChatHistory || []).map((m, idx, arr) => 
-                    idx === arr.length - 1 && m.role === 'model'
-                        ? { ...m, parts: [{ text: finalClean }] }
-                        : m
-                )
-            };
-            setStory(updatedStory);
-            await storageService.saveStory(updatedStory);
-        }
-    } catch (e: any) { 
-        console.error(e);
-        alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
-    } finally { setIsPlanning(false); }
+      await launchServerJob('chat_planning', { storyId: currentStory.id, message });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi gửi tin nhắn đến Cố vấn Kế hoạch.', 'error');
+    }
   };
 
   const clearPlanningChat = useCallback(async () => {
     setStory(prev => {
-        if (!prev) return null;
-        const updated = { ...prev, planningChatHistory: [] };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updated = { ...prev, planningChatHistory: [] };
+      void storageService.saveStory(updated, true);
+      return updated;
     });
   }, []);
 
   const sendPlotChatMessage = async (message: string, focusChapterId?: string) => {
-    if (!storyRef.current) return;
-    setIsPlotPlanning(true);
+    if (!storyRef.current || !message.trim()) return;
     const currentStory = storyRef.current;
-    const history = currentStory.plotChatHistory || [];
-    const updatedHistoryWithUser = [...history, { role: 'user', parts: [{ text: message }] } as ChatMessage];
-    setStory({ ...currentStory, plotChatHistory: updatedHistoryWithUser });
-
+    const optimisticHistory: ChatMessage[] = [
+      ...(currentStory.plotChatHistory || []),
+      { role: 'user', parts: [{ text: message }] }
+    ];
+    setStory({ ...currentStory, plotChatHistory: optimisticHistory });
     try {
-        const stream = geminiService.chatPlotStream(
-          history,
-          message,
-          currentStory,
-          focusChapterId || activeChapterIdRef.current || undefined,
-          { plotArcAnalysis, auditReport }
-        );
-        let fullResponse = "";
-        for await (const chunk of stream) {
-            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
-            if (chunkText) {
-                fullResponse += chunkText;
-            }
-            if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
-            
-            const cleanDisplay = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '');
-            setStory(prev => {
-                if (!prev) return null;
-                const currentHist = prev.plotChatHistory || [];
-                const newHist = [...currentHist];
-                if (newHist.length > 0 && newHist[newHist.length - 1].role === 'model') {
-                    newHist[newHist.length - 1] = { role: 'model', parts: [{ text: cleanDisplay }] };
-                } else {
-                    newHist.push({ role: 'model', parts: [{ text: cleanDisplay }] });
-                }
-                return { ...prev, plotChatHistory: newHist };
-            });
-        }
-        if (storyRef.current) {
-            const finalClean = fullResponse.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-            const updatedStory = {
-                ...storyRef.current,
-                plotChatHistory: (storyRef.current.plotChatHistory || []).map((m, idx, arr) => 
-                    idx === arr.length - 1 && m.role === 'model'
-                        ? { ...m, parts: [{ text: finalClean }] }
-                        : m
-                )
-            };
-            setStory(updatedStory);
-            await storageService.saveStory(updatedStory);
-        }
-    } catch (e: any) { 
-        console.error(e);
-        alert(e?.message || "Có lỗi xảy ra khi trò chuyện với Trợ lý.");
-    } finally { setIsPlotPlanning(false); }
+      await launchServerJob('chat_plot', {
+        storyId: currentStory.id,
+        message,
+        focusChapterId: focusChapterId || activeChapterIdRef.current || undefined,
+        plotArcAnalysis,
+        auditReport
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi gửi tin nhắn đến Plot AI.', 'error');
+    }
   };
 
   const clearPlotChat = useCallback(async () => {
     setStory(prev => {
-        if (!prev) return null;
-        const updated = { ...prev, plotChatHistory: [] };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updated = { ...prev, plotChatHistory: [] };
+      void storageService.saveStory(updated, true);
+      return updated;
     });
   }, []);
 
@@ -714,11 +1017,8 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
     const targetIdx = sortedChapters.findIndex(c => c.id === targetChapterId);
-    
-    // If target not found, fall back to appending at the end
-    const insertIdx = targetIdx === -1 
-      ? sortedChapters.length 
-      : (position === 'before' ? targetIdx : targetIdx + 1);
+    const insertIdx =
+      targetIdx === -1 ? sortedChapters.length : position === 'before' ? targetIdx : targetIdx + 1;
 
     const newChapterId = generateId();
     const finalOrder = insertIdx + 1;
@@ -740,41 +1040,25 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       lastUpdated: Date.now()
     };
 
-    // Insert new blank chapter at insertIdx
     sortedChapters.splice(insertIdx, 0, newChapter);
-
     const shouldRenumber = options?.autoRenumberFollowing ?? false;
 
-    // Re-index all chapter orders and optionally renumber following chapters
     const updatedChapters = sortedChapters.map((c, idx) => {
       const orderNum = idx + 1;
       let chapterTitle = c.title;
-
       if (shouldRenumber && idx > insertIdx && c.id !== newChapterId) {
         const match = chapterTitle.match(/^((?:Chương|Chapter)\s*)(\d+)(.*)$/i);
         if (match) {
-          const prefix = match[1];
-          const oldNum = parseInt(match[2], 10);
-          const suffix = match[3];
-          chapterTitle = `${prefix}${oldNum + 1}${suffix}`;
+          chapterTitle = `${match[1]}${parseInt(match[2], 10) + 1}${match[3]}`;
         }
       }
-
-      return {
-        ...c,
-        order: orderNum,
-        title: chapterTitle
-      };
+      return { ...c, order: orderNum, title: chapterTitle };
     });
 
-    const updatedStory: Story = {
-      ...currentStory,
-      chapters: updatedChapters
-    };
-
+    const updatedStory: Story = { ...currentStory, chapters: updatedChapters };
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setActiveChapterId(newChapterId);
     bumpEditorSyncToken();
     return newChapterId;
@@ -785,7 +1069,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     insertOptions?: { targetChapterId?: string; position?: 'before' | 'after'; autoRenumberFollowing?: boolean }
   ): Promise<string | undefined> => {
     if (insertOptions?.targetChapterId) {
-      return await insertChapter(
+      return insertChapter(
         insertOptions.targetChapterId,
         insertOptions.position || 'after',
         params,
@@ -795,23 +1079,24 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const currentStory = storyRef.current;
     if (!currentStory) return undefined;
-    const maxOrder = currentStory.chapters.length > 0 ? Math.max(...currentStory.chapters.map(c => c.order)) : 0;
+    const maxOrder =
+      currentStory.chapters.length > 0 ? Math.max(...currentStory.chapters.map(c => c.order)) : 0;
     const newId = generateId();
     const newChapter: Chapter = {
-        id: newId, 
-        title: params?.title || `Chương ${currentStory.chapters.length + 1}`, 
-        content: params?.content || '', 
-        summary: params?.summary || '', 
-        outline: params?.outline || '', 
-        timeSetting: params?.timeSetting || '',
-        order: maxOrder + 1, 
-        wordGoal: params?.wordGoal || 2000, 
-        lastUpdated: Date.now()
+      id: newId,
+      title: params?.title || `Chương ${currentStory.chapters.length + 1}`,
+      content: params?.content || '',
+      summary: params?.summary || '',
+      outline: params?.outline || '',
+      timeSetting: params?.timeSetting || '',
+      order: maxOrder + 1,
+      wordGoal: params?.wordGoal || 2000,
+      lastUpdated: Date.now()
     };
     const updatedStory = { ...currentStory, chapters: [...currentStory.chapters, newChapter] };
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setActiveChapterId(newChapter.id);
     bumpEditorSyncToken();
     return newId;
@@ -823,132 +1108,88 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const updatedChapters = currentStory.chapters.filter(c => c.id !== id);
     const updatedStory = { ...currentStory, chapters: updatedChapters };
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setStory(updatedStory);
     if (activeChapterIdRef.current === id) {
-        const sorted = [...updatedChapters].sort((a, b) => a.order - b.order);
-        const newActiveId = sorted[0]?.id || null;
-        setActiveChapterId(newActiveId);
+      const sorted = [...updatedChapters].sort((a, b) => a.order - b.order);
+      setActiveChapterId(sorted[0]?.id || null);
     }
-    await loadStories();
+    await loadStories(true);
   };
 
-  const splitChapter = async (chapterId: string, segments: { title: string; content: string; outline?: string; summary?: string }[]) => {
+  const splitChapter = async (
+    chapterId: string,
+    segments: { title: string; content: string; outline?: string; summary?: string }[]
+  ) => {
     const currentStory = storyRef.current;
     if (!currentStory || !segments || segments.length === 0) return;
 
     const targetIndex = currentStory.chapters.findIndex(c => c.id === chapterId);
     if (targetIndex === -1) return;
-
     const originalChapter = currentStory.chapters[targetIndex];
-    
-    // Create new chapter objects for segments
-    const newSegmentChapters: Chapter[] = segments.map((seg, idx) => {
-      return {
-        id: idx === 0 ? originalChapter.id : generateId(),
-        title: seg.title || `${originalChapter.title} (Phần ${idx + 1})`,
-        content: seg.content || '',
-        summary: seg.summary || '',
-        outline: seg.outline || (idx === 0 ? originalChapter.outline : ''),
-        timeSetting: originalChapter.timeSetting || '',
-        order: 0,
-        wordGoal: Math.max(500, Math.round((originalChapter.wordGoal || 2000) / segments.length)),
-        lastUpdated: Date.now(),
-      };
-    });
 
-    const chaptersBefore = currentStory.chapters.slice(0, targetIndex);
-    const chaptersAfter = currentStory.chapters.slice(targetIndex + 1);
-
-    const combinedChapters = [...chaptersBefore, ...newSegmentChapters, ...chaptersAfter];
-
-    const reIndexedChapters = combinedChapters.map((c, i) => ({
-      ...c,
-      order: i + 1,
+    const newSegmentChapters: Chapter[] = segments.map((seg, idx) => ({
+      id: idx === 0 ? originalChapter.id : generateId(),
+      title: seg.title || `${originalChapter.title} (Phần ${idx + 1})`,
+      content: seg.content || '',
+      summary: seg.summary || '',
+      outline: seg.outline || (idx === 0 ? originalChapter.outline : ''),
+      timeSetting: originalChapter.timeSetting || '',
+      order: 0,
+      wordGoal: Math.max(500, Math.round((originalChapter.wordGoal || 2000) / segments.length)),
+      lastUpdated: Date.now()
     }));
 
-    const updatedStory = {
-      ...currentStory,
-      chapters: reIndexedChapters,
-    };
+    const combinedChapters = [
+      ...currentStory.chapters.slice(0, targetIndex),
+      ...newSegmentChapters,
+      ...currentStory.chapters.slice(targetIndex + 1)
+    ];
+
+    const reIndexedChapters = combinedChapters.map((c, i) => ({ ...c, order: i + 1 }));
+    const updatedStory = { ...currentStory, chapters: reIndexedChapters };
 
     setStory(updatedStory);
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setActiveChapterId(newSegmentChapters[0].id);
-    await loadStories();
+    await loadStories(true);
   };
 
   const mergeChapters = async (
     chapterIds: string[],
-    options: {
-      newTitle: string;
-      separator?: string;
-      mergeTranslations?: boolean;
-    }
+    options: { newTitle: string; separator?: string; mergeTranslations?: boolean }
   ) => {
     const currentStory = storyRef.current;
     if (!currentStory || !chapterIds || chapterIds.length < 2) return;
 
-    // Filter to selected chapters and keep their natural order based on selection order
     const selectedChapters = chapterIds
       .map(id => currentStory.chapters.find(c => c.id === id))
       .filter((c): c is Chapter => !!c);
-
     if (selectedChapters.length < 2) return;
 
     const firstChapter = selectedChapters[0];
     const separator = options.separator !== undefined ? options.separator : '\n\n';
+    const mergedContent = selectedChapters.map(c => (c.content || '').trim()).filter(Boolean).join(separator);
 
-    // Combine contents
-    const mergedContent = selectedChapters
-      .map(c => (c.content || '').trim())
-      .filter(Boolean)
-      .join(separator);
-
-    // Combine originalContent if any chapter has it
     const hasOriginal = selectedChapters.some(c => !!c.originalContent);
     const mergedOriginalContent = hasOriginal
-      ? selectedChapters
-          .map(c => (c.originalContent || c.content || '').trim())
-          .filter(Boolean)
-          .join(separator)
+      ? selectedChapters.map(c => (c.originalContent || c.content || '').trim()).filter(Boolean).join(separator)
       : undefined;
 
-    // Combine translatedContent if requested
-    const hasTranslation = selectedChapters.some(
-      c => !!c.translatedContent && c.translatedContent.trim().length > 0
-    );
+    const hasTranslation = selectedChapters.some(c => !!c.translatedContent && c.translatedContent.trim().length > 0);
     const mergedTranslatedContent =
       options.mergeTranslations !== false && hasTranslation
-        ? selectedChapters
-            .map(c => (c.translatedContent || '').trim())
-            .filter(Boolean)
-            .join(separator)
+        ? selectedChapters.map(c => (c.translatedContent || '').trim()).filter(Boolean).join(separator)
         : undefined;
 
-    // Combine translatedTitle if applicable
     const mergedTranslatedTitle =
       options.mergeTranslations !== false && selectedChapters.some(c => !!c.translatedTitle)
         ? options.newTitle
         : undefined;
 
-    // Combine summaries
-    const mergedSummary = selectedChapters
-      .map(c => (c.summary || '').trim())
-      .filter(Boolean)
-      .join('\n---\n');
-
-    // Combine outlines
-    const mergedOutline = selectedChapters
-      .map(c => (c.outline || '').trim())
-      .filter(Boolean)
-      .join('\n\n');
-
-    // Sum wordGoal
-    const totalWordGoal = selectedChapters.reduce(
-      (sum, c) => sum + (c.wordGoal || 2000),
-      0
-    );
+    const mergedSummary = selectedChapters.map(c => (c.summary || '').trim()).filter(Boolean).join('\n---\n');
+    const mergedOutline = selectedChapters.map(c => (c.outline || '').trim()).filter(Boolean).join('\n\n');
+    const totalWordGoal = selectedChapters.reduce((sum, c) => sum + (c.wordGoal || 2000), 0);
 
     const mergedChapter: Chapter = {
       ...firstChapter,
@@ -961,58 +1202,53 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       outline: mergedOutline,
       wordGoal: totalWordGoal,
       lastUpdated: Date.now(),
-      translationLastUpdated: mergedTranslatedContent ? Date.now() : undefined,
+      translationLastUpdated: mergedTranslatedContent ? Date.now() : undefined
     };
 
-    // Replace the first selected chapter with mergedChapter, and drop the other selected chapters
     const remainingChapters: Chapter[] = [];
     let inserted = false;
-
     for (const c of currentStory.chapters) {
       if (chapterIds.includes(c.id)) {
         if (!inserted) {
           remainingChapters.push(mergedChapter);
           inserted = true;
         }
-        // Other merged chapters are excluded
       } else {
         remainingChapters.push(c);
       }
     }
 
-    // Re-index order
-    const reIndexedChapters = remainingChapters.map((c, idx) => ({
-      ...c,
-      order: idx + 1,
-    }));
-
     const updatedStory = {
       ...currentStory,
-      chapters: reIndexedChapters,
+      chapters: remainingChapters.map((c, idx) => ({ ...c, order: idx + 1 }))
     };
 
     setStory(updatedStory);
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setActiveChapterId(mergedChapter.id);
-    await loadStories();
+    await loadStories(true);
   };
 
   const updateChapterContent = useCallback((id: string, content: string, pushToHistory = true) => {
+    lastLocalDeltaAtRef.current = Date.now();
     setStory(prev => {
-        if (!prev) return null;
-        if (pushToHistory) {
-            const currentChapter = prev.chapters.find(c => c.id === id);
-            if (currentChapter && currentChapter.content !== content) {
-                setHistory(prevHistory => {
-                    const chHistory = prevHistory[id] || { past: [], future: [] };
-                    const newPast = [...chHistory.past, currentChapter.content].slice(-MAX_HISTORY);
-                    return { ...prevHistory, [id]: { past: newPast, future: [] } };
-                });
-            }
+      if (!prev) return null;
+      if (pushToHistory) {
+        const currentChapter = prev.chapters.find(c => c.id === id);
+        if (currentChapter && currentChapter.content !== content) {
+          setHistory(prevHistory => {
+            const chHistory = prevHistory[id] || { past: [], future: [] };
+            const newPast = [...chHistory.past, currentChapter.content].slice(-MAX_HISTORY);
+            return { ...prevHistory, [id]: { past: newPast, future: [] } };
+          });
         }
-        const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, content, lastUpdated: Date.now() } : c) };
-        storageService.saveChapterDelta(prev.id, id, content);
-        return newState;
+      }
+      const newState = {
+        ...prev,
+        chapters: prev.chapters.map(c => (c.id === id ? { ...c, content, lastUpdated: Date.now() } : c))
+      };
+      void storageService.saveChapterDelta(prev.id, id, content);
+      return newState;
     });
   }, []);
 
@@ -1021,7 +1257,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!id || !storyRef.current) return;
     const chHistory = history[id];
     if (!chHistory || chHistory.past.length === 0) return;
-    const currentContent = storyRef.current.chapters.find(c => c.id === id)?.content || "";
+    const currentContent = storyRef.current.chapters.find(c => c.id === id)?.content || '';
     const previousContent = chHistory.past[chHistory.past.length - 1];
     const newPast = chHistory.past.slice(0, -1);
     const newFuture = [currentContent, ...chHistory.future].slice(0, MAX_HISTORY);
@@ -1035,7 +1271,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!id || !storyRef.current) return;
     const chHistory = history[id];
     if (!chHistory || chHistory.future.length === 0) return;
-    const currentContent = storyRef.current.chapters.find(c => c.id === id)?.content || "";
+    const currentContent = storyRef.current.chapters.find(c => c.id === id)?.content || '';
     const nextContent = chHistory.future[0];
     const newFuture = chHistory.future.slice(1);
     const newPast = [...chHistory.past, currentContent].slice(-MAX_HISTORY);
@@ -1048,11 +1284,15 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const canRedo = activeChapterId ? (history[activeChapterId]?.future.length || 0) > 0 : false;
 
   const updateChapterTitle = useCallback((id: string, title: string) => {
+    lastLocalDeltaAtRef.current = Date.now();
     setStory(prev => {
-        if (!prev) return null;
-        const newState = { ...prev, chapters: prev.chapters.map(c => c.id === id ? { ...c, title, lastUpdated: Date.now() } : c) };
-        storageService.saveStory(newState);
-        return newState;
+      if (!prev) return null;
+      const newState = {
+        ...prev,
+        chapters: prev.chapters.map(c => (c.id === id ? { ...c, title, lastUpdated: Date.now() } : c))
+      };
+      void storageService.saveStory(newState);
+      return newState;
     });
   }, []);
 
@@ -1062,384 +1302,155 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
     const index = chapters.findIndex(c => c.id === id);
     if (direction === 'up' && index > 0) {
-        const temp = chapters[index].order;
-        chapters[index].order = chapters[index - 1].order;
-        chapters[index - 1].order = temp;
+      const temp = chapters[index].order;
+      chapters[index].order = chapters[index - 1].order;
+      chapters[index - 1].order = temp;
     } else if (direction === 'down' && index < chapters.length - 1) {
-        const temp = chapters[index].order;
-        chapters[index].order = chapters[index + 1].order;
-        chapters[index + 1].order = temp;
-    } else { return; }
+      const temp = chapters[index].order;
+      chapters[index].order = chapters[index + 1].order;
+      chapters[index + 1].order = temp;
+    } else {
+      return;
+    }
     const updatedStory = { ...currentStory, chapters };
     setStory(updatedStory);
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
   };
 
-  const getRelevantKnowledge = async (queryText: string, s: Story): Promise<string> => {
-    const pool = ragService.buildKnowledgePool(s);
-    if (pool.length === 0) return s.setting || "Chưa có bối cảnh.";
-    
-    try {
-        const queryEmbedding = await geminiService.embedText(queryText);
-        if (!queryEmbedding || queryEmbedding.length === 0) return s.setting || "Chưa có bối cảnh.";
-        
-        const matches = ragService.search(queryEmbedding, pool, { topK: 12, minScore: 0.5 });
-        const retrievedText = matches.map(m => m.text).join('\n\n');
-        const activeEvolutionRules = s.evolutionLogs?.filter(l => l.isActive).map(l => `- Quy tắc: ${l.learnedRule}`).join('\n') || "";
-        return `[BỐI CẢNH GỐC]:\n${s.setting}\n\n[TRI THỨC TRUY XUẤT]:\n${retrievedText}\n\n[TIẾN HÓA VĂN PHONG]:\n${activeEvolutionRules}`;
-    } catch (e) { return s.setting || "Chưa có bối cảnh."; }
-  };
+  // Used locally only by RAG helper if needed
+  void ragService;
 
-  const summarizeChapter = useCallback(async (id: string) => {
-    const targetChapter = storyRef.current?.chapters.find(c => c.id === id);
-    if (!targetChapter) return;
-    
-    const contentText = targetChapter.content?.trim() || "";
-    const outlineText = targetChapter.outline?.trim() || "";
-    
-    let sourceText = "";
-    let isFromOutline = false;
-    
-    if (contentText.length >= 50) {
-        sourceText = contentText;
-    } else if (outlineText.length >= 10) {
-        sourceText = `[Đề cương của chương]:\n${outlineText}`;
-        isFromOutline = true;
-    } else if (contentText.length > 0) {
-        sourceText = contentText;
-    }
-    
-    if (!sourceText || sourceText.trim().length < 10) {
-        alert(`Không thể tóm tắt: Chương "${targetChapter.title}" chưa có bản thảo hoặc đề cương đủ dài (tối thiểu 10 ký tự). Hãy viết thêm trước khi tóm tắt.`);
-        return;
-    }
+  const summarizeChapter = useCallback(
+    async (id: string) => {
+      const currentStory = storyRef.current;
+      const targetChapter = currentStory?.chapters.find(c => c.id === id);
+      if (!currentStory || !targetChapter) return;
 
-    setIsSummarizing(true); 
-    try {
-        const result = await geminiService.generateChapterSummary(
-            targetChapter.title, 
-            sourceText + (isFromOutline ? "\n\n(Lưu ý: Tóm tắt lại ngắn gọn diễn biến chính dựa trên đề cương này)" : "")
+      const contentText = targetChapter.content?.trim() || '';
+      const outlineText = targetChapter.outline?.trim() || '';
+      const sourceText =
+        contentText.length >= 50
+          ? contentText
+          : outlineText.length >= 10
+          ? outlineText
+          : contentText;
+
+      if (!sourceText || sourceText.trim().length < 10) {
+        showToast(
+          `Không thể tóm tắt: Chương "${targetChapter.title}" chưa có bản thảo hoặc đề cương đủ dài (tối thiểu 10 ký tự).`,
+          'error'
         );
-        if (result && result.text) {
-            recordUsage(result.usageMetadata);
-            setStory(prev => {
-                if (!prev) return null;
-                const updatedChapters = prev.chapters.map(c => c.id === id ? { ...c, summary: result.text } : c);
-                const updatedStory = { ...prev, chapters: updatedChapters };
-                storageService.saveStory(updatedStory);
-                return updatedStory;
-            });
-        }
-    } catch (e: any) {
-        console.error("Lỗi khi tóm tắt chương:", e);
-        alert(e?.message || "Có lỗi xảy ra trong quá trình gọi AI để tóm tắt chương.");
-    } finally { 
-        setIsSummarizing(false); 
-    }
-  }, [recordUsage]);
+        return;
+      }
+
+      try {
+        await storageService.flushSaves();
+        await launchServerJob('summarize_chapter', {
+          storyId: currentStory.id,
+          chapterId: id,
+          title: `Tóm tắt: ${targetChapter.title}`
+        });
+      } catch (e: any) {
+        showToast(e?.message || 'Lỗi khi khởi chạy tóm tắt chương.', 'error');
+      }
+    },
+    [launchServerJob, showToast]
+  );
 
   const summarizeAllChaptersSequentially = useCallback(async () => {
     const currentStory = storyRef.current;
     if (!currentStory || !currentStory.chapters || currentStory.chapters.length === 0) {
-        alert("Không tìm thấy chương truyện nào để tóm tắt.");
-        return;
+      showToast('Không tìm thấy chương truyện nào để tóm tắt.', 'error');
+      return;
     }
-
     if (isSequentiallySummarizing) return;
-
-    setIsSequentiallySummarizing(true);
-    
     try {
-        const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
-        
-        for (let i = 0; i < sortedChapters.length; i++) {
-            const chapter = sortedChapters[i];
-            
-            // Re-read current chapter state from ref in case it was updated by previous steps
-            const currentStoryLatest = storyRef.current;
-            const latestChapter = currentStoryLatest?.chapters.find(c => c.id === chapter.id) || chapter;
-            
-            // Skip if the chapter already has a summary
-            if (latestChapter.summary?.trim()) {
-                setSequentialSummaryProgress({ 
-                    current: i + 1, 
-                    total: sortedChapters.length, 
-                    chapterTitle: `${latestChapter.title} (Bỏ qua - Đã có tóm tắt)` 
-                });
-                await new Promise(resolve => setTimeout(resolve, 600));
-                continue;
-            }
-            
-            const contentText = latestChapter.content?.trim() || "";
-            const outlineText = latestChapter.outline?.trim() || "";
-            
-            let sourceText = "";
-            let isFromOutline = false;
-            
-            if (contentText.length >= 50) {
-                sourceText = contentText;
-            } else if (outlineText.length >= 10) {
-                sourceText = `[Đề cương của chương]:\n${outlineText}`;
-                isFromOutline = true;
-            } else if (contentText.length > 0) {
-                sourceText = contentText;
-            }
-            
-            if (!sourceText || sourceText.trim().length < 10) {
-                setSequentialSummaryProgress({ 
-                    current: i + 1, 
-                    total: sortedChapters.length, 
-                    chapterTitle: `${latestChapter.title} (Bỏ qua - Chưa có bản thảo/đề cương)` 
-                });
-                await new Promise(resolve => setTimeout(resolve, 1500));
-                continue;
-            }
-
-            setSequentialSummaryProgress({ 
-                current: i + 1, 
-                total: sortedChapters.length, 
-                chapterTitle: latestChapter.title 
-            });
-
-            try {
-                const result = await geminiService.generateChapterSummary(
-                    latestChapter.title, 
-                    sourceText + (isFromOutline ? "\n\n(Lưu ý: Tóm tắt lại ngắn gọn diễn biến chính dựa trên đề cương này)" : "")
-                );
-                
-                if (result && result.text) {
-                    recordUsage(result.usageMetadata);
-                    setStory(prev => {
-                        if (!prev) return null;
-                        const updatedChapters = prev.chapters.map(c => c.id === latestChapter.id ? { ...c, summary: result.text } : c);
-                        const updatedStory = { ...prev, chapters: updatedChapters };
-                        storageService.saveStory(updatedStory);
-                        return updatedStory;
-                    });
-                }
-            } catch (err) {
-                console.error(`Lỗi khi tóm tắt chương "${latestChapter.title}":`, err);
-                // Keep moving to next chapter even if one fails
-            }
-
-            // Small breathing gap between API requests
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-    } catch (e) {
-        console.error("Lỗi trong quá trình tóm tắt hàng loạt:", e);
-    } finally {
-        setIsSequentiallySummarizing(false);
-        setSequentialSummaryProgress(null);
+      await storageService.flushSaves();
+      await launchServerJob('summarize_all_sequential', {
+        storyId: currentStory.id,
+        title: `Tóm tắt ${currentStory.chapters.length} chương (${currentStory.title})`
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi chạy tóm tắt hàng loạt trên máy chủ.', 'error');
     }
-  }, [isSequentiallySummarizing, recordUsage]);
+  }, [isSequentiallySummarizing, launchServerJob, showToast]);
 
   const generateChapterContentFromPlot = async (
     chapterId: string,
     options?: { repairInstruction?: string; continuityNotes?: string }
   ): Promise<string> => {
     const currentStory = storyRef.current;
-    if (!currentStory) throw new Error("Không tìm thấy dữ liệu truyện.");
-    
+    if (!currentStory) throw new Error('Không tìm thấy dữ liệu truyện.');
     const chapter = currentStory.chapters.find(c => c.id === chapterId);
-    if (!chapter) throw new Error("Không tìm thấy chương chỉ định.");
-    
-    setIsGenerating(true);
-    setGenerationStatus("Đang dùng AI tự động viết/sửa bản thảo chương theo mạch lạc...");
-    
-    try {
-        const result = await geminiService.generateChapterContentFromPlot(chapter, currentStory, options);
-        if (result && result.text) {
-            recordUsage(result.usageMetadata);
-            setStory(prev => {
-                if (!prev) return null;
-                const updatedChapters = prev.chapters.map(c =>
-                    c.id === chapterId
-                        ? {
-                            ...c,
-                            originalContent: c.originalContent || c.content,
-                            content: result.text,
-                            lastUpdated: Date.now()
-                          }
-                        : c
-                );
-                const updated = { ...prev, chapters: updatedChapters };
-                storyRef.current = updated;
-                storageService.saveStory(updated);
-                return updated;
-            });
-            bumpEditorSyncToken();
-            return result.text;
-        }
-        return chapter.content;
-    } catch (e: any) {
-        console.error("Lỗi khi tự động sửa bản thảo:", e);
-        alert(e?.message || "Lỗi khi tự động soạn/sửa bản thảo bằng AI.");
-        throw e;
-    } finally {
-        setIsGenerating(false);
-        setGenerationStatus("");
-    }
+    if (!chapter) throw new Error('Không tìm thấy chương chỉ định.');
+
+    await storageService.flushSaves();
+    const job = await launchServerJob('generate_from_plot', {
+      storyId: currentStory.id,
+      chapterId,
+      options,
+      title: `Soạn theo Plot: ${chapter.title}`
+    });
+
+    return new Promise<string>((resolve, reject) => {
+      awaitingJobPromisesRef.current.set(job.id, { resolve, reject });
+    });
   };
 
   const translateChapter = async (id: string, options?: TranslationOptions) => {
     if (isGenerating) {
-      console.warn("Đang có tiến trình xử lý AI đang chạy, bỏ qua yêu cầu trùng lặp.");
       return;
     }
     const currentStory = storyRef.current;
     const targetChapter = currentStory?.chapters.find(c => c.id === id);
-    const sourceText = (targetChapter?.originalContent || targetChapter?.content || "").trim();
-
-    // Hỗ trợ dịch mọi độ dài văn bản gốc (kể cả văn bản ngắn 300 - 500 ký tự hay trích đoạn)
-    if (!targetChapter || sourceText.length < 5) {
-      if (isAutoTranslateEnabled) {
-        const sorted = [...(storyRef.current || currentStory || { chapters: [] }).chapters]
-          .filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]'))
-          .sort((a, b) => a.order - b.order);
-        const currentIndex = sorted.findIndex(c => c.id === id);
-        if (currentIndex !== -1 && currentIndex < sorted.length - 1) {
-          const nextChapter = sorted[currentIndex + 1];
-          setTimeout(() => {
-            setActiveChapterId(nextChapter.id);
-            translateChapter(nextChapter.id, options);
-          }, 500);
-        }
-      }
+    if (!currentStory || !targetChapter) return;
+    const sourceText = (targetChapter.originalContent || targetChapter.content || '').trim();
+    if (sourceText.length < 5 && !isAutoTranslateEnabled) {
+      showToast('Chương chưa có đủ nội dung gốc để Việt hóa.', 'error');
       return;
     }
-    
-    const activeOptions = options || translationOptions;
-    setIsGenerating(true);
-    setGenerationStatus("Đang đại biên tập & Việt hóa văn học đỉnh cao vào Menu Bản Dịch...");
 
-    // Tự động chuyển view sang tab 'translation' để người dùng theo dõi nội dung được sinh trực tiếp
+    const activeOptions = options || translationOptions;
     setActiveChapterId(id);
     setEditorVersion('translation');
 
     try {
-      // Đảm bảo originalContent luôn được lưu trữ nếu chưa có, đồng thời khởi tạo sạch translatedContent
-      setStory(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          chapters: prev.chapters.map(c => c.id === id ? { 
-            ...c, 
-            originalContent: c.originalContent || c.content,
-            translatedContent: '',
-            translationStyle: activeOptions.styleMode,
-            translationLastUpdated: Date.now()
-          } : c)
-        };
+      await storageService.flushSaves();
+      await launchServerJob('translate_chapter', {
+        storyId: currentStory.id,
+        chapterId: id,
+        options: activeOptions,
+        autoNext: isAutoTranslateEnabled,
+        title: isAutoTranslateEnabled
+          ? `Việt hóa tự động từ ${targetChapter.title}`
+          : `Việt hóa: ${targetChapter.title}`
       });
-
-      const stream = geminiService.translateToVietnameseStream(
-        sourceText,
-        currentStory,
-        {
-          chapterTitle: targetChapter.title,
-          styleMode: activeOptions.styleMode,
-          customInstruction: activeOptions.customInstruction,
-          pronounOverride: activeOptions.pronounOverride
-        }
-      );
-
-      let accumulated = "";
-      let finalMetadata = null;
-      let lastStreamingUpdate = 0;
-
-      for await (const chunk of stream) {
-        const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : '';
-        const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : '';
-        if (chunkText) {
-          accumulated += chunkText;
-          const now = Date.now();
-          // Throttle state updates to ~3 times per second during heavy streaming to prevent memory spikes
-          if (now - lastStreamingUpdate > 300) {
-            lastStreamingUpdate = now;
-            setStory(prev => {
-              if (!prev) return null;
-              return {
-                ...prev,
-                chapters: prev.chapters.map(c => c.id === id ? {
-                  ...c,
-                  originalContent: c.originalContent || c.content,
-                  translatedContent: accumulated,
-                  translationStyle: activeOptions.styleMode,
-                  translationLastUpdated: now
-                } : c)
-              };
-            });
-          }
-        }
-        if (chunk.usageMetadata) finalMetadata = chunk.usageMetadata;
-      }
-
-      if (finalMetadata) recordUsage(finalMetadata);
-
-      // Làm sạch, khử trùng lặp; nếu bản lọc trả về rỗng thì bảo toàn bản tích lũy thô để không bao giờ bị mất bài
-      const cleanedTranslation = cleanAndDeduplicateTranslation(accumulated, sourceText) || accumulated.trim();
-
-      // Lưu bền vững vào storage
-      if (storyRef.current) {
-        const finalUpdated = {
-          ...storyRef.current,
-          chapters: storyRef.current.chapters.map(c => c.id === id ? {
-            ...c,
-            originalContent: c.originalContent || c.content,
-            translatedContent: cleanedTranslation,
-            translationStyle: activeOptions.styleMode,
-            translationLastUpdated: Date.now()
-          } : c)
-        };
-        setStory(finalUpdated);
-        storyRef.current = finalUpdated;
-        await storageService.saveStory(finalUpdated);
-        bumpEditorSyncToken();
-      }
-
-      // Xử lý dịch tự động liên tục nếu bật Auto Next
-      if (isAutoTranslateEnabled) {
-        const sorted = [...(storyRef.current || currentStory).chapters]
-          .filter(c => !c.isTranslation && !c.title.startsWith('[Việt Hóa]'))
-          .sort((a, b) => a.order - b.order);
-
-        const currentIndex = sorted.findIndex(c => c.id === id);
-        if (currentIndex !== -1 && currentIndex < sorted.length - 1) {
-          const nextChapter = sorted[currentIndex + 1];
-          setTimeout(() => {
-            setActiveChapterId(nextChapter.id);
-            translateChapter(nextChapter.id, activeOptions);
-          }, 800);
-        } else {
-          alert("Đã hoàn tất Việt hóa toàn bộ các chương trong Menu Bản Dịch!");
-        }
-      }
     } catch (e: any) {
-      console.error(e);
-      alert(e?.message || "Kết nối quá yếu (LTE). Quá trình bị gián đoạn, vui lòng thử lại.");
-    } finally {
-      setIsGenerating(false);
-      setGenerationStatus("");
+      showToast(e?.message || 'Lỗi khi khởi chạy Việt hóa trên máy chủ.', 'error');
     }
   };
 
-  const updateChapterTranslation = async (chapterId: string, translatedContent: string, translatedTitle?: string) => {
+  const updateChapterTranslation = async (
+    chapterId: string,
+    translatedContent: string,
+    translatedTitle?: string
+  ) => {
     if (!storyRef.current) return;
+    lastLocalDeltaAtRef.current = Date.now();
     const storyId = storyRef.current.id;
     const currentChapter = storyRef.current.chapters.find(c => c.id === chapterId);
     const existingContent = currentChapter?.content || '';
 
-    const updatedChapters = storyRef.current.chapters.map(c => {
-      if (c.id === chapterId) {
-        return {
-          ...c,
-          translatedContent: translatedContent,
-          translatedTitle: translatedTitle !== undefined ? translatedTitle : c.translatedTitle,
-          translationLastUpdated: Date.now()
-        };
-      }
-      return c;
-    });
+    const updatedChapters = storyRef.current.chapters.map(c =>
+      c.id === chapterId
+        ? {
+            ...c,
+            translatedContent,
+            translatedTitle: translatedTitle !== undefined ? translatedTitle : c.translatedTitle,
+            translationLastUpdated: Date.now()
+          }
+        : c
+    );
     const updatedStory = { ...storyRef.current, chapters: updatedChapters };
     setStory(updatedStory);
     storyRef.current = updatedStory;
@@ -1451,21 +1462,20 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapter = storyRef.current.chapters.find(c => c.id === chapterId);
     if (!chapter || !chapter.translatedContent) return;
 
-    const updatedChapters = storyRef.current.chapters.map(c => {
-      if (c.id === chapterId) {
-        return {
-          ...c,
-          originalContent: c.originalContent || c.content,
-          content: c.translatedContent!,
-          lastUpdated: Date.now()
-        };
-      }
-      return c;
-    });
+    const updatedChapters = storyRef.current.chapters.map(c =>
+      c.id === chapterId
+        ? {
+            ...c,
+            originalContent: c.originalContent || c.content,
+            content: c.translatedContent!,
+            lastUpdated: Date.now()
+          }
+        : c
+    );
     const updatedStory = { ...storyRef.current, chapters: updatedChapters };
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     bumpEditorSyncToken();
     setEditorVersion('original');
   };
@@ -1475,20 +1485,13 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapter = storyRef.current.chapters.find(c => c.id === chapterId);
     if (!chapter || !chapter.originalContent) return;
 
-    const updatedChapters = storyRef.current.chapters.map(c => {
-      if (c.id === chapterId) {
-        return {
-          ...c,
-          content: c.originalContent || c.content,
-          lastUpdated: Date.now()
-        };
-      }
-      return c;
-    });
+    const updatedChapters = storyRef.current.chapters.map(c =>
+      c.id === chapterId ? { ...c, content: c.originalContent || c.content, lastUpdated: Date.now() } : c
+    );
     const updatedStory = { ...storyRef.current, chapters: updatedChapters };
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     bumpEditorSyncToken();
     setEditorVersion('original');
   };
@@ -1501,7 +1504,7 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       .sort((a, b) => a.order - b.order);
 
     if (translatedChapters.length === 0) {
-      alert("Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!");
+      showToast('Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!', 'error');
       return;
     }
 
@@ -1534,180 +1537,73 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       .sort((a, b) => a.order - b.order);
 
     if (translatedChapters.length === 0) {
-      alert("Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!");
+      showToast('Chưa có chương nào được Việt hóa trong Menu Bản Dịch để xuất!', 'error');
       return;
     }
 
     const safeTitle = `${currentStory.title} (Bản Việt Hóa)`;
-    await downloadEpubFile({
-      title: safeTitle,
-      author: 'Aetheria Studio / Dịch Thuật AI',
-      genre: currentStory.genre || 'Tiểu thuyết dịch',
-      description: currentStory.synopsis || `Bản dịch Việt hóa hoàn chỉnh gồm ${translatedChapters.length} chương.`,
-      chapters: translatedChapters.map((ch, idx) => ({
-        title: ch.translatedTitle || ch.title || `Chương ${idx + 1}`,
-        content: ch.translatedContent || ''
-      }))
-    }, `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.epub`);
+    await downloadEpubFile(
+      {
+        title: safeTitle,
+        author: 'Aetheria Studio / Dịch Thuật AI',
+        genre: currentStory.genre || 'Tiểu thuyết dịch',
+        description: currentStory.synopsis || `Bản dịch Việt hóa hoàn chỉnh gồm ${translatedChapters.length} chương.`,
+        chapters: translatedChapters.map((ch, idx) => ({
+          title: ch.translatedTitle || ch.title || `Chương ${idx + 1}`,
+          content: ch.translatedContent || ''
+        }))
+      },
+      `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.epub`
+    );
   };
 
   const suggestNewChapter = async () => {
     const currentStory = storyRef.current;
     if (!currentStory) return;
-    setIsSuggestingChapter(true);
     try {
-        const result = await geminiService.generateAdvancedChapterSuggestion(currentStory);
-        if (result && result.data) {
-            recordUsage(result.usageMetadata);
-            setChapterSuggestion(result.data);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('suggest_new_chapter', {
+        storyId: currentStory.id,
+        title: `Gợi ý chương mới (${currentStory.title})`
+      });
     } catch (e: any) {
-        console.error("suggestNewChapter error:", e);
-        alert(`Lỗi gợi ý chương tiếp theo: ${e?.message || 'Không thể kết nối AI.'}`);
-    } finally {
-        setIsSuggestingChapter(false);
+      showToast(e?.message || 'Lỗi gợi ý chương tiếp theo.', 'error');
     }
   };
 
   const generateContinue = async (mode: 'append' | 'regenerate' = 'append') => {
     const currentStory = storyRef.current;
-    const currentActiveId = activeChapterId; 
+    const currentActiveId = activeChapterId;
     if (!currentStory || !currentActiveId) return;
     const chapter = currentStory.chapters.find(c => c.id === currentActiveId);
     if (!chapter) return;
-
-    const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
-    const currentIndex = sortedChapters.findIndex(c => c.id === currentActiveId);
-    const previousChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
-    const previousChapterTime = previousChapter?.timeSetting || "Không rõ";
-
-    const isTransMode = editorVersion === 'translation';
-    const currentBody = isTransMode ? (chapter.translatedContent || '') : (chapter.content || '');
-    const initialContent = mode === 'regenerate' ? "" : currentBody;
-
-    setIsGenerating(true);
-    setGenerationProgress(5); 
-    setGenerationStatus("Đang tải dữ liệu và chuẩn bị kiến tạo...");
-    
     try {
-        const prevText = previousChapter ? (previousChapter.content?.trim() ? previousChapter.content : (previousChapter.translatedContent || '')) : '';
-        const stmContext = initialContent.slice(-2500);
-        const entitySearchContext = [chapter.outline, userInstruction, stmContext, previousChapter?.summary, prevText.slice(-1000)].filter(Boolean).join(' ');
-        
-        const immediateContext = initialContent.trim().length < 300 && previousChapter
-            ? `[DIỄN BIẾN CUỐI CHƯƠNG TRƯỚC - ${previousChapter.title}]:\n${previousChapter.summary ? `Tóm tắt: ${previousChapter.summary}\n` : ''}${prevText.slice(-1500)}\n\n[BẢN THẢO CHƯƠNG HIỆN TẠI (${chapter.title})]:\n${initialContent}`
-            : initialContent;
-
-        const recentSummaries = sortedChapters
-            .slice(Math.max(0, currentIndex - 4), currentIndex)
-            .map(c => `- ${c.title}: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`)
-            .join('\n');
-
-        let historicalContext = "";
-        let canonContext = "";
-        
-        if (currentStory.isFanfiction && currentStory.referenceDocs && currentStory.referenceDocs.length > 0) {
-             const docsText = currentStory.referenceDocs.map(doc => `[DỮ LIỆU TỪ LORE TẬP TIN ${doc.name}]:\n${doc.content}`).join("\n\n");
-             canonContext = docsText;
-        }
-
-        setGenerationStatus("Đang truy xuất World Bible & mạch nhân vật...");
-        setGenerationProgress(25);
-        const dynamicWorldBible = await getRelevantKnowledge(entitySearchContext, currentStory);
-        const activeLogs = (currentStory.knowledgeLogs || [])
-            .filter(l => l.isActive)
-            .slice(0, 20)
-            .map(l => `- [${l.category}] ${l.title}: ${l.content}`)
-            .join('\n');
-        const combinedWorldBible = activeLogs ? `${dynamicWorldBible}\n\n[KÝ ỨC THẾ GIỚI & LUẬT LỆ ĐÃ QUÉT]:\n${activeLogs}` : dynamicWorldBible;
-
-        setGenerationStatus("Aetheria đang viết tiếp bản thảo...");
-        setGenerationProgress(45);
-
-        const stream = geminiService.generateStoryStream(
-            immediateContext,
-            combinedWorldBible,
-            currentStory.planning,
-            currentStory.characters,
-            currentStory.interactionRules,
-            userInstruction,
-            currentStory.genre,
-            currentStory.writingStyle || "",
-            currentStory.pov,
-            currentStory.pronounStyle,
-            currentStory.negativePrompt,
-            currentStory.nsfw || false,
-            currentStory.hasSystem || false,
-            targetWordCount,
-            currentStory.persistentDirectives || "",
-            currentStory.mechanics || "",
-            chapter.outline,
-            recentSummaries,
-            currentStory.writingDNA,
-            chapter.timeSetting || "",
-            previousChapterTime,
-            currentStory.currentTimeline || "",
-            historicalContext,
-            canonContext,
-            currentStory.fandomName || ""
-        );
-        
-        let accumulated = "";
-        for await (const chunk of stream) {
-            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
-            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
-            if (chunkText) {
-                accumulated += chunkText;
-                setGenerationProgress(prev => Math.min(95, prev + 0.3));
-            }
-            if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
-        }
-        
-        setGenerationStatus("Lưu trữ và hoàn thiện bản thảo...");
-        setGenerationProgress(98);
-        
-        const cleanedAccum = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        const finalDraft = initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n\n' : '') + cleanedAccum;
-        if (isTransMode) {
-            await updateChapterTranslation(currentActiveId, finalDraft);
-        } else {
-            updateChapterContent(currentActiveId, finalDraft, true);
-        }
-        
-        if (storyRef.current) {
-            await storageService.saveStory(storyRef.current);
-        }
-        bumpEditorSyncToken();
-    } catch (e: any) { 
-        console.error(e);
-        alert(e?.message || "Lỗi trong quá trình tạo nội dung.");
-    } finally {
-        setIsGenerating(false);
-        setGenerationProgress(0);
-        setGenerationStatus("");
+      await storageService.flushSaves();
+      await launchServerJob('generate_continue', {
+        storyId: currentStory.id,
+        chapterId: currentActiveId,
+        mode,
+        editorVersion,
+        userInstruction,
+        targetWordCount,
+        title: `Viết tiếp: ${chapter.title}`
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi trong quá trình tạo nội dung.', 'error');
     }
   };
 
   const learnWritingDNA = async (text: string) => {
     if (!storyRef.current || !text.trim()) return;
-    setIsLearning(true);
     try {
-      const result = await geminiService.extractWritingDNA(text);
-      if (result && result.data) {
-        recordUsage(result.usageMetadata);
-        setStory(prev => {
-          if (!prev) return null;
-          const updated = { ...prev, writingDNA: result.data };
-          storageService.saveStory(updated);
-          return updated;
-        });
-        alert("Đã phục hồi Hồn Văn từ văn bản mẫu!");
-      }
+      await launchServerJob('learn_writing_dna', {
+        storyId: storyRef.current.id,
+        text,
+        title: 'Trích xuất Hồn Văn (DNA)'
+      });
     } catch (e: any) {
-      console.error(e);
-      alert(e?.message || "Lỗi khi phân tích Hồn Văn.");
+      showToast(e?.message || 'Lỗi khi phân tích Hồn Văn.', 'error');
     }
-    setIsLearning(false);
   };
 
   const balanceChapterLength = async () => {
@@ -1717,40 +1613,26 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!chapter) return;
     const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
     const sourceContent = isTrans
-      ? (chapter.translatedContent || '')
-      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+      ? chapter.translatedContent || ''
+      : chapter.content?.trim()
+      ? chapter.content
+      : chapter.translatedContent || '';
 
     if (!sourceContent.trim() || sourceContent.trim().length < 30) {
-      alert("Chương hiện tại chưa có đủ nội dung để AI cân bằng độ dài.");
+      showToast('Chương hiện tại chưa có đủ nội dung để AI cân bằng độ dài.', 'error');
       return;
     }
 
-    setIsGenerating(true);
-    setGenerationStatus("Đang cân bằng dung lượng & nhịp văn chương...");
     try {
-        const result = await geminiService.balanceChapterLength(
-          sourceContent,
-          chapter.wordGoal || 2000,
-          fastWordCount(sourceContent),
-          currentStory.interactionRules,
-          currentStory.genre,
-          currentStory.negativePrompt
-        );
-        if (result && result.data && result.data.edited_text) {
-          recordUsage(result.usageMetadata);
-          if (isTrans) {
-            await updateChapterTranslation(activeChapterId, result.data.edited_text);
-          } else {
-            updateChapterContent(activeChapterId, result.data.edited_text, true);
-          }
-          bumpEditorSyncToken();
-        }
+      await storageService.flushSaves();
+      await launchServerJob('balance_chapter_length', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        editorVersion,
+        title: `Cân bằng độ dài: ${chapter.title}`
+      });
     } catch (e: any) {
-        console.error(e);
-        alert(e?.message || "Lỗi khi cân bằng độ dài chương.");
-    } finally {
-        setIsGenerating(false);
-        setGenerationStatus("");
+      showToast(e?.message || 'Lỗi khi cân bằng độ dài chương.', 'error');
     }
   };
 
@@ -1762,151 +1644,129 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
     const sourceText = isTrans
-      ? (chapter.translatedContent || '')
-      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+      ? chapter.translatedContent || ''
+      : chapter.content?.trim()
+      ? chapter.content
+      : chapter.translatedContent || '';
 
     if (!sourceText || sourceText.trim().length < 20) {
-      alert("Chương hiện tại chưa có đủ nội dung để tinh chỉnh.");
+      showToast('Chương hiện tại chưa có đủ nội dung để tinh chỉnh.', 'error');
       return;
     }
 
-    setIsGenerating(true);
-    setGenerationStatus("Đang tinh chỉnh chương với bảo tồn 100% nguyên mẫu...");
     try {
-        const ragQuery = chapter.outline?.trim() || `${chapter.title} ${sourceText.slice(0, 1500)}`;
-        const dynamicWorldBible = await getRelevantKnowledge(ragQuery, currentStory);
-        const stream = geminiService.refineChapterStream(sourceText, dynamicWorldBible, currentStory.interactionRules, currentStory.genre, currentStory.writingStyle || "", currentStory.pov, currentStory.pronounStyle, currentStory.negativePrompt, currentStory.nsfw || false, customInstruction || userInstruction, currentStory.persistentDirectives || "", currentStory.mechanics || "", currentStory.styleReference || "");
-        let accumulated = "";
-        for await (const chunk of stream) { 
-            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
-            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
-            if (chunkText) {
-                accumulated += chunkText; 
-            }
-            if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
-        }
-        const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        setPendingEdit({ chapterId: activeChapterId, original: sourceText, modified: cleanedAccumulated, isTranslation: isTrans });
-    } catch (e: any) { 
-        console.error(e);
-        alert(e?.message || "Lỗi trong quá trình tinh chỉnh văn bản.");
-    } finally { 
-        setIsGenerating(false); 
-        setGenerationStatus("");
+      await storageService.flushSaves();
+      await launchServerJob('refine_chapter', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        editorVersion,
+        customInstruction: customInstruction || userInstruction,
+        title: `Tinh chỉnh: ${chapter.title}`
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi trong quá trình tinh chỉnh văn bản.', 'error');
     }
   };
 
-  const refineSelection = async (selection: string, startIdx: number, endIdx: number, customInstruction: string) => {
+  const refineSelection = async (
+    selection: string,
+    startIdx: number,
+    endIdx: number,
+    customInstruction: string
+  ) => {
     const currentStory = storyRef.current;
     if (!currentStory || !activeChapterId) return;
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
     if (!chapter) return;
 
-    const isTrans = editorVersion === 'translation' && Boolean(chapter.translatedContent?.trim());
-    const sourceText = isTrans
-      ? (chapter.translatedContent || '')
-      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
-
-    setIsGenerating(true);
-    setGenerationStatus("Đang tinh chỉnh đoạn văn bản chọn lọc...");
-    const prefix = sourceText.substring(0, startIdx);
-    const suffix = sourceText.substring(endIdx);
     try {
-        const stream = geminiService.refineSelectionStream(selection, prefix, suffix, currentStory, customInstruction);
-        let accumulated = "";
-        for await (const chunk of stream) { 
-            const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
-            const chunkText = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
-            if (chunkText) {
-                accumulated += chunkText; 
-            }
-            if (chunk.usageMetadata) recordUsage(chunk.usageMetadata);
-        }
-        const cleanedAccumulated = accumulated.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
-        setPendingEdit({ chapterId: activeChapterId, original: sourceText, modified: prefix + cleanedAccumulated + suffix, isTranslation: isTrans });
-    } catch (e: any) { 
-        console.error(e);
-        alert(e?.message || "Lỗi trong quá trình tinh chỉnh phân đoạn.");
-    } finally { 
-        setIsGenerating(false); 
-        setGenerationStatus("");
+      await storageService.flushSaves();
+      await launchServerJob('refine_selection', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        editorVersion,
+        selection,
+        startIdx,
+        endIdx,
+        customInstruction,
+        title: `Tinh chỉnh đoạn: ${chapter.title}`
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi trong quá trình tinh chỉnh phân đoạn.', 'error');
     }
   };
 
   const applyPendingEdit = (mode: 'overwrite' | 'new_chapter' = 'new_chapter') => {
-    if (pendingEdit) {
-      const { chapterId, original, modified, isTranslation } = pendingEdit;
-      const currentStory = storyRef.current;
-      if (!currentStory) return;
-      const targetChapter = currentStory.chapters.find(c => c.id === chapterId);
-      if (!targetChapter) return;
+    if (!pendingEdit) return;
+    const { chapterId, original, modified, isTranslation } = pendingEdit;
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
+    const targetChapter = currentStory.chapters.find(c => c.id === chapterId);
+    if (!targetChapter) return;
 
-      if (mode === 'new_chapter') {
-        const cleanBaseTitle = targetChapter.title.replace(/^\[Việt Hóa\]\s*/i, '').trim();
-        const newTitle = isTranslation || targetChapter.title.startsWith('[Việt Hóa]')
-          ? (targetChapter.title.startsWith('[Việt Hóa]') ? `${targetChapter.title} (Bản mới)` : `[Việt Hóa] ${cleanBaseTitle || targetChapter.title}`)
+    if (mode === 'new_chapter') {
+      const cleanBaseTitle = targetChapter.title.replace(/^\[Việt Hóa\]\s*/i, '').trim();
+      const newTitle =
+        isTranslation || targetChapter.title.startsWith('[Việt Hóa]')
+          ? targetChapter.title.startsWith('[Việt Hóa]')
+            ? `${targetChapter.title} (Bản mới)`
+            : `[Việt Hóa] ${cleanBaseTitle || targetChapter.title}`
           : `${targetChapter.title} (Bản mới)`;
 
-        const newChapterId = generateId();
-        const newChapter: Chapter = {
-          id: newChapterId,
-          title: newTitle,
-          content: modified,
-          summary: targetChapter.summary || '',
-          outline: targetChapter.outline || '',
-          timeSetting: targetChapter.timeSetting,
-          order: targetChapter.order + 1,
-          wordGoal: targetChapter.wordGoal || 2000,
-          lastUpdated: Date.now(),
-          originalContent: original,
-          sourceChapterId: targetChapter.id,
-          isTranslation: true
-        };
+      const newChapterId = generateId();
+      const newChapter: Chapter = {
+        id: newChapterId,
+        title: newTitle,
+        content: modified,
+        summary: targetChapter.summary || '',
+        outline: targetChapter.outline || '',
+        timeSetting: targetChapter.timeSetting,
+        order: targetChapter.order + 1,
+        wordGoal: targetChapter.wordGoal || 2000,
+        lastUpdated: Date.now(),
+        originalContent: original,
+        sourceChapterId: targetChapter.id,
+        isTranslation: true
+      };
 
-        const updatedChapters: Chapter[] = [];
-        for (const ch of currentStory.chapters) {
-          if (ch.order > targetChapter.order) {
-            updatedChapters.push({ ...ch, order: ch.order + 1 });
-          } else {
-            updatedChapters.push(ch);
-          }
+      const updatedChapters: Chapter[] = [];
+      for (const ch of currentStory.chapters) {
+        if (ch.order > targetChapter.order) {
+          updatedChapters.push({ ...ch, order: ch.order + 1 });
+        } else {
+          updatedChapters.push(ch);
         }
-        updatedChapters.push(newChapter);
-        updatedChapters.sort((a, b) => a.order - b.order);
-
-        const updatedStory = { ...currentStory, chapters: updatedChapters };
-        setStory(updatedStory);
-        storyRef.current = updatedStory;
-        storageService.saveStory(updatedStory);
-        setActiveChapterId(newChapterId);
-      } else {
-        // Ghi đè: Vẫn lưu giữ bản gốc originalContent để đối soát sau này
-        const updatedChapters = currentStory.chapters.map(c => {
-          if (c.id === chapterId) {
-            if (isTranslation) {
-              return {
-                ...c,
-                translatedContent: modified,
-                translationLastUpdated: Date.now()
-              };
-            }
-            return {
-              ...c,
-              content: modified,
-              originalContent: c.originalContent || original,
-              lastUpdated: Date.now()
-            };
-          }
-          return c;
-        });
-        const updatedStory = { ...currentStory, chapters: updatedChapters };
-        setStory(updatedStory);
-        storyRef.current = updatedStory;
-        storageService.saveStory(updatedStory);
-        bumpEditorSyncToken();
       }
-      setPendingEdit(null);
+      updatedChapters.push(newChapter);
+      updatedChapters.sort((a, b) => a.order - b.order);
+
+      const updatedStory = { ...currentStory, chapters: updatedChapters };
+      setStory(updatedStory);
+      storyRef.current = updatedStory;
+      void storageService.saveStory(updatedStory, true);
+      setActiveChapterId(newChapterId);
+    } else {
+      const updatedChapters = currentStory.chapters.map(c => {
+        if (c.id === chapterId) {
+          if (isTranslation) {
+            return { ...c, translatedContent: modified, translationLastUpdated: Date.now() };
+          }
+          return {
+            ...c,
+            content: modified,
+            originalContent: c.originalContent || original,
+            lastUpdated: Date.now()
+          };
+        }
+        return c;
+      });
+      const updatedStory = { ...currentStory, chapters: updatedChapters };
+      setStory(updatedStory);
+      storyRef.current = updatedStory;
+      void storageService.saveStory(updatedStory, true);
+      bumpEditorSyncToken();
     }
+    setPendingEdit(null);
   };
 
   const discardPendingEdit = () => setPendingEdit(null);
@@ -1917,45 +1777,51 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
     if (!chapter) return;
 
-    const targetContent = editorVersion === 'translation' && chapter.translatedContent?.trim()
-      ? chapter.translatedContent
-      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+    const targetContent =
+      editorVersion === 'translation' && chapter.translatedContent?.trim()
+        ? chapter.translatedContent
+        : chapter.content?.trim()
+        ? chapter.content
+        : chapter.translatedContent || '';
 
     if (!targetContent || targetContent.trim().length < 20) {
-      alert("Chương hiện tại chưa có đủ nội dung để quét tri thức & nhân vật.");
+      showToast('Chương hiện tại chưa có đủ nội dung để quét tri thức & nhân vật.', 'error');
       return;
     }
 
-    setIsLearning(true);
     try {
-        const report = await geminiService.extractKnowledge(targetContent, currentStory, ['characters', 'world', 'mechanics', 'dna']);
-        if (report?.data) {
-            recordUsage(report.usageMetadata);
-            setConsistencyReport(report.data);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('extract_knowledge', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        editorVersion,
+        categories: ['characters', 'world', 'mechanics', 'dna'],
+        title: `Quét tri thức: ${chapter.title}`
+      });
     } catch (e: any) {
-        console.error("learnFromChapter error:", e);
-        alert(`Lỗi khi quét tri thức chương: ${e?.message || 'Không thể kết nối AI.'}`);
-    } finally { setIsLearning(false); }
+      showToast(`Lỗi khi quét tri thức chương: ${e?.message || 'Không thể kết nối AI.'}`, 'error');
+    }
   };
 
-  const learnFromText = async (text: string, categories: ExtractionCategory[] = ['characters', 'world', 'mechanics']) => {
+  const learnFromText = async (
+    text: string,
+    categories: ExtractionCategory[] = ['characters', 'world', 'mechanics']
+  ) => {
     if (!storyRef.current) return;
     if (!text || text.trim().length < 20) {
-      alert("Văn bản nạp vào quá ngắn để trích xuất tri thức.");
+      showToast('Văn bản nạp vào quá ngắn để trích xuất tri thức.', 'error');
       return;
     }
-    setIsLearning(true);
     try {
-        const report = await geminiService.extractKnowledge(text, storyRef.current, categories);
-        if (report?.data) {
-            recordUsage(report.usageMetadata);
-            setConsistencyReport(report.data);
-        }
+      await launchServerJob('extract_knowledge', {
+        storyId: storyRef.current.id,
+        text,
+        categories,
+        title: 'Trích xuất tri thức từ văn bản'
+      });
     } catch (e: any) {
-        console.error("learnFromText error:", e);
-        alert(`Lỗi khi trích xuất tri thức: ${e?.message || 'Không thể kết nối AI.'}`);
-    } finally { setIsLearning(false); }
+      showToast(`Lỗi khi trích xuất tri thức: ${e?.message || 'Không thể kết nối AI.'}`, 'error');
+    }
   };
 
   const scanStoryCharactersAndLore = async () => {
@@ -1966,35 +1832,18 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       ch => (ch.content || ch.translatedContent || '').trim().length >= 30
     );
     if (!hasContent) {
-      alert("Truyện chưa có đủ nội dung chương (tối thiểu 30 ký tự) để quét nhân vật và thế giới.");
+      showToast('Truyện chưa có đủ nội dung chương (tối thiểu 30 ký tự) để quét nhân vật và thế giới.', 'error');
       return;
     }
 
-    setIsScanningStory(true);
-    setScanProgress({ current: 0, total: 1, label: 'Đang chuẩn bị phân tích toàn truyện...' });
     try {
-      const result = await geminiService.scanStoryEntities(currentStory, (progress) => {
-        setScanProgress(progress);
+      await storageService.flushSaves();
+      await launchServerJob('scan_story_entities', {
+        storyId: currentStory.id,
+        title: `Quét nhân vật & Lore (${currentStory.title})`
       });
-      if (result?.data) {
-        if (result.usageMetadata) recordUsage(result.usageMetadata);
-        const totalFound =
-          (result.data.newCharacters?.length || 0) +
-          (result.data.characterUpdates?.length || 0) +
-          (result.data.worldLore?.length || 0) +
-          (result.data.mechanics?.length || 0);
-        if (totalFound === 0 && !result.data.writingDNA) {
-          alert("AI đã quét xong nhưng chưa phát hiện nhân vật hoặc dữ liệu thế giới mới nào.");
-        } else {
-          setConsistencyReport(result.data);
-        }
-      }
     } catch (e: any) {
-      console.error("scanStoryCharactersAndLore error:", e);
-      alert(`Lỗi khi quét nhân vật & dữ liệu truyện: ${e?.message || 'Vui lòng kiểm tra API Key hoặc thử lại.'}`);
-    } finally {
-      setIsScanningStory(false);
-      setScanProgress(null);
+      showToast(`Lỗi khi quét nhân vật & dữ liệu truyện: ${e?.message || 'Thử lại sau.'}`, 'error');
     }
   };
 
@@ -2010,17 +1859,21 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const currentStory = storyRef.current;
     if (!currentStory) return;
 
-    let updatedChars = [...(currentStory.characters || [])];
+    const updatedChars = [...(currentStory.characters || [])];
     const normalizeName = (n: string) => (n || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
-    // 1. Add / merge discovered new characters
     for (const raw of selection.newCharacters || []) {
       const name = (raw?.name || '').trim();
       if (!name) continue;
       const existingIdx = updatedChars.findIndex(c => normalizeName(c.name) === normalizeName(name));
       const cleanTraits = Array.isArray(raw.traits)
         ? raw.traits
-        : (typeof raw.traits === 'string' && raw.traits.trim() ? raw.traits.split(/[,;]/).map((s: string) => s.trim()).filter(Boolean) : []);
+        : typeof raw.traits === 'string' && raw.traits.trim()
+        ? raw.traits
+            .split(/[,;]/)
+            .map((s: string) => s.trim())
+            .filter(Boolean)
+        : [];
 
       if (existingIdx >= 0) {
         const prev = updatedChars[existingIdx];
@@ -2029,13 +1882,15 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           role: raw.role || prev.role,
           species: raw.species || prev.species,
           description: prev.description
-            ? (raw.description && !prev.description.includes(raw.description) ? `${prev.description}\n${raw.description}` : prev.description)
-            : (raw.description || ''),
+            ? raw.description && !prev.description.includes(raw.description)
+              ? `${prev.description}\n${raw.description}`
+              : prev.description
+            : raw.description || '',
           appearance: prev.appearance || raw.appearance || '',
           currentLocation: raw.currentLocation || prev.currentLocation || '',
           powerLevel: raw.powerLevel || prev.powerLevel || '',
           abilities: prev.abilities || raw.abilities || '',
-          traits: Array.from(new Set([...(prev.traits || []), ...cleanTraits])),
+          traits: Array.from(new Set([...(prev.traits || []), ...cleanTraits]))
         };
       } else {
         updatedChars.push({
@@ -2053,12 +1908,11 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           abilities: raw.abilities || '',
           knowledge: raw.knowledge || '',
           mentors: raw.mentors || '',
-          enemies: raw.enemies || '',
+          enemies: raw.enemies || ''
         });
       }
     }
 
-    // 2. Apply updates to existing characters
     for (const upd of selection.characterUpdates || []) {
       const name = (upd?.name || '').trim();
       if (!name) continue;
@@ -2066,7 +1920,9 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (idx >= 0) {
         const prev = updatedChars[idx];
         const mergedKnowledge = upd.knowledge
-          ? (prev.knowledge && !prev.knowledge.includes(upd.knowledge) ? `${prev.knowledge}\n• ${upd.knowledge}` : (prev.knowledge || upd.knowledge))
+          ? prev.knowledge && !prev.knowledge.includes(upd.knowledge)
+            ? `${prev.knowledge}\n• ${upd.knowledge}`
+            : prev.knowledge || upd.knowledge
           : prev.knowledge;
         updatedChars[idx] = {
           ...prev,
@@ -2075,12 +1931,11 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           healthStatus: upd.healthStatus || prev.healthStatus,
           currentLocation: upd.currentLocation || prev.currentLocation,
           abilities: upd.abilities || prev.abilities,
-          knowledge: mergedKnowledge,
+          knowledge: mergedKnowledge
         };
       }
     }
 
-    // 3. Append world lore & mechanics atomically
     const newLogs: KnowledgeLog[] = [];
     let nextSetting = currentStory.setting || '';
     for (const lore of selection.worldLore || []) {
@@ -2129,134 +1984,122 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setStory(updatedStory);
     storyRef.current = updatedStory;
-    await storageService.saveStory(updatedStory);
+    await storageService.saveStory(updatedStory, true);
     setConsistencyReport(null);
   };
 
   const learnStyleFromText = async (text: string) => {
     if (!storyRef.current || !text.trim()) return;
-    setIsLearning(true);
     try {
-      const result = await geminiService.extractStylisticRule(text);
-      if (result && result.text) {
-        recordUsage(result.usageMetadata);
-        const newLog: EvolutionLog = { 
-          id: generateId(), timestamp: Date.now(), type: 'derived_rule', context: text.substring(0, 100), learnedRule: result.text, isActive: true 
-        };
-        setStory(prev => {
-            if (!prev) return null;
-            const updated = { ...prev, evolutionLogs: [newLog, ...(prev.evolutionLogs || [])] };
-            storageService.saveStory(updated);
-            return updated;
-        });
-        alert(`Đã học được quy tắc mới: "${result.text}"`);
-      }
-    } catch (e) { } finally { setIsLearning(false); }
+      await launchServerJob('learn_style_from_text', {
+        storyId: storyRef.current.id,
+        text,
+        title: 'Học quy tắc văn phong'
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi học quy tắc văn phong.', 'error');
+    }
   };
 
   const learnFromInteraction = async (original: string, modified: string) => {
     if (!storyRef.current) return;
-    setIsLearning(true);
     try {
-      const result = await geminiService.deriveStylisticRule(original, modified);
-      if (result && result.text) {
-        recordUsage(result.usageMetadata);
-        const newLog: EvolutionLog = { 
-          id: generateId(), timestamp: Date.now(), type: 'derived_rule', context: "User manual edit", learnedRule: result.text, isActive: true 
-        };
-        setStory(prev => {
-            if (!prev) return null;
-            const updated = { ...prev, evolutionLogs: [newLog, ...(prev.evolutionLogs || [])] };
-            storageService.saveStory(updated);
-            return updated;
-        });
-      }
-    } catch (e) { } finally { setIsLearning(false); }
+      await launchServerJob('learn_from_interaction', {
+        storyId: storyRef.current.id,
+        original,
+        modified,
+        title: 'Học phong cách từ chỉnh sửa'
+      });
+    } catch {
+      // background non-critical
+    }
   };
 
   const toggleEvolutionLog = async (id: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const updatedLogs = prev.evolutionLogs?.map(l => l.id === id ? { ...l, isActive: !l.isActive } : l);
-        const updated = { ...prev, evolutionLogs: updatedLogs };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updatedLogs = prev.evolutionLogs?.map(l => (l.id === id ? { ...l, isActive: !l.isActive } : l));
+      const updated = { ...prev, evolutionLogs: updatedLogs };
+      void storageService.saveStory(updated);
+      return updated;
     });
   };
 
   const deleteEvolutionLog = async (id: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const updated = { ...prev, evolutionLogs: prev.evolutionLogs?.filter(l => l.id !== id) };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updated = { ...prev, evolutionLogs: prev.evolutionLogs?.filter(l => l.id !== id) };
+      void storageService.saveStory(updated);
+      return updated;
     });
   };
 
   const toggleKnowledgeLog = async (id: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const updatedLogs = prev.knowledgeLogs?.map(l => l.id === id ? { ...l, isActive: !l.isActive } : l);
-        const updated = { ...prev, knowledgeLogs: updatedLogs };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updatedLogs = prev.knowledgeLogs?.map(l => (l.id === id ? { ...l, isActive: !l.isActive } : l));
+      const updated = { ...prev, knowledgeLogs: updatedLogs };
+      void storageService.saveStory(updated);
+      return updated;
     });
   };
 
   const deleteKnowledgeLog = async (id: string) => {
     setStory(prev => {
-        if (!prev) return null;
-        const updated = { ...prev, knowledgeLogs: prev.knowledgeLogs?.filter(l => l.id !== id) };
-        storageService.saveStory(updated);
-        return updated;
+      if (!prev) return null;
+      const updated = { ...prev, knowledgeLogs: prev.knowledgeLogs?.filter(l => l.id !== id) };
+      void storageService.saveStory(updated);
+      return updated;
     });
   };
 
   const fetchWebInspiration = async (topic?: string) => {
     if (!storyRef.current) return;
-    setIsSearchingWeb(true);
     try {
-        const result = await geminiService.searchCreativeInspiration(storyRef.current, topic);
-        if (result) {
-            recordUsage(result.usageMetadata);
-            setWebInspiration(result.data);
-        }
-    } catch (e) { } finally { setIsSearchingWeb(false); }
+      await launchServerJob('fetch_web_inspiration', {
+        storyId: storyRef.current.id,
+        topic,
+        title: 'Tìm cảm hứng sáng tác Web'
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi khi tìm cảm hứng Web.', 'error');
+    }
   };
 
   const clearWebInspiration = () => setWebInspiration(null);
 
   const expandSettingWithAI = async (input: string): Promise<string> => {
-      try {
-          const result = await geminiService.expandWorldBuilding(input);
-          if (result) {
-              recordUsage(result.usageMetadata);
-              return result.text || input;
-          }
-          return input;
-      } catch (e) { return input; }
+    try {
+      return await serverSyncClient.runAiUtility<string>('expandSettingWithAI', { input });
+    } catch {
+      return input;
+    }
   };
 
-  const suggestWorldSettings = async (title: string, genre: string, synopsis: string, timeline: string): Promise<any> => {
-      try {
-          const result = await geminiService.suggestWorldSettings(title, genre, synopsis, timeline);
-          if (result) {
-              recordUsage(result.usageMetadata);
-              return result.data;
-          }
-          return null;
-      } catch (e) { return null; }
+  const suggestWorldSettings = async (
+    title: string,
+    genre: string,
+    synopsis: string,
+    timeline: string
+  ): Promise<any> => {
+    try {
+      return await serverSyncClient.runAiUtility('suggestWorldSettings', {
+        title,
+        genre,
+        synopsis,
+        timeline
+      });
+    } catch {
+      return null;
+    }
   };
 
   const suggestMainCharacter = async (title: string, genre: string, synopsis: string): Promise<any> => {
-      try {
-          const result = await geminiService.suggestMainCharacter(title, genre, synopsis);
-          if (result) {
-              recordUsage(result.usageMetadata);
-              return result.data;
-          }
-          return null;
-      } catch (e) { return null; }
+    try {
+      return await serverSyncClient.runAiUtility('suggestMainCharacter', { title, genre, synopsis });
+    } catch {
+      return null;
+    }
   };
 
   const auditStory = async () => {
@@ -2264,29 +2107,26 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!currentStory) return;
 
     const hasAnyContent =
-      (currentStory.chapters || []).some(
-        ch => Boolean(ch.content?.trim() || ch.translatedContent?.trim() || ch.outline?.trim() || ch.summary?.trim())
+      (currentStory.chapters || []).some(ch =>
+        Boolean(ch.content?.trim() || ch.translatedContent?.trim() || ch.outline?.trim() || ch.summary?.trim())
       ) ||
       Boolean(currentStory.planning?.trim() || currentStory.setting?.trim()) ||
       (currentStory.characters || []).length > 0;
 
     if (!hasAnyContent) {
-      alert("Truyện hiện chưa có đủ dữ liệu (nội dung chương, dàn ý hoặc hồ sơ nhân vật) để kiểm toán.");
+      showToast('Truyện hiện chưa có đủ dữ liệu (nội dung chương, dàn ý hoặc hồ sơ nhân vật) để kiểm toán.', 'error');
       return;
     }
 
-    setIsAuditing(true);
     try {
-        const report = await geminiService.auditStoryConsistency(currentStory, activeChapterId || undefined);
-        if (report?.data) {
-            recordUsage(report.usageMetadata);
-            setAuditReport(report.data);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('audit_story', {
+        storyId: currentStory.id,
+        focusChapterId: activeChapterId || undefined,
+        title: `Kiểm toán toàn truyện (${currentStory.title})`
+      });
     } catch (e: any) {
-        console.error("Story audit failed:", e);
-        alert(`Lỗi khi kiểm toán toàn truyện: ${e?.message || 'Không thể kết nối AI. Vui lòng kiểm tra lại API Key.'}`);
-    } finally {
-        setIsAuditing(false);
+      showToast(`Lỗi khi kiểm toán toàn truyện: ${e?.message || 'Thử lại sau.'}`, 'error');
     }
   };
 
@@ -2299,30 +2139,25 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const targetContent =
       editorVersion === 'translation' && chapter.translatedContent?.trim()
         ? chapter.translatedContent
-        : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
-
-    const targetTitle =
-      editorVersion === 'translation' && chapter.translatedTitle?.trim()
-        ? chapter.translatedTitle
-        : chapter.title;
+        : chapter.content?.trim()
+        ? chapter.content
+        : chapter.translatedContent || '';
 
     if (!targetContent || targetContent.trim().length < 20) {
-      alert("Chương hiện tại chưa có đủ nội dung để kiểm toán logic.");
+      showToast('Chương hiện tại chưa có đủ nội dung để kiểm toán logic.', 'error');
       return;
     }
 
-    setIsAuditingChapter(true);
     try {
-        const report = await geminiService.auditChapterLogic(targetContent, targetTitle, currentStory, chapter.id);
-        if (report?.data) {
-            recordUsage(report.usageMetadata);
-            setChapterAuditReport(report.data);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('audit_chapter', {
+        storyId: currentStory.id,
+        chapterId: chapter.id,
+        editorVersion,
+        title: `Kiểm toán logic: ${chapter.title}`
+      });
     } catch (e: any) {
-        console.error("Chapter logic audit failed:", e);
-        alert(`Lỗi khi kiểm toán logic chương: ${e?.message || 'Không thể kết nối AI. Vui lòng kiểm tra lại API Key.'}`);
-    } finally {
-        setIsAuditingChapter(false);
+      showToast(`Lỗi khi kiểm toán logic chương: ${e?.message || 'Thử lại sau.'}`, 'error');
     }
   };
 
@@ -2332,26 +2167,29 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
     if (!chapter) return;
 
-    const targetContent = editorVersion === 'translation' && chapter.translatedContent?.trim()
-      ? chapter.translatedContent
-      : (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || ''));
+    const targetContent =
+      editorVersion === 'translation' && chapter.translatedContent?.trim()
+        ? chapter.translatedContent
+        : chapter.content?.trim()
+        ? chapter.content
+        : chapter.translatedContent || '';
 
     if (!targetContent || targetContent.trim().length < 20) {
-      alert("Chương hiện tại chưa có đủ nội dung để phân tích từ vựng.");
+      showToast('Chương hiện tại chưa có đủ nội dung để phân tích từ vựng.', 'error');
       return;
     }
 
-    setIsCheckingErrors(true);
     try {
-        const report = await geminiService.analyzeVocabulary(targetContent, currentStory.interactionRules || "");
-        if (report?.data) {
-            recordUsage(report.usageMetadata);
-            setVocabularyInsights(report.data);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('analyze_vocabulary', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        editorVersion,
+        title: `Phân tích từ vựng: ${chapter.title}`
+      });
     } catch (e: any) {
-        console.error(e);
-        alert(e?.message || "Lỗi khi phân tích chất lượng văn phong.");
-    } finally { setIsCheckingErrors(false); }
+      showToast(e?.message || 'Lỗi khi phân tích chất lượng văn phong.', 'error');
+    }
   };
 
   const suggestActiveChapterOutline = async () => {
@@ -2360,51 +2198,36 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const chapter = currentStory.chapters.find(c => c.id === activeChapterId);
     if (!chapter) return;
 
-    setIsGeneratingOutline(true);
     try {
-        const sorted = [...currentStory.chapters].sort((a, b) => a.order - b.order);
-        const curIdx = sorted.findIndex(c => c.id === activeChapterId);
-        const prevCh = curIdx > 0 ? sorted[curIdx - 1] : null;
-
-        const currentBody = (chapter.content?.trim() ? chapter.content : (chapter.translatedContent || '')).slice(-2000);
-        const shortTermMemory = currentBody || (prevCh ? `[Cuối chương trước - ${prevCh.title}]:\n${(prevCh.content || prevCh.translatedContent || '').slice(-1500)}` : '');
-        const longTermMemory = sorted
-            .slice(Math.max(0, curIdx - 3), curIdx)
-            .map(c => `[${c.title}]: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`)
-            .join('\n');
-        
-        const result = await geminiService.suggestOutline(chapter, currentStory, userInstruction, longTermMemory, shortTermMemory);
-        if (result && result.text) {
-            recordUsage(result.usageMetadata);
-            updateChapterOutline(activeChapterId, result.text);
-        }
+      await storageService.flushSaves();
+      await launchServerJob('suggest_outline', {
+        storyId: currentStory.id,
+        chapterId: activeChapterId,
+        userInstruction,
+        title: `Gợi ý đề cương: ${chapter.title}`
+      });
     } catch (e: any) {
-        console.error(e);
-        alert(e?.message || "Lỗi khi AI gợi ý đề cương chương.");
-    } finally { setIsGeneratingOutline(false); }
+      showToast(e?.message || 'Lỗi khi AI gợi ý đề cương chương.', 'error');
+    }
   };
 
   const generateChapterVideo = async () => {
     if (!storyRef.current || !activeChapterId) return;
-    const chapter = storyRef.current.chapters.find(c => c.id === activeChapterId)!;
-    if (!chapter.summary) { alert("Cần tóm tắt chương trước khi tạo video."); return; }
-    
-    setIsGeneratingVideo(true);
-    setVideoGenerationStatus("Đang khởi tạo Veo Engine...");
+    const chapter = storyRef.current.chapters.find(c => c.id === activeChapterId);
+    if (!chapter?.summary) {
+      showToast('Cần tóm tắt chương trước khi tạo video.', 'error');
+      return;
+    }
     try {
-        const url = await geminiService.generateVideo(chapter.summary, storyRef.current.genre);
-        if (url) {
-            setGeneratedVideoUrl(url);
-            setStory(prev => {
-                if (!prev) return null;
-                const updated = { ...prev, chapters: prev.chapters.map(c => c.id === activeChapterId ? { ...c, videoUrl: url } : c) };
-                storageService.saveStory(updated);
-                return updated;
-            });
-        }
-    } catch (e) { 
-        setVideoGenerationStatus("Lỗi tạo video. Thử lại sau.");
-    } finally { setIsGeneratingVideo(false); }
+      await storageService.flushSaves();
+      await launchServerJob('generate_video', {
+        storyId: storyRef.current.id,
+        chapterId: activeChapterId,
+        title: `Tạo Video Trailer: ${chapter.title}`
+      });
+    } catch (e: any) {
+      showToast(e?.message || 'Lỗi tạo video.', 'error');
+    }
   };
 
   const clearGeneratedVideo = () => setGeneratedVideoUrl(null);
@@ -2414,603 +2237,692 @@ export const StoryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const clearVocabularyInsights = () => setVocabularyInsights(null);
 
   const analyzeStoryPlotArc = useCallback(async () => {
-      const currentStory = storyRef.current;
-      if (!currentStory) return;
+    const currentStory = storyRef.current;
+    if (!currentStory) return;
 
-      const hasSubstantialContent = (currentStory.chapters || []).some(
-        ch => (ch.content || ch.translatedContent || ch.summary || ch.outline || '').trim().length >= 30
+    const hasSubstantialContent = (currentStory.chapters || []).some(
+      ch => (ch.content || ch.translatedContent || ch.summary || ch.outline || '').trim().length >= 30
+    );
+    if (!hasSubstantialContent) {
+      setPlotArcError(
+        'Truyện chưa đủ dữ liệu (cần ít nhất 1 chương có nội dung, tóm tắt hoặc đề cương) để AI phân tích mạch truyện.'
       );
-      if (!hasSubstantialContent) {
-        setPlotArcError("Truyện chưa đủ dữ liệu (cần ít nhất 1 chương có nội dung, tóm tắt hoặc đề cương) để AI phân tích mạch truyện.");
-        return;
-      }
+      return;
+    }
 
-      setPlotArcError(null);
-      setIsAnalyzingPlotArc(true);
-      try {
-          const result = await geminiService.analyzePlotArc(currentStory);
-          if (result?.data) {
-              recordUsage(result.usageMetadata);
-              setPlotArcAnalysis(result.data);
-          }
-      } catch (e: any) {
-          console.error("analyzeStoryPlotArc error:", e);
-          setPlotArcError(e?.message || "Không thể phân tích mạch truyện lúc này. Vui lòng kiểm tra API Key hoặc thử lại.");
-      }
-      finally { setIsAnalyzingPlotArc(false); }
-  }, [recordUsage]);
+    setPlotArcError(null);
+    try {
+      await storageService.flushSaves();
+      await launchServerJob('analyze_plot_arc', {
+        storyId: currentStory.id,
+        title: `Phân tích Plot Arc (${currentStory.title})`
+      });
+    } catch (e: any) {
+      setPlotArcError(e?.message || 'Không thể phân tích mạch truyện lúc này.');
+    }
+  }, [launchServerJob]);
 
   const exportStory = (id?: string) => {
-      const targetId = id || storyRef.current?.id;
-      if (!targetId) return;
-      
-      storageService.getStory(targetId).then(s => {
-          if (!s) return;
-          const backup: BackupData = { version: 1, story: s, vectors: [], exportedAt: Date.now() };
-          const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `Aetheria_Backup_${s.title.replace(/\s+/g, '_')}_${Date.now()}.json`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
-      });
-  };
+    const targetId = id || storyRef.current?.id;
+    if (!targetId) return;
 
-  const exportStoryEpub = async (id?: string) => {
-      const targetId = id || storyRef.current?.id;
-      if (!targetId) return;
-      const s = await storageService.getStory(targetId);
+    storageService.getStory(targetId).then(s => {
       if (!s) return;
-
-      const sortedChapters = [...s.chapters].sort((a, b) => a.order - b.order);
-      await downloadEpubFile({
-          title: s.title,
-          author: 'Aetheria Studio',
-          genre: s.genre || 'Tiểu thuyết',
-          description: s.synopsis || '',
-          chapters: sortedChapters.map((ch, idx) => ({
-              title: ch.title || `Chương ${idx + 1}`,
-              content: ch.content || ''
-          }))
-      });
-  };
-
-  const exportAllStories = async () => {
-      const allStories = await storageService.getAllStories();
-      if (allStories.length === 0) {
-          alert("Không có truyện nào để sao lưu.");
-          return;
-      }
-      const backup = {
-          version: 1,
-          stories: allStories,
-          exportedAt: Date.now()
-      };
+      const backup: BackupData = { version: 1, story: s, vectors: [], exportedAt: Date.now() };
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Aetheria_Full_Backup_${Date.now()}.json`;
+      link.download = `Aetheria_Backup_${s.title.replace(/\s+/g, '_')}_${Date.now()}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    });
+  };
+
+  const exportStoryEpub = async (id?: string) => {
+    const targetId = id || storyRef.current?.id;
+    if (!targetId) return;
+    const s = await storageService.getStory(targetId);
+    if (!s) return;
+
+    const sortedChapters = [...s.chapters].sort((a, b) => a.order - b.order);
+    await downloadEpubFile({
+      title: s.title,
+      author: 'Aetheria Studio',
+      genre: s.genre || 'Tiểu thuyết',
+      description: s.synopsis || '',
+      chapters: sortedChapters.map((ch, idx) => ({
+        title: ch.title || `Chương ${idx + 1}`,
+        content: ch.content || ''
+      }))
+    });
+  };
+
+  const exportAllStories = async () => {
+    const allStories = await storageService.getAllStories();
+    if (allStories.length === 0) {
+      showToast('Không có truyện nào để sao lưu.', 'error');
+      return;
+    }
+    const backup = { version: 1, stories: allStories, exportedAt: Date.now() };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Aetheria_Full_Backup_${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const importStory = async (file: File) => {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-          try {
-              const json = JSON.parse(e.target?.result as string);
-              
-              // Handle full backup (multiple stories)
-              if (json.stories && Array.isArray(json.stories)) {
-                  for (const s of json.stories) {
-                      const newId = generateId();
-                      s.id = newId;
-                      s.chapters = s.chapters.map((c: any) => ({ ...c, id: generateId() }));
-                      s.characters = s.characters.map((c: any) => ({ ...c, id: generateId() }));
-                      await storageService.saveStory(s, true);
-                  }
-                  await loadStories(true);
-                  alert(`Đã nhập thành công ${json.stories.length} truyện!`);
-                  return;
-              }
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const json = JSON.parse(e.target?.result as string);
+        if (json.stories && Array.isArray(json.stories)) {
+          for (const s of json.stories) {
+            s.id = generateId();
+            s.chapters = s.chapters.map((c: any) => ({ ...c, id: generateId() }));
+            s.characters = s.characters.map((c: any) => ({ ...c, id: generateId() }));
+            await storageService.saveStory(s, true);
+          }
+          await loadStories(true);
+          showToast(`Đã nhập thành công ${json.stories.length} truyện!`, 'success');
+          return;
+        }
 
-              // Handle single story backup
-              const s = json.story || json; 
-              if (s && s.title) {
-                  const newId = generateId();
-                  s.id = newId;
-                  s.chapters = (s.chapters || []).map((c: any) => ({ ...c, id: generateId() }));
-                  s.characters = (s.characters || []).map((c: any) => ({ ...c, id: generateId() }));
-                  await storageService.saveStory(s, true);
-                  await loadStories(true);
-                  alert("Nhập truyện thành công!");
-              } else { throw new Error("Invalid format"); }
-          } catch (err) { alert("Lỗi file không hợp lệ."); }
-      };
-      reader.readAsText(file);
+        const s = json.story || json;
+        if (s && s.title) {
+          s.id = generateId();
+          s.chapters = (s.chapters || []).map((c: any) => ({ ...c, id: generateId() }));
+          s.characters = (s.characters || []).map((c: any) => ({ ...c, id: generateId() }));
+          await storageService.saveStory(s, true);
+          await loadStories(true);
+          showToast('Nhập truyện thành công!', 'success');
+        } else {
+          throw new Error('Invalid format');
+        }
+      } catch {
+        showToast('Lỗi file không hợp lệ.', 'error');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const importStoryFromEpub = async (file: File) => {
-      try {
-          const parsed = await parseEpubFile(file);
-          if (!parsed.chapters || parsed.chapters.length === 0) {
-              alert("Không tìm thấy nội dung chương trong file EPUB này.");
-              return;
-          }
-
-          const finalChapters: Chapter[] = [];
-          for (const raw of parsed.chapters) {
-              const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
-              if (chunks.length <= 1) {
-                  finalChapters.push({
-                      id: generateId(),
-                      title: raw.title,
-                      content: raw.content,
-                      summary: '',
-                      outline: '',
-                      order: finalChapters.length + 1,
-                      wordGoal: 2000,
-                      lastUpdated: Date.now()
-                  });
-              } else {
-                  chunks.forEach((chunk, idx) => {
-                      finalChapters.push({
-                          id: generateId(),
-                          title: `${raw.title} (Phần ${idx + 1})`,
-                          content: chunk,
-                          summary: '',
-                          outline: '',
-                          order: finalChapters.length + 1,
-                          wordGoal: 2000,
-                          lastUpdated: Date.now()
-                      });
-                  });
-              }
-          }
-
-          const newStory: Story = {
-              id: generateId(),
-              title: parsed.title || file.name.replace(/\.epub$/i, ''),
-              synopsis: parsed.description || '',
-              genre: parsed.genre || 'Chưa xác định',
-              planning: '',
-              persistentDirectives: '',
-              setting: '',
-              currentTimeline: '',
-              mechanics: '',
-              interactionRules: '',
-              logistics: '',
-              trade: '',
-              economy: '',
-              maps: '',
-              officials: '',
-              writingStyle: '',
-              pov: 'Ngôi thứ 3 (Toàn tri)',
-              pronounStyle: '',
-              negativePrompt: '',
-              nsfw: false,
-              hasSystem: false,
-              isFanfiction: false,
-              referenceDocs: [],
-              evolutionLogs: [],
-              knowledgeLogs: [],
-              styleReference: '',
-              pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
-              planningChatHistory: [],
-              plotChatHistory: [],
-              characters: [],
-              createdAt: Date.now(),
-              chapters: finalChapters
-          };
-
-          await storageService.saveStory(newStory, true);
-          await loadStories(true);
-          alert(`Đã tải lên truyện thành công từ file EPUB với ${finalChapters.length} chương!`);
-      } catch (err: any) {
-          console.error("Lỗi khi đọc file EPUB:", err);
-          alert(`Lỗi khi xử lý file EPUB: ${err?.message || 'Tệp không đúng định dạng chuẩn'}`);
+    try {
+      const parsed = await parseEpubFile(file);
+      if (!parsed.chapters || parsed.chapters.length === 0) {
+        showToast('Không tìm thấy nội dung chương trong file EPUB này.', 'error');
+        return;
       }
+
+      const finalChapters: Chapter[] = [];
+      for (const raw of parsed.chapters) {
+        const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+        if (chunks.length <= 1) {
+          finalChapters.push({
+            id: generateId(),
+            title: raw.title,
+            content: raw.content,
+            summary: '',
+            outline: '',
+            order: finalChapters.length + 1,
+            wordGoal: 2000,
+            lastUpdated: Date.now()
+          });
+        } else {
+          chunks.forEach((chunk, idx) => {
+            finalChapters.push({
+              id: generateId(),
+              title: `${raw.title} (Phần ${idx + 1})`,
+              content: chunk,
+              summary: '',
+              outline: '',
+              order: finalChapters.length + 1,
+              wordGoal: 2000,
+              lastUpdated: Date.now()
+            });
+          });
+        }
+      }
+
+      const newStory: Story = {
+        id: generateId(),
+        title: parsed.title || file.name.replace(/\.epub$/i, ''),
+        synopsis: parsed.description || '',
+        genre: parsed.genre || 'Chưa xác định',
+        planning: '',
+        persistentDirectives: '',
+        setting: '',
+        currentTimeline: '',
+        mechanics: '',
+        interactionRules: '',
+        logistics: '',
+        trade: '',
+        economy: '',
+        maps: '',
+        officials: '',
+        writingStyle: '',
+        pov: 'Ngôi thứ 3 (Toàn tri)',
+        pronounStyle: '',
+        negativePrompt: '',
+        nsfw: false,
+        hasSystem: false,
+        isFanfiction: false,
+        referenceDocs: [],
+        evolutionLogs: [],
+        knowledgeLogs: [],
+        styleReference: '',
+        pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
+        planningChatHistory: [],
+        plotChatHistory: [],
+        characters: [],
+        createdAt: Date.now(),
+        chapters: finalChapters
+      };
+
+      await storageService.saveStory(newStory, true);
+      await loadStories(true);
+      showToast(`Đã tải lên truyện thành công từ file EPUB với ${finalChapters.length} chương!`, 'success');
+    } catch (err: any) {
+      showToast(`Lỗi khi xử lý file EPUB: ${err?.message || 'Tệp không đúng định dạng chuẩn'}`, 'error');
+    }
   };
 
   const importStoryFromTxt = async (file: File) => {
-      if (file.name.toLowerCase().endsWith('.epub')) {
-          return importStoryFromEpub(file);
-      }
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-          try {
-              const text = e.target?.result as string;
-              if (!text) return;
+    if (file.name.toLowerCase().endsWith('.epub')) {
+      return importStoryFromEpub(file);
+    }
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const text = e.target?.result as string;
+        if (!text) return;
 
-              const lines = text.split('\n');
-              const title = lines[0].trim() || file.name.replace('.txt', '');
-              
-              // Hỗ trợ nhận diện tiêu đề chương tiếng Việt (Chương, Tiết, Hồi), tiếng Anh (Chapter) và tiếng Trung (第X章, 第X回, 第一章...)
-              const chapterRegex = /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
-              const rawChapters: { title: string, content: string }[] = [];
-              let currentTitle = 'Chương 1';
-              let currentContent: string[] = [];
+        const lines = text.split('\n');
+        const title = lines[0].trim() || file.name.replace('.txt', '');
+        const chapterRegex =
+          /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
+        const rawChapters: { title: string; content: string }[] = [];
+        let currentTitle = 'Chương 1';
+        let currentContent: string[] = [];
 
-              for (let i = 0; i < lines.length; i++) {
-                  const line = lines[i].trim();
-                  if (chapterRegex.test(line)) {
-                      if (currentContent.length > 0 || rawChapters.length > 0) {
-                          rawChapters.push({
-                              title: currentTitle,
-                              content: currentContent.join('\n').trim()
-                          });
-                      }
-                      currentTitle = line;
-                      currentContent = [];
-                  } else {
-                      currentContent.push(lines[i]);
-                  }
-              }
-
-              if (currentContent.length > 0 || rawChapters.length === 0) {
-                  rawChapters.push({
-                      title: currentTitle,
-                      content: currentContent.join('\n').trim()
-                  });
-              }
-
-              // Smart splitting for large chapters
-              const finalChapters: Chapter[] = [];
-              for (const raw of rawChapters) {
-                  const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
-                  if (chunks.length <= 1) {
-                      finalChapters.push({
-                          id: generateId(),
-                          title: raw.title,
-                          content: raw.content,
-                          summary: '',
-                          outline: '',
-                          order: finalChapters.length + 1,
-                          wordGoal: 2000,
-                          lastUpdated: Date.now()
-                      });
-                  } else {
-                      chunks.forEach((chunk, idx) => {
-                          finalChapters.push({
-                              id: generateId(),
-                              title: `${raw.title} (Phần ${idx + 1})`,
-                              content: chunk,
-                              summary: '',
-                              outline: '',
-                              order: finalChapters.length + 1,
-                              wordGoal: 2000,
-                              lastUpdated: Date.now()
-                          });
-                      });
-                  }
-              }
-
-              const newStory: Story = {
-                  id: generateId(),
-                  title: title,
-                  synopsis: '',
-                  genre: 'Chưa xác định',
-                  planning: '',
-                  persistentDirectives: '',
-                  setting: '',
-                  currentTimeline: '',
-                  mechanics: '',
-                  interactionRules: '',
-                  logistics: '',
-                  trade: '',
-                  economy: '',
-                  maps: '',
-                  officials: '',
-                  writingStyle: '',
-                  pov: 'Ngôi thứ 3 (Toàn tri)',
-                  pronounStyle: '',
-                  negativePrompt: '',
-                  nsfw: false,
-                  hasSystem: false,
-                  isFanfiction: false,
-                  referenceDocs: [],
-                  evolutionLogs: [],
-                  knowledgeLogs: [],
-                  styleReference: '',
-                  pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
-                  planningChatHistory: [],
-                  plotChatHistory: [],
-                  characters: [],
-                  createdAt: Date.now(),
-                  chapters: finalChapters
-              };
-
-              await storageService.saveStory(newStory, true);
-              await loadStories(true);
-              alert(`Tải lên truyện thành công với ${finalChapters.length} chương!`);
-          } catch (err) {
-              console.error(err);
-              alert("Lỗi khi xử lý file TXT.");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (chapterRegex.test(line)) {
+            if (currentContent.length > 0 || rawChapters.length > 0) {
+              rawChapters.push({ title: currentTitle, content: currentContent.join('\n').trim() });
+            }
+            currentTitle = line;
+            currentContent = [];
+          } else {
+            currentContent.push(lines[i]);
           }
-      };
-      reader.readAsText(file);
+        }
+
+        if (currentContent.length > 0 || rawChapters.length === 0) {
+          rawChapters.push({ title: currentTitle, content: currentContent.join('\n').trim() });
+        }
+
+        const finalChapters: Chapter[] = [];
+        for (const raw of rawChapters) {
+          const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+          if (chunks.length <= 1) {
+            finalChapters.push({
+              id: generateId(),
+              title: raw.title,
+              content: raw.content,
+              summary: '',
+              outline: '',
+              order: finalChapters.length + 1,
+              wordGoal: 2000,
+              lastUpdated: Date.now()
+            });
+          } else {
+            chunks.forEach((chunk, idx) => {
+              finalChapters.push({
+                id: generateId(),
+                title: `${raw.title} (Phần ${idx + 1})`,
+                content: chunk,
+                summary: '',
+                outline: '',
+                order: finalChapters.length + 1,
+                wordGoal: 2000,
+                lastUpdated: Date.now()
+              });
+            });
+          }
+        }
+
+        const newStory: Story = {
+          id: generateId(),
+          title,
+          synopsis: '',
+          genre: 'Chưa xác định',
+          planning: '',
+          persistentDirectives: '',
+          setting: '',
+          currentTimeline: '',
+          mechanics: '',
+          interactionRules: '',
+          logistics: '',
+          trade: '',
+          economy: '',
+          maps: '',
+          officials: '',
+          writingStyle: '',
+          pov: 'Ngôi thứ 3 (Toàn tri)',
+          pronounStyle: '',
+          negativePrompt: '',
+          nsfw: false,
+          hasSystem: false,
+          isFanfiction: false,
+          referenceDocs: [],
+          evolutionLogs: [],
+          knowledgeLogs: [],
+          styleReference: '',
+          pinnedMemory: { physical: [], emotional: [], relational: [], world: [], inventory: [] },
+          planningChatHistory: [],
+          plotChatHistory: [],
+          characters: [],
+          createdAt: Date.now(),
+          chapters: finalChapters
+        };
+
+        await storageService.saveStory(newStory, true);
+        await loadStories(true);
+        showToast(`Tải lên truyện thành công với ${finalChapters.length} chương!`, 'success');
+      } catch {
+        showToast('Lỗi khi xử lý file TXT.', 'error');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const importChaptersFromEpub = async (file: File) => {
-      if (!storyRef.current) return;
-      try {
-          const parsed = await parseEpubFile(file);
-          if (!parsed.chapters || parsed.chapters.length === 0) {
-              alert("Không tìm thấy nội dung chương trong file EPUB này.");
-              return;
-          }
-
-          const currentChapters = [...storyRef.current.chapters];
-          let orderCounter = currentChapters.length;
-          const newChapters: Chapter[] = [];
-
-          for (const raw of parsed.chapters) {
-              const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
-              if (chunks.length <= 1) {
-                  orderCounter++;
-                  newChapters.push({
-                      id: generateId(),
-                      title: raw.title,
-                      content: raw.content,
-                      summary: '',
-                      outline: '',
-                      order: orderCounter,
-                      wordGoal: 2000,
-                      lastUpdated: Date.now()
-                  });
-              } else {
-                  chunks.forEach((chunk, idx) => {
-                      orderCounter++;
-                      newChapters.push({
-                          id: generateId(),
-                          title: `${raw.title} (Phần ${idx + 1})`,
-                          content: chunk,
-                          summary: '',
-                          outline: '',
-                          order: orderCounter,
-                          wordGoal: 2000,
-                          lastUpdated: Date.now()
-                      });
-                  });
-              }
-          }
-
-          const updatedStory = {
-              ...storyRef.current,
-              chapters: [...currentChapters, ...newChapters]
-          };
-
-          setStory(updatedStory);
-          storyRef.current = updatedStory;
-          await storageService.saveStory(updatedStory);
-          bumpEditorSyncToken();
-          alert(`Đã thêm thành công ${newChapters.length} chương mới từ file EPUB!`);
-      } catch (err: any) {
-          console.error("Lỗi nạp chương từ EPUB:", err);
-          alert(`Lỗi khi nạp chương từ file EPUB: ${err?.message || 'Tệp không đúng định dạng'}`);
+    if (!storyRef.current) return;
+    try {
+      const parsed = await parseEpubFile(file);
+      if (!parsed.chapters || parsed.chapters.length === 0) {
+        showToast('Không tìm thấy nội dung chương trong file EPUB này.', 'error');
+        return;
       }
+
+      const currentChapters = [...storyRef.current.chapters];
+      let orderCounter = currentChapters.length;
+      const newChapters: Chapter[] = [];
+
+      for (const raw of parsed.chapters) {
+        const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+        if (chunks.length <= 1) {
+          orderCounter++;
+          newChapters.push({
+            id: generateId(),
+            title: raw.title,
+            content: raw.content,
+            summary: '',
+            outline: '',
+            order: orderCounter,
+            wordGoal: 2000,
+            lastUpdated: Date.now()
+          });
+        } else {
+          chunks.forEach((chunk, idx) => {
+            orderCounter++;
+            newChapters.push({
+              id: generateId(),
+              title: `${raw.title} (Phần ${idx + 1})`,
+              content: chunk,
+              summary: '',
+              outline: '',
+              order: orderCounter,
+              wordGoal: 2000,
+              lastUpdated: Date.now()
+            });
+          });
+        }
+      }
+
+      const updatedStory = { ...storyRef.current, chapters: [...currentChapters, ...newChapters] };
+      setStory(updatedStory);
+      storyRef.current = updatedStory;
+      await storageService.saveStory(updatedStory, true);
+      bumpEditorSyncToken();
+      showToast(`Đã thêm thành công ${newChapters.length} chương mới từ file EPUB!`, 'success');
+    } catch (err: any) {
+      showToast(`Lỗi khi nạp chương từ file EPUB: ${err?.message || 'Tệp không đúng định dạng'}`, 'error');
+    }
   };
 
   const importChaptersFromTxt = async (file: File) => {
-      if (file.name.toLowerCase().endsWith('.epub')) {
-          return importChaptersFromEpub(file);
-      }
-      if (!storyRef.current) return;
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-          try {
-              const text = e.target?.result as string;
-              if (!text) return;
+    if (file.name.toLowerCase().endsWith('.epub')) {
+      return importChaptersFromEpub(file);
+    }
+    if (!storyRef.current) return;
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const text = e.target?.result as string;
+        if (!text) return;
 
-              const lines = text.split('\n');
-              // Hỗ trợ nhận diện tiêu đề chương tiếng Việt (Chương, Tiết, Hồi), tiếng Anh (Chapter) và tiếng Trung (第X章, 第X回, 第一章...)
-              const chapterRegex = /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
-              const rawChapters: { title: string, content: string }[] = [];
-              let currentTitle = `Chương ${storyRef.current!.chapters.length + 1}`;
-              let currentContent: string[] = [];
+        const lines = text.split('\n');
+        const chapterRegex =
+          /^(Chương|Chapter|第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回节集卷部篇]|Tiết|Hồi)\s*/i;
+        const rawChapters: { title: string; content: string }[] = [];
+        let currentTitle = `Chương ${storyRef.current!.chapters.length + 1}`;
+        let currentContent: string[] = [];
 
-              for (let i = 0; i < lines.length; i++) {
-                  const line = lines[i].trim();
-                  if (chapterRegex.test(line)) {
-                      if (currentContent.length > 0 || rawChapters.length > 0) {
-                          rawChapters.push({
-                              title: currentTitle,
-                              content: currentContent.join('\n').trim()
-                          });
-                      }
-                      currentTitle = line;
-                      currentContent = [];
-                  } else {
-                      currentContent.push(lines[i]);
-                  }
-              }
-
-              if (currentContent.length > 0 || rawChapters.length === 0) {
-                  rawChapters.push({
-                      title: currentTitle,
-                      content: currentContent.join('\n').trim()
-                  });
-              }
-
-              const newChapters: Chapter[] = [];
-              const startOrder = storyRef.current!.chapters.length;
-
-              for (const raw of rawChapters) {
-                  const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
-                  if (chunks.length <= 1) {
-                      newChapters.push({
-                          id: generateId(),
-                          title: raw.title,
-                          content: raw.content,
-                          summary: '',
-                          outline: '',
-                          order: startOrder + newChapters.length + 1,
-                          wordGoal: 2000,
-                          lastUpdated: Date.now()
-                      });
-                  } else {
-                      chunks.forEach((chunk, idx) => {
-                          newChapters.push({
-                              id: generateId(),
-                              title: `${raw.title} (Phần ${idx + 1})`,
-                              content: chunk,
-                              summary: '',
-                              outline: '',
-                              order: startOrder + newChapters.length + 1,
-                              wordGoal: 2000,
-                              lastUpdated: Date.now()
-                          });
-                      });
-                  }
-              }
-
-              if (newChapters.length > 0) {
-                  const updatedStory = {
-                      ...storyRef.current,
-                      chapters: [...storyRef.current!.chapters, ...newChapters]
-                  };
-                  setStory(updatedStory);
-                  await storageService.saveStory(updatedStory);
-                  alert(`Đã thêm ${newChapters.length} chương mới từ file TXT!`);
-              }
-          } catch (err) {
-              console.error(err);
-              alert("Lỗi khi nhập chương từ file TXT.");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (chapterRegex.test(line)) {
+            if (currentContent.length > 0 || rawChapters.length > 0) {
+              rawChapters.push({ title: currentTitle, content: currentContent.join('\n').trim() });
+            }
+            currentTitle = line;
+            currentContent = [];
+          } else {
+            currentContent.push(lines[i]);
           }
-      };
-      reader.readAsText(file);
+        }
+
+        if (currentContent.length > 0 || rawChapters.length === 0) {
+          rawChapters.push({ title: currentTitle, content: currentContent.join('\n').trim() });
+        }
+
+        const newChapters: Chapter[] = [];
+        const startOrder = storyRef.current!.chapters.length;
+
+        for (const raw of rawChapters) {
+          const chunks = splitContentIntoChunks(raw.content, MAX_WORDS_PER_CHAPTER);
+          if (chunks.length <= 1) {
+            newChapters.push({
+              id: generateId(),
+              title: raw.title,
+              content: raw.content,
+              summary: '',
+              outline: '',
+              order: startOrder + newChapters.length + 1,
+              wordGoal: 2000,
+              lastUpdated: Date.now()
+            });
+          } else {
+            chunks.forEach((chunk, idx) => {
+              newChapters.push({
+                id: generateId(),
+                title: `${raw.title} (Phần ${idx + 1})`,
+                content: chunk,
+                summary: '',
+                outline: '',
+                order: startOrder + newChapters.length + 1,
+                wordGoal: 2000,
+                lastUpdated: Date.now()
+              });
+            });
+          }
+        }
+
+        if (newChapters.length > 0) {
+          const updatedStory = {
+            ...storyRef.current!,
+            chapters: [...storyRef.current!.chapters, ...newChapters]
+          };
+          setStory(updatedStory);
+          await storageService.saveStory(updatedStory, true);
+          showToast(`Đã thêm ${newChapters.length} chương mới từ file TXT!`, 'success');
+        }
+      } catch {
+        showToast('Lỗi khi nhập chương từ file TXT.', 'error');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const ingestRawDocument = async (file: File, categories: ExtractionCategory[]) => {
-      if (!storyRef.current) return;
-      if (file.name.toLowerCase().endsWith('.epub')) {
-          try {
-              const parsed = await parseEpubFile(file);
-              const fullText = parsed.chapters.map(c => `${c.title}\n${c.content}`).join('\n\n');
-              if (fullText) {
-                  await learnFromText(fullText, categories);
-              }
-          } catch (e) {
-              console.error("Lỗi đọc EPUB tài liệu:", e);
-              alert("Không thể giải nén tài liệu từ file EPUB.");
-          }
-          return;
+    if (!storyRef.current) return;
+    if (file.name.toLowerCase().endsWith('.epub')) {
+      try {
+        const parsed = await parseEpubFile(file);
+        const fullText = parsed.chapters.map(c => `${c.title}\n${c.content}`).join('\n\n');
+        if (fullText) await learnFromText(fullText, categories);
+      } catch {
+        showToast('Không thể giải nén tài liệu từ file EPUB.', 'error');
       }
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-          const text = e.target?.result as string;
-          if (text) { await learnFromText(text, categories); }
-      };
-      reader.readAsText(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async e => {
+      const text = e.target?.result as string;
+      if (text) await learnFromText(text, categories);
+    };
+    reader.readAsText(file);
   };
 
   const addCharacterManual = async (char: Partial<Character>) => {
-      setStory(prev => {
-          if (!prev) return null;
-          const newChar: Character = {
-              id: generateId(), name: char.name || "Nhân vật mới", role: char.role || "Phụ", description: char.description || "", status: char.status || 'alive', traits: char.traits || [], appearance: char.appearance || "", ...char
-          };
-          const updated = { ...prev, characters: [...prev.characters, newChar] };
-          storageService.saveStory(updated);
-          return updated;
-      });
+    setStory(prev => {
+      if (!prev) return null;
+      const newChar: Character = {
+        id: generateId(),
+        name: char.name || 'Nhân vật mới',
+        role: char.role || 'Phụ',
+        description: char.description || '',
+        status: char.status || 'alive',
+        traits: char.traits || [],
+        appearance: char.appearance || '',
+        ...char
+      };
+      const updated = { ...prev, characters: [...prev.characters, newChar] };
+      void storageService.saveStory(updated, true);
+      return updated;
+    });
   };
 
   const updateCharacter = async (id: string, updates: Partial<Character>) => {
-      setStory(prev => {
-          if (!prev) return null;
-          const updated = { ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, ...updates } : c) };
-          storageService.saveStory(updated);
-          return updated;
-      });
+    setStory(prev => {
+      if (!prev) return null;
+      const updated = {
+        ...prev,
+        characters: prev.characters.map(c => (c.id === id ? { ...c, ...updates } : c))
+      };
+      void storageService.saveStory(updated, true);
+      return updated;
+    });
   };
 
   const deleteCharacter = async (id: string) => {
-      setStory(prev => {
-          if (!prev) return null;
-          const updated = { ...prev, characters: prev.characters.filter(c => c.id !== id) };
-          storageService.saveStory(updated);
-          return updated;
-      });
+    setStory(prev => {
+      if (!prev) return null;
+      const updated = { ...prev, characters: prev.characters.filter(c => c.id !== id) };
+      void storageService.saveStory(updated, true);
+      return updated;
+    });
   };
 
-  const autoUpdateCharacter = async (charId: string) => {
-      const currentStory = storyRef.current;
-      if (!currentStory) return null;
-      const character = currentStory.characters.find(c => c.id === charId);
-      if (!character) return null;
-
-      const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
-      const mentioning = sortedChapters.filter(c => {
-        const haystack = `${c.title}\n${c.summary || ''}\n${c.content || ''}\n${c.translatedContent || ''}`.toLowerCase();
-        return haystack.includes(character.name.toLowerCase());
+  const autoUpdateCharacter = async (charId: string): Promise<Character | null> => {
+    const currentStory = storyRef.current;
+    if (!currentStory) return null;
+    try {
+      await storageService.flushSaves();
+      const updatedChar = await serverSyncClient.runAiUtility<Character | null>('autoUpdateCharacter', {
+        storyId: currentStory.id,
+        charId
       });
-      const sourceChapters = (mentioning.length > 0 ? mentioning : sortedChapters).slice(-4);
-      const storyContext = sourceChapters.map(c => {
-        const rawText = (c.content?.trim() ? c.content : (c.translatedContent || '')).trim();
-        const excerpt = rawText.length > 1500 ? `${rawText.slice(0, 600)}\n...\n${rawText.slice(-900)}` : rawText;
-        return `[${c.title}]:\nTóm tắt: ${c.summary || 'Chưa có'}\nDiễn biến:\n${excerpt}`;
-      }).join('\n\n---\n\n');
-
-      if (!storyContext.trim()) {
-        alert("Chưa có nội dung chương nào để đồng bộ tình trạng nhân vật.");
-        return null;
+      if (updatedChar) {
+        setStory(prev =>
+          prev
+            ? {
+                ...prev,
+                characters: prev.characters.map(c => (c.id === charId ? updatedChar : c))
+              }
+            : null
+        );
       }
-
-      try {
-          const result = await geminiService.autoUpdateCharacterStatus(character, storyContext);
-          if (result && result.data) {
-              recordUsage(result.usageMetadata);
-              const mergedUpdates = {
-                ...result.data,
-                knowledge: result.data.knowledge
-                  ? (character.knowledge && !character.knowledge.includes(result.data.knowledge)
-                      ? `${character.knowledge}\n• ${result.data.knowledge}`
-                      : result.data.knowledge)
-                  : character.knowledge
-              };
-              await updateCharacter(charId, mergedUpdates);
-              return { ...character, ...mergedUpdates };
-          }
-      } catch (e: any) {
-          console.error("autoUpdateCharacter error:", e);
-          alert(e?.message || "Không thể đồng bộ tình trạng nhân vật lúc này.");
-      }
+      return updatedChar;
+    } catch (e: any) {
+      showToast(e?.message || 'Không thể đồng bộ tình trạng nhân vật lúc này.', 'error');
       return null;
+    }
   };
 
   return (
-    <StoryContext.Provider value={{
-      story, storiesList, isStoriesLoaded, activeChapterId, isGenerating, isSummarizing,
-      isSequentiallySummarizing, sequentialSummaryProgress,
-      generationProgress, generationStatus,
-      isPlanning, isPlotPlanning, isLearning, isSearchingWeb, isAuditing, isAuditingChapter, isCheckingErrors, isGeneratingOutline, isGeneratingVideo,
-      isSavingManual, setIsSavingManual, saveTrigger, triggerSave, learnTrigger, triggerLearn,
-      videoGenerationStatus, generatedVideoUrl, consistencyReport, auditReport, chapterAuditReport, vocabularyInsights, webInspiration, plotArcAnalysis, plotArcError, isAnalyzingPlotArc, isScanningStory, scanProgress,
-      userInstruction, setUserInstruction, targetWordCount, setTargetWordCount,
-      pendingEdit, setPendingEdit, chapterSuggestion, setChapterSuggestion, isSuggestingChapter,
-      lastTokenUsage, sessionTotalTokens, remainingTokensEstimate,
-      canUndo, canRedo, undo, redo,
-      loadStories, refreshFromStorage, createStory, openStory, closeStory, updateStorySettings, deleteStory, addPersistentDirective,
-      sendPlanningMessage, clearPlanningChat, sendPlotChatMessage, clearPlotChat, selectChapter, addChapter, insertChapter, deleteChapter, splitChapter, mergeChapters, updateChapterContent, updateChapterOutline, updateChapterTitle, updateChapterGoal, updateChapterTimeSetting, updateChapterSummary, reorderChapter,
-      generateContinue, suggestNewChapter, balanceChapterLength, refineChapter, translateChapter, generateChapterContentFromPlot, refineSelection, learnFromChapter, learnFromText, scanStoryCharactersAndLore, applyKnowledgeExtraction, learnStyleFromText, learnWritingDNA, learnFromInteraction,
-      toggleEvolutionLog, deleteEvolutionLog, toggleKnowledgeLog, deleteKnowledgeLog, fetchWebInspiration, clearWebInspiration, auditStory, auditActiveChapter, analyzeActiveChapterQuality, summarizeChapter, summarizeAllChaptersSequentially, suggestActiveChapterOutline, generateChapterVideo, analyzeStoryPlotArc,
-      clearGeneratedVideo, clearConsistencyReport, clearAuditReport, clearChapterAuditReport, clearVocabularyInsights, expandSettingWithAI, suggestWorldSettings, suggestMainCharacter,
-      exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub, importChaptersFromTxt, importChaptersFromEpub, ingestRawDocument, addCharacterManual, updateCharacter, deleteCharacter, autoUpdateCharacter,
-      applyPendingEdit, discardPendingEdit,
-      editorSyncToken, bumpEditorSyncToken,
-      isAutoTranslateEnabled, setIsAutoTranslateEnabled,
-      translationOptions, setTranslationOptions,
-      editorVersion, setEditorVersion,
-      updateChapterTranslation, promoteTranslationToMain, revertChapterToOriginal,
-      exportAllTranslations, exportAllTranslationsEpub
-    }}>
+    <StoryContext.Provider
+      value={{
+        story,
+        storiesList,
+        isStoriesLoaded,
+        activeChapterId,
+        isGenerating,
+        isSummarizing,
+        isSequentiallySummarizing,
+        sequentialSummaryProgress,
+        generationProgress,
+        generationStatus,
+        isPlanning,
+        isPlotPlanning,
+        isLearning,
+        isSearchingWeb,
+        isAuditing,
+        isAuditingChapter,
+        isCheckingErrors,
+        isGeneratingOutline,
+        isGeneratingVideo,
+        isSavingManual,
+        setIsSavingManual,
+        saveTrigger,
+        triggerSave,
+        learnTrigger,
+        triggerLearn,
+        videoGenerationStatus,
+        generatedVideoUrl,
+        consistencyReport,
+        auditReport,
+        chapterAuditReport,
+        vocabularyInsights,
+        webInspiration,
+        plotArcAnalysis,
+        plotArcError,
+        isAnalyzingPlotArc,
+        isScanningStory,
+        scanProgress,
+        userInstruction,
+        setUserInstruction,
+        targetWordCount,
+        setTargetWordCount,
+        pendingEdit,
+        setPendingEdit,
+        chapterSuggestion,
+        setChapterSuggestion,
+        isSuggestingChapter,
+        lastTokenUsage,
+        sessionTotalTokens,
+        remainingTokensEstimate,
+        canUndo,
+        canRedo,
+        undo,
+        redo,
+        activeServerJobs,
+        isWsConnected,
+        cancelServerJob,
+        serverMeta,
+        setServerMeta,
+        toastMessage,
+        showToast,
+        dismissToast,
+        loadStories,
+        refreshFromStorage,
+        createStory,
+        openStory,
+        closeStory,
+        updateStorySettings,
+        deleteStory,
+        addPersistentDirective,
+        sendPlanningMessage,
+        clearPlanningChat,
+        sendPlotChatMessage,
+        clearPlotChat,
+        selectChapter,
+        addChapter,
+        insertChapter,
+        deleteChapter,
+        splitChapter,
+        mergeChapters,
+        updateChapterContent,
+        updateChapterOutline,
+        updateChapterTitle,
+        updateChapterGoal,
+        updateChapterTimeSetting,
+        updateChapterSummary,
+        reorderChapter,
+        generateContinue,
+        suggestNewChapter,
+        balanceChapterLength,
+        refineChapter,
+        translateChapter,
+        generateChapterContentFromPlot,
+        refineSelection,
+        learnFromChapter,
+        learnFromText,
+        scanStoryCharactersAndLore,
+        applyKnowledgeExtraction,
+        learnStyleFromText,
+        learnWritingDNA,
+        learnFromInteraction,
+        toggleEvolutionLog,
+        deleteEvolutionLog,
+        toggleKnowledgeLog,
+        deleteKnowledgeLog,
+        fetchWebInspiration,
+        clearWebInspiration,
+        auditStory,
+        auditActiveChapter,
+        analyzeActiveChapterQuality,
+        summarizeChapter,
+        summarizeAllChaptersSequentially,
+        suggestActiveChapterOutline,
+        generateChapterVideo,
+        analyzeStoryPlotArc,
+        clearGeneratedVideo,
+        clearConsistencyReport,
+        clearAuditReport,
+        clearChapterAuditReport,
+        clearVocabularyInsights,
+        expandSettingWithAI,
+        suggestWorldSettings,
+        suggestMainCharacter,
+        exportStory,
+        exportStoryEpub,
+        exportAllStories,
+        importStory,
+        importStoryFromTxt,
+        importStoryFromEpub,
+        importChaptersFromTxt,
+        importChaptersFromEpub,
+        ingestRawDocument,
+        addCharacterManual,
+        updateCharacter,
+        deleteCharacter,
+        autoUpdateCharacter,
+        applyPendingEdit,
+        discardPendingEdit,
+        editorSyncToken,
+        bumpEditorSyncToken,
+        isAutoTranslateEnabled,
+        setIsAutoTranslateEnabled,
+        translationOptions,
+        setTranslationOptions,
+        editorVersion,
+        setEditorVersion,
+        updateChapterTranslation,
+        promoteTranslationToMain,
+        revertChapterToOriginal,
+        exportAllTranslations,
+        exportAllTranslationsEpub
+      }}
+    >
       {children}
     </StoryContext.Provider>
   );

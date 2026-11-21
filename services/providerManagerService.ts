@@ -13,14 +13,37 @@ import {
   normalizeBaseUrl
 } from './modelDiscoveryService.ts';
 import { secureCredentialStorage } from './secureCredentialStorage.ts';
+import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 
 export const PROVIDER_METADATA_STORAGE_KEY = 'aetheria_provider_metadata_v2';
 export const LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY = 'aetheria_external_providers_v1';
 export const PROVIDER_ROUTING_STORAGE_KEY = 'aetheria_provider_routing_v1';
 
+export interface ServerProviderVaultBackend {
+  getProviderMetadataList(): ProviderMetadataRecord[];
+  setProviderMetadataList(records: ProviderMetadataRecord[]): void;
+  getProviderSecret(id: string): string;
+  hasProviderSecret(id: string): boolean;
+  setProviderSecret(id: string, apiKey: string): void;
+  deleteProviderSecret(id: string): void;
+}
+
+let serverVaultBackend: ServerProviderVaultBackend | null = null;
+
+export function setServerProviderVaultBackend(backend: ServerProviderVaultBackend): void {
+  serverVaultBackend = backend;
+}
+
+// Browser thin-client in-memory mirrors hydrated from /api/bootstrap & WebSocket
+let clientProvidersMirror: ExternalProviderProfile[] = [];
+let clientRoutingMirror: ProviderRoutingConfig = {
+  activeProBackend: 'gemini',
+  activeFlashBackend: 'gemini',
+  fallbackToGemini: true
+};
+
 const changeListeners = new Set<() => void>();
-let migrationChecked = false;
-let migrationInProgress: Promise<void> | null = null;
+let initialized = false;
 
 function notifyChange(): void {
   for (const listener of changeListeners) {
@@ -119,147 +142,86 @@ function normalizeMetadataRecord(raw: any, index: number = 0): ProviderMetadataR
 }
 
 function readMetadataSync(): ProviderMetadataRecord[] {
-  if (typeof localStorage === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(PROVIDER_METADATA_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.map((item, idx) => normalizeMetadataRecord(item, idx));
-      }
-    }
-
-    // Read legacy storage non-destructively in sync path if async migration hasn't completed yet
-    const legacyRaw = localStorage.getItem(LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY);
-    if (legacyRaw) {
-      const parsedLegacy = JSON.parse(legacyRaw);
-      if (Array.isArray(parsedLegacy)) {
-        return parsedLegacy.map((item, idx) => ({
-          ...normalizeMetadataRecord(item, idx),
-          hasStoredApiKey: Boolean(item?.apiKey?.trim())
-        }));
-      }
-    }
-    return [];
-  } catch {
-    return [];
+  if (serverVaultBackend && isServerRuntime()) {
+    return serverVaultBackend.getProviderMetadataList().map((item, idx) => normalizeMetadataRecord(item, idx));
   }
+  return clientProvidersMirror.map((p, idx) => normalizeMetadataRecord(p, idx));
 }
 
 function writeMetadataSync(records: ProviderMetadataRecord[]): void {
-  if (typeof localStorage === 'undefined') return;
-  const sanitized: ProviderMetadataRecord[] = records.map((rec, idx) => {
-    const clean: ProviderMetadataRecord = {
-      id: rec.id,
-      name: rec.name,
-      providerType: normalizeProviderType(rec.providerType),
-      baseUrl: normalizeBaseUrl(rec.baseUrl),
-      model: (rec.model || '').trim(),
-      temperature: rec.temperature,
-      maxTokens: rec.maxTokens,
-      customHeaders: sanitizeCustomHeaders(rec.customHeaders),
-      authScheme: rec.authScheme,
-      authHeaderName: rec.authHeaderName?.trim() || undefined,
-      role: rec.role || 'all',
-      enabled: Boolean(rec.enabled),
-      isDefault: Boolean(rec.isDefault),
-      priority: typeof rec.priority === 'number' ? rec.priority : idx,
-      hasStoredApiKey: Boolean(rec.hasStoredApiKey || secureCredentialStorage.hasSecretRecord(rec.id)),
-      createdAt: rec.createdAt || Date.now(),
-      updatedAt: Date.now(),
-      lastTestedAt: rec.lastTestedAt,
-      lastTestSuccess: rec.lastTestSuccess,
-      lastTestMessage: rec.lastTestMessage
-    };
-    return clean;
-  });
-  localStorage.setItem(PROVIDER_METADATA_STORAGE_KEY, JSON.stringify(sanitized));
+  const sanitized: ProviderMetadataRecord[] = records.map((rec, idx) => ({
+    id: rec.id,
+    name: rec.name,
+    providerType: normalizeProviderType(rec.providerType),
+    baseUrl: normalizeBaseUrl(rec.baseUrl),
+    model: (rec.model || '').trim(),
+    temperature: rec.temperature,
+    maxTokens: rec.maxTokens,
+    customHeaders: sanitizeCustomHeaders(rec.customHeaders),
+    authScheme: rec.authScheme,
+    authHeaderName: rec.authHeaderName?.trim() || undefined,
+    role: rec.role || 'all',
+    enabled: Boolean(rec.enabled),
+    isDefault: Boolean(rec.isDefault),
+    priority: typeof rec.priority === 'number' ? rec.priority : idx,
+    hasStoredApiKey: Boolean(
+      rec.hasStoredApiKey ||
+        (serverVaultBackend ? serverVaultBackend.hasProviderSecret(rec.id) : secureCredentialStorage.hasSecretRecord(rec.id))
+    ),
+    createdAt: rec.createdAt || Date.now(),
+    updatedAt: Date.now(),
+    lastTestedAt: rec.lastTestedAt,
+    lastTestSuccess: rec.lastTestSuccess,
+    lastTestMessage: rec.lastTestMessage
+  }));
+
+  if (serverVaultBackend && isServerRuntime()) {
+    serverVaultBackend.setProviderMetadataList(sanitized);
+  }
 }
 
-async function migrateLegacyPlaintextStorageIfNeeded(): Promise<void> {
-  if (migrationChecked || typeof localStorage === 'undefined') return;
-  if (migrationInProgress) return migrationInProgress;
+function getSecretSync(id: string): string {
+  if (serverVaultBackend && isServerRuntime()) {
+    return serverVaultBackend.getProviderSecret(id);
+  }
+  return clientProvidersMirror.find(p => p.id === id)?.apiKey || '';
+}
 
-  migrationInProgress = (async () => {
-    try {
-      await secureCredentialStorage.hydrate();
+function hasSecretSync(id: string): boolean {
+  if (serverVaultBackend && isServerRuntime()) {
+    return serverVaultBackend.hasProviderSecret(id);
+  }
+  const found = clientProvidersMirror.find(p => p.id === id);
+  return Boolean(found?.apiKey || found?.hasStoredApiKey);
+}
 
-      const legacyRaw = localStorage.getItem(LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY);
-      if (!legacyRaw) {
-        migrationChecked = true;
-        return;
-      }
+async function setSecretValue(id: string, key: string): Promise<void> {
+  if (serverVaultBackend && isServerRuntime()) {
+    serverVaultBackend.setProviderSecret(id, key);
+    return;
+  }
+  await secureCredentialStorage.setSecret(id, key);
+}
 
-      const parsed = JSON.parse(legacyRaw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const existingMeta = readMetadataSync();
-        const existingIds = new Set(existingMeta.map(m => m.id));
-        const mergedMeta = [...existingMeta];
-
-        for (let i = 0; i < parsed.length; i++) {
-          const leg = parsed[i];
-          const norm = normalizeMetadataRecord(leg, i);
-          const legKey = typeof leg?.apiKey === 'string' ? leg.apiKey.trim() : '';
-          if (legKey) {
-            await secureCredentialStorage.setSecret(norm.id, legKey);
-            norm.hasStoredApiKey = true;
-          }
-          if (!existingIds.has(norm.id)) {
-            mergedMeta.push(norm);
-            existingIds.add(norm.id);
-          }
-        }
-
-        // Ensure at least one enabled profile is default if none flagged
-        if (!mergedMeta.some(m => m.isDefault) && mergedMeta.length > 0) {
-          const firstEnabled = mergedMeta.find(m => m.enabled) || mergedMeta[0];
-          firstEnabled.isDefault = true;
-        }
-
-        writeMetadataSync(mergedMeta);
-      }
-
-      // Remove plaintext key store once safely encrypted into the vault
-      if (secureCredentialStorage.isPersistentVaultSupported()) {
-        localStorage.removeItem(LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY);
-      }
-      migrationChecked = true;
-    } catch {
-      migrationChecked = true;
-    } finally {
-      migrationInProgress = null;
-    }
-  })();
-
-  return migrationInProgress;
+async function deleteSecretValue(id: string): Promise<void> {
+  if (serverVaultBackend && isServerRuntime()) {
+    serverVaultBackend.deleteProviderSecret(id);
+    return;
+  }
+  await secureCredentialStorage.deleteSecret(id);
 }
 
 function hydrateProfileSync(meta: ProviderMetadataRecord): ExternalProviderProfile {
-  let apiKey = secureCredentialStorage.getSecretSync(meta.id);
-
-  // If synchronous caller runs before async migration finished, peek legacy memory once safely
-  if (!apiKey && typeof localStorage !== 'undefined') {
-    try {
-      const legacyRaw = localStorage.getItem(LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY);
-      if (legacyRaw) {
-        const parsed = JSON.parse(legacyRaw);
-        if (Array.isArray(parsed)) {
-          const match = parsed.find((p: any) => p?.id === meta.id);
-          if (match?.apiKey) {
-            apiKey = String(match.apiKey).trim();
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
+  const apiKey = getSecretSync(meta.id);
   return {
     ...meta,
-    hasStoredApiKey: Boolean(apiKey || meta.hasStoredApiKey || secureCredentialStorage.hasSecretRecord(meta.id)),
+    hasStoredApiKey: Boolean(apiKey || meta.hasStoredApiKey || hasSecretSync(meta.id)),
     apiKey
   };
+}
+
+function isRemoteClient(): boolean {
+  return !isServerRuntime() && typeof window !== 'undefined';
 }
 
 export const providerManagerService = {
@@ -270,16 +232,56 @@ export const providerManagerService = {
     };
   },
 
+  hydrateFromServer(providers: ExternalProviderProfile[], routing?: ProviderRoutingConfig): void {
+    if (Array.isArray(providers)) {
+      clientProvidersMirror = [...providers];
+    }
+    if (routing) {
+      clientRoutingMirror = {
+        ...getDefaultRouting(),
+        ...routing
+      };
+      runtimeKV.setLocalOnly(PROVIDER_ROUTING_STORAGE_KEY, JSON.stringify(clientRoutingMirror));
+    }
+    initialized = true;
+    notifyChange();
+  },
+
   async initialize(): Promise<void> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      if (!initialized) {
+        try {
+          const list = await serverSyncClient.listProviders();
+          clientProvidersMirror = list;
+          initialized = true;
+          notifyChange();
+        } catch {
+          // ignore if called pre-bootstrap
+        }
+      }
+      return;
+    }
+    initialized = true;
   },
 
   async listProvidersAsync(): Promise<ExternalProviderProfile[]> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      const list = await serverSyncClient.listProviders();
+      clientProvidersMirror = list;
+      initialized = true;
+      notifyChange();
+      return this.listProviders();
+    }
     return this.listProviders();
   },
 
   listProviders(): ExternalProviderProfile[] {
+    if (isRemoteClient()) {
+      return [...clientProvidersMirror].sort((a, b) => {
+        if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+        return (a.priority ?? 0) - (b.priority ?? 0);
+      });
+    }
     const metadata = readMetadataSync();
     return metadata.map(hydrateProfileSync).sort((a, b) => {
       if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
@@ -310,9 +312,19 @@ export const providerManagerService = {
   },
 
   getRoutingConfig(): ProviderRoutingConfig {
-    if (typeof localStorage === 'undefined') return getDefaultRouting();
+    if (isRemoteClient()) {
+      const rawKv = runtimeKV.getItem(PROVIDER_ROUTING_STORAGE_KEY);
+      if (rawKv) {
+        try {
+          return { ...getDefaultRouting(), ...(JSON.parse(rawKv) || {}) };
+        } catch {
+          // fallback to mirror
+        }
+      }
+      return { ...clientRoutingMirror };
+    }
     try {
-      const raw = localStorage.getItem(PROVIDER_ROUTING_STORAGE_KEY);
+      const raw = runtimeKV.getItem(PROVIDER_ROUTING_STORAGE_KEY);
       if (!raw) return getDefaultRouting();
       return {
         ...getDefaultRouting(),
@@ -324,30 +336,42 @@ export const providerManagerService = {
   },
 
   saveRoutingConfig(config: ProviderRoutingConfig): void {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(PROVIDER_ROUTING_STORAGE_KEY, JSON.stringify(config));
+    const normalized = { ...getDefaultRouting(), ...config };
+    if (isRemoteClient()) {
+      clientRoutingMirror = normalized;
+      runtimeKV.setLocalOnly(PROVIDER_ROUTING_STORAGE_KEY, JSON.stringify(normalized));
+      notifyChange();
+      void serverSyncClient.saveProviderRouting(normalized).catch(err =>
+        console.error('[providerManagerService] Failed saving routing config on server:', err)
+      );
+      return;
     }
+    runtimeKV.setItem(PROVIDER_ROUTING_STORAGE_KEY, JSON.stringify(normalized));
     notifyChange();
   },
 
   async saveAllProfiles(profiles: ExternalProviderProfile[]): Promise<void> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      await serverSyncClient.saveAllProviders(profiles);
+      await this.listProvidersAsync();
+      return;
+    }
 
     const metaList: ProviderMetadataRecord[] = [];
     for (let i = 0; i < profiles.length; i++) {
       const p = profiles[i];
-      const existingSecret = secureCredentialStorage.getSecretSync(p.id);
+      const existingSecret = getSecretSync(p.id);
       const providedKey = typeof p.apiKey === 'string' ? p.apiKey.trim() : '';
 
       if (providedKey) {
-        await secureCredentialStorage.setSecret(p.id, providedKey);
+        await setSecretValue(p.id, providedKey);
       }
 
       const norm = normalizeMetadataRecord(
         {
           ...p,
           priority: i,
-          hasStoredApiKey: Boolean(providedKey || existingSecret || secureCredentialStorage.hasSecretRecord(p.id))
+          hasStoredApiKey: Boolean(providedKey || existingSecret || hasSecretSync(p.id))
         },
         i
       );
@@ -358,8 +382,16 @@ export const providerManagerService = {
     notifyChange();
   },
 
-  async createProvider(draft: ProviderDraftInput, options: { activateRouting?: boolean } = {}): Promise<ExternalProviderProfile> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+  async createProvider(
+    draft: ProviderDraftInput,
+    options: { activateRouting?: boolean } = {}
+  ): Promise<ExternalProviderProfile> {
+    if (isRemoteClient()) {
+      const created = await serverSyncClient.createProvider(draft, options.activateRouting !== false);
+      await this.listProvidersAsync();
+      return created;
+    }
+
     const existing = readMetadataSync();
     const providerType = normalizeProviderType(draft.providerType);
     const preset = getPresetForProviderType(providerType);
@@ -367,7 +399,7 @@ export const providerManagerService = {
     const cleanKey = (draft.apiKey || '').trim();
 
     if (cleanKey) {
-      await secureCredentialStorage.setSecret(id, cleanKey);
+      await setSecretValue(id, cleanKey);
     }
 
     const shouldBeDefault = draft.isDefault ?? (existing.length === 0 || existing.every(p => !p.isDefault));
@@ -416,14 +448,13 @@ export const providerManagerService = {
     return hydrateProfileSync(record);
   },
 
-  /**
-   * Updates an existing provider.
-   * CRITICAL SECURITY & PERSISTENCE RULE:
-   * Passing an empty or omitted `apiKey` preserves the existing encrypted key unless
-   * `draft.clearApiKey === true` is explicitly set.
-   */
   async updateProvider(id: string, draft: Partial<ProviderDraftInput>): Promise<ExternalProviderProfile> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      const updated = await serverSyncClient.updateProvider(id, draft);
+      await this.listProvidersAsync();
+      return updated;
+    }
+
     const existingList = readMetadataSync();
     const targetIdx = existingList.findIndex(p => p.id === id);
     if (targetIdx === -1) {
@@ -435,17 +466,17 @@ export const providerManagerService = {
     const preset = getPresetForProviderType(nextType);
 
     if (draft.clearApiKey) {
-      await secureCredentialStorage.deleteSecret(id);
+      await deleteSecretValue(id);
     } else if (typeof draft.apiKey === 'string' && draft.apiKey.trim().length > 0) {
-      await secureCredentialStorage.setSecret(id, draft.apiKey.trim());
+      await setSecretValue(id, draft.apiKey.trim());
     }
 
     const hasKeyNow = draft.clearApiKey
       ? false
       : Boolean(
           (typeof draft.apiKey === 'string' && draft.apiKey.trim()) ||
-            secureCredentialStorage.getSecretSync(id) ||
-            secureCredentialStorage.hasSecretRecord(id)
+            getSecretSync(id) ||
+            hasSecretSync(id)
         );
 
     const settingDefault = draft.isDefault === true;
@@ -481,10 +512,13 @@ export const providerManagerService = {
     return hydrateProfileSync(updatedList[targetIdx]);
   },
 
-  async recordTestResult(
-    id: string,
-    result: { success: boolean; message: string }
-  ): Promise<void> {
+  async recordTestResult(id: string, result: { success: boolean; message: string }): Promise<void> {
+    if (isRemoteClient()) {
+      await serverSyncClient.recordProviderTestResult(id, result);
+      await this.listProvidersAsync();
+      return;
+    }
+
     const existingList = readMetadataSync();
     const updated = existingList.map(item =>
       item.id === id
@@ -501,7 +535,12 @@ export const providerManagerService = {
   },
 
   async duplicateProvider(id: string): Promise<ExternalProviderProfile> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      const cloned = await serverSyncClient.duplicateProvider(id);
+      await this.listProvidersAsync();
+      return cloned;
+    }
+
     const source = this.getProvider(id);
     if (!source) {
       throw new Error('Không tìm thấy provider để nhân bản.');
@@ -510,7 +549,7 @@ export const providerManagerService = {
     const cloneId = makeProviderId();
     const existingKey = source.apiKey?.trim();
     if (existingKey) {
-      await secureCredentialStorage.setSecret(cloneId, existingKey);
+      await setSecretValue(cloneId, existingKey);
     }
 
     const existingList = readMetadataSync();
@@ -538,8 +577,13 @@ export const providerManagerService = {
   },
 
   async deleteProvider(id: string): Promise<void> {
-    await migrateLegacyPlaintextStorageIfNeeded();
-    await secureCredentialStorage.deleteSecret(id);
+    if (isRemoteClient()) {
+      await serverSyncClient.deleteProvider(id);
+      await this.listProvidersAsync();
+      return;
+    }
+
+    await deleteSecretValue(id);
 
     const existingList = readMetadataSync();
     const remaining = existingList.filter(p => p.id !== id);
@@ -568,8 +612,16 @@ export const providerManagerService = {
     return this.updateProvider(id, { enabled: !existing.enabled });
   },
 
-  async setDefaultProvider(id: string, activateExternalRouting: boolean = true): Promise<ExternalProviderProfile | undefined> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+  async setDefaultProvider(
+    id: string,
+    activateExternalRouting: boolean = true
+  ): Promise<ExternalProviderProfile | undefined> {
+    if (isRemoteClient()) {
+      const updated = await serverSyncClient.setDefaultProvider(id, activateExternalRouting);
+      await this.listProvidersAsync();
+      return updated;
+    }
+
     const existingList = readMetadataSync();
     const target = existingList.find(p => p.id === id);
     if (!target) return undefined;
@@ -609,9 +661,6 @@ export const providerManagerService = {
     return this.getProvider(id);
   },
 
-  /**
-   * Exports provider metadata cleanly. Excludes API keys by default per Section 7 & 8.
-   */
   exportProvidersBundle(options: { includeApiKeys?: boolean } = {}): ProviderExportBundle {
     const includeApiKeys = Boolean(options.includeApiKeys);
     const profiles = this.listProviders();
@@ -648,7 +697,11 @@ export const providerManagerService = {
     rawJson: string | object,
     options: { replaceExisting?: boolean } = {}
   ): Promise<{ importedCount: number; needsApiKeyCount: number }> {
-    await migrateLegacyPlaintextStorageIfNeeded();
+    if (isRemoteClient()) {
+      const result = await serverSyncClient.importProviders(rawJson, Boolean(options.replaceExisting));
+      await this.listProvidersAsync();
+      return result;
+    }
 
     let parsed: any;
     try {
@@ -688,12 +741,10 @@ export const providerManagerService = {
         : '';
 
       if (rawKey) {
-        await secureCredentialStorage.setSecret(norm.id, rawKey);
+        await setSecretValue(norm.id, rawKey);
         norm.hasStoredApiKey = true;
       } else {
-        const alreadyHasKey = Boolean(
-          secureCredentialStorage.getSecretSync(norm.id) || secureCredentialStorage.hasSecretRecord(norm.id)
-        );
+        const alreadyHasKey = Boolean(getSecretSync(norm.id) || hasSecretSync(norm.id));
         norm.hasStoredApiKey = alreadyHasKey;
         if (!alreadyHasKey && norm.authScheme !== 'none') {
           needsApiKeyCount++;
@@ -728,11 +779,13 @@ export const providerManagerService = {
     return { importedCount, needsApiKeyCount };
   },
 
-  /**
-   * Restores provider entries from Google Drive backup securely into encrypted vault + metadata.
-   */
   async restoreFromDriveBackup(entries: any[]): Promise<void> {
     if (!Array.isArray(entries) || entries.length === 0) return;
+    if (isRemoteClient()) {
+      await serverSyncClient.restoreProvidersFromDrive(entries);
+      await this.listProvidersAsync();
+      return;
+    }
     await this.importProvidersBundle({ providers: entries }, { replaceExisting: false });
   }
 };

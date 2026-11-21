@@ -10,6 +10,7 @@ import {
   validateBaseUrl
 } from './modelDiscoveryService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
+import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
 
 export class ProviderClientError extends Error {
   public readonly status?: number;
@@ -820,6 +821,10 @@ export const providerClientService = {
         errorCode: validationErr.includes('Base URL') ? 'INVALID_URL' : 'VALIDATION_ERROR',
         message: validationErr
       };
+    }
+
+    if (typeof window !== 'undefined' && !isServerRuntime()) {
+      return serverSyncClient.testCustomProvider(profile, timeoutMs);
     }
 
     const controller = new AbortController();

@@ -17,7 +17,7 @@ import { GoogleDriveSyncModal } from './GoogleDriveSyncModal.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 
 export const MainWorkspace: React.FC = () => {
-    const { story } = useStory();
+    const { story, activeServerJobs, isWsConnected, cancelServerJob } = useStory();
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [isPlotArcOpen, setIsPlotArcOpen] = useState(false);
@@ -32,6 +32,8 @@ export const MainWorkspace: React.FC = () => {
         setBilingualChapterId(chapterId);
         setIsBilingualOpen(true);
     };
+
+    const primaryJob = activeServerJobs[0];
 
     return (
         <div className="flex h-full overflow-hidden bg-gray-950 text-slate-200 selection:bg-primary-500/30 selection:text-white relative">
@@ -56,6 +58,49 @@ export const MainWorkspace: React.FC = () => {
 
             {/* Main Content Area */}
             <main className="flex-1 flex flex-col relative z-0 w-full overflow-hidden">
+                {!isWsConnected && (
+                    <div className="bg-amber-950/80 border-b border-amber-500/30 px-3 py-1.5 text-[11px] text-amber-200 flex items-center justify-center gap-2 shrink-0">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                        <span>Đang kết nối lại máy chủ điều khiển từ xa (Steam Deck vẫn đang giữ tác vụ nền)...</span>
+                    </div>
+                )}
+
+                {primaryJob && (
+                    <div className="bg-slate-900/95 border-b border-sky-500/30 px-3 py-2 flex items-center justify-between gap-3 shrink-0 backdrop-blur-md">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse shrink-0" />
+                            <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 text-xs font-semibold text-sky-200 truncate">
+                                    <span className="truncate">{primaryJob.title}</span>
+                                    <span className="text-[10px] font-mono bg-sky-500/20 text-sky-300 px-1.5 py-0.5 rounded shrink-0">
+                                        {Math.round(primaryJob.progress || 0)}%
+                                    </span>
+                                    {primaryJob.subProgress && (
+                                        <span className="text-[10px] font-mono text-emerald-300 shrink-0">
+                                            ({primaryJob.subProgress.current}/{primaryJob.subProgress.total})
+                                        </span>
+                                    )}
+                                    {activeServerJobs.length > 1 && (
+                                        <span className="text-[10px] text-slate-400 shrink-0">
+                                            +{activeServerJobs.length - 1} tác vụ
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="text-[11px] text-slate-400 truncate">
+                                    {primaryJob.statusText}
+                                </div>
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => void cancelServerJob(primaryJob.id)}
+                            className="px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 border border-red-500/30 text-red-300 text-[11px] font-bold shrink-0 transition-colors"
+                        >
+                            Hủy
+                        </button>
+                    </div>
+                )}
+
                 {/* Core Editor */}
                 <Editor 
                     onOpenSidebar={() => setIsSidebarOpen(true)} 
