@@ -869,10 +869,14 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
   };
 
   const updateStorySettings = useCallback(async (settings: Partial<Story>) => {
+    const immediate =
+      'continuityLedger' in settings ||
+      'continuityLedgerSuppressedKeys' in settings ||
+      'pinnedMemory' in settings;
     setStory(prev => {
       if (!prev) return null;
       const updated = { ...prev, ...settings };
-      void storageService.saveStory(updated);
+      void storageService.saveStory(updated, immediate);
       return updated;
     });
   }, []);
@@ -943,6 +947,7 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
   // --- Authoritative Server Background AI Job Launchers ---
   const launchServerJob = useCallback(
     async (type: any, payload: any): Promise<ServerJobState> => {
+      await storageService.flushSaves();
       const job = await serverSyncClient.startJob(type, payload);
       setServerJobs(prev => [job, ...prev.filter(j => j.id !== job.id)].slice(0, 30));
       return job;

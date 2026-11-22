@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Chapter, ChatMessage } from '../types.ts';
+import { Chapter, ChatMessage, ContinuityLedgerEntry } from '../types.ts';
 import { useStory } from '../context/StoryContext.tsx';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { ChapterTimelineCard } from './plot-arc/ChapterTimelineCard.tsx';
 import { PlotArcDebugConsole } from './plot-arc/PlotArcDebugConsole.tsx';
 import { plotDebugLogger } from '../services/plotDebugLogger.ts';
 import { runtimeKV } from '../services/runtimeAdapter.ts';
+import { ragService } from '../services/ragService.ts';
 
 interface Props {
     isOpen: boolean;
@@ -49,9 +50,16 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         bumpEditorSyncToken
     } = useStory();
 
-    const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'debug'>('timeline');
+    const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'ledger' | 'debug'>('timeline');
     const [focusedCoEditChapterId, setFocusedCoEditChapterId] = useState<string>('');
     const [debugErrorCount, setDebugErrorCount] = useState(0);
+    const [ledgerSearch, setLedgerSearch] = useState('');
+    const [editingLedgerId, setEditingLedgerId] = useState<string | null>(null);
+    const [editingLedgerText, setEditingLedgerText] = useState('');
+    const [editingLedgerChapterId, setEditingLedgerChapterId] = useState<string>('global');
+    const [isAddingLedger, setIsAddingLedger] = useState(false);
+    const [newLedgerText, setNewLedgerText] = useState('');
+    const [newLedgerChapterId, setNewLedgerChapterId] = useState<string>('global');
 
     useEffect(() => {
         const unsubscribe = plotDebugLogger.subscribe(logs => {
@@ -222,11 +230,17 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
     const sortedChapters = useMemo(() => [...(chapters || [])].sort((a, b) => a.order - b.order), [chapters]);
 
+    const prevActiveChapterIdRef = useRef<string | undefined>(activeChapterId);
     useEffect(() => {
-        if (activeChapterId) {
-            setFocusedCoEditChapterId(activeChapterId);
-        } else if (sortedChapters.length > 0 && !focusedCoEditChapterId) {
-            setFocusedCoEditChapterId(sortedChapters[0].id);
+        const activeChanged = prevActiveChapterIdRef.current !== activeChapterId;
+        prevActiveChapterIdRef.current = activeChapterId;
+
+        const stillExists = focusedCoEditChapterId
+            ? sortedChapters.some(c => c.id === focusedCoEditChapterId)
+            : false;
+
+        if ((activeChanged && activeChapterId) || (!stillExists && (activeChapterId || sortedChapters.length > 0))) {
+            setFocusedCoEditChapterId(activeChapterId || sortedChapters[0]?.id || '');
         }
     }, [activeChapterId, sortedChapters, focusedCoEditChapterId]);
 
@@ -455,10 +469,21 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                     ? `${currentCh.content}\n\n${proposal.content}` 
                     : proposal.content;
                 await updateChapterContent(proposal.chapterId, newContent);
+
+                // If AI also emitted a paired summary proposal for this chapter, auto-sync it to keep long-term memory accurate
+                const pairedSummary = activeProposals.find(
+                    p => p.type === 'summary' && p.chapterId === proposal.chapterId && p.content?.trim()
+                );
+                if (pairedSummary && mode === 'replace') {
+                    await updateChapterSummary(proposal.chapterId, pairedSummary.content);
+                }
+
                 bumpEditorSyncToken();
                 setToast(mode === 'append' 
                     ? `🎉 Đã ghép nối tiếp nội dung vào Bản thảo "${proposal.chapterTitle}"!` 
-                    : `🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
+                    : pairedSummary
+                        ? `🎉 Đã đồng bộ bản thảo & cập nhật tóm tắt trí nhớ cho "${proposal.chapterTitle}"!`
+                        : `🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
             }
         } catch (e) {
             setToast("❌ Lỗi khi áp dụng đề xuất.");
@@ -511,14 +536,151 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
         onClose();
     }, [chapters, setPendingEdit, onClose]);
 
+    const ledgerEntries = useMemo<ContinuityLedgerEntry[]>(() => {
+        if (!story) return [];
+        return ragService.syncContinuityLedgerEntries(story);
+    }, [story]);
+
+    const filteredLedgerEntries = useMemo(() => {
+        if (!ledgerSearch.trim()) return ledgerEntries;
+        const q = ledgerSearch.toLowerCase().trim();
+        return ledgerEntries.filter(entry =>
+            entry.content.toLowerCase().includes(q) ||
+            entry.chapterTitle.toLowerCase().includes(q) ||
+            `ch ${entry.chapterOrder}`.includes(q) ||
+            `chương ${entry.chapterOrder}`.includes(q)
+        );
+    }, [ledgerEntries, ledgerSearch]);
+
+    const suppressedLedgerCount = story?.continuityLedgerSuppressedKeys?.length || 0;
+
+    const resolveLedgerChapterMeta = useCallback((chId: string) => {
+        if (!chId || chId === 'global') {
+            return { chapterId: 'global', chapterOrder: 0, chapterTitle: 'Ghi chú chung toàn truyện' };
+        }
+        const idx = sortedChapters.findIndex(c => c.id === chId);
+        const ch = idx >= 0 ? sortedChapters[idx] : undefined;
+        return {
+            chapterId: ch?.id || chId,
+            chapterOrder: idx >= 0 ? idx + 1 : 0,
+            chapterTitle: ch?.title || 'Ghi chú chung'
+        };
+    }, [sortedChapters]);
+
+    const handleStartEditLedger = useCallback((entry: ContinuityLedgerEntry) => {
+        setEditingLedgerId(entry.id);
+        setEditingLedgerText(entry.content);
+        setEditingLedgerChapterId(entry.chapterId || 'global');
+    }, []);
+
+    const handleSaveEditLedger = useCallback(async () => {
+        if (!story || !editingLedgerId) return;
+        const trimmed = editingLedgerText.trim();
+        if (!trimmed) {
+            setToast('⚠️ Nội dung mục Sổ cái không được để trống (nếu muốn bỏ, hãy bấm Xóa).');
+            return;
+        }
+        const meta = resolveLedgerChapterMeta(editingLedgerChapterId);
+        const suppressedSet = new Set(story.continuityLedgerSuppressedKeys || []);
+        const nextEntries = ledgerEntries
+            .map(entry => {
+                if (entry.id !== editingLedgerId) return entry;
+                if (entry.originKey) suppressedSet.add(entry.originKey);
+                suppressedSet.add(ragService.computeLedgerOriginKey(entry.chapterId, entry.content));
+                return {
+                    ...entry,
+                    chapterId: meta.chapterId,
+                    chapterOrder: meta.chapterOrder,
+                    chapterTitle: meta.chapterTitle,
+                    content: trimmed,
+                    isManual: true,
+                    updatedAt: Date.now()
+                };
+            })
+            .sort((a, b) => (a.chapterOrder ?? 0) - (b.chapterOrder ?? 0));
+
+        await updateStorySettings({
+            continuityLedger: nextEntries,
+            continuityLedgerSuppressedKeys: Array.from(suppressedSet)
+        });
+        setEditingLedgerId(null);
+        setToast('✅ Đã sửa Sổ cái! AI sẽ tuân theo chi tiết bạn vừa chốt.');
+    }, [story, editingLedgerId, editingLedgerText, editingLedgerChapterId, ledgerEntries, resolveLedgerChapterMeta, updateStorySettings]);
+
+    const handleDeleteLedgerEntry = useCallback(async (entry: ContinuityLedgerEntry) => {
+        if (!story) return;
+        const suppressedSet = new Set(story.continuityLedgerSuppressedKeys || []);
+        if (entry.originKey) suppressedSet.add(entry.originKey);
+        suppressedSet.add(ragService.computeLedgerOriginKey(entry.chapterId, entry.content));
+
+        const nextEntries = ledgerEntries.filter(e => e.id !== entry.id);
+        await updateStorySettings({
+            continuityLedger: nextEntries,
+            continuityLedgerSuppressedKeys: Array.from(suppressedSet)
+        });
+        if (editingLedgerId === entry.id) setEditingLedgerId(null);
+        setToast('🗑️ Đã xóa chi tiết khỏi Sổ cái (sẽ không tự hiện lại khi quét).');
+    }, [story, ledgerEntries, editingLedgerId, updateStorySettings]);
+
+    const handleAddManualLedgerEntry = useCallback(async () => {
+        if (!story) return;
+        const trimmed = newLedgerText.trim();
+        if (!trimmed) {
+            setToast('⚠️ Vui lòng nhập nội dung chi tiết cần ghi vào Sổ cái.');
+            return;
+        }
+        const meta = resolveLedgerChapterMeta(newLedgerChapterId);
+        const newEntry: ContinuityLedgerEntry = {
+            id: `ledger_manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            chapterId: meta.chapterId,
+            chapterOrder: meta.chapterOrder,
+            chapterTitle: meta.chapterTitle,
+            content: trimmed,
+            isManual: true,
+            updatedAt: Date.now()
+        };
+        const nextEntries = [...ledgerEntries, newEntry].sort((a, b) => (a.chapterOrder ?? 0) - (b.chapterOrder ?? 0));
+        await updateStorySettings({ continuityLedger: nextEntries });
+        setNewLedgerText('');
+        setIsAddingLedger(false);
+        setToast('📌 Đã thêm ghi chú mới vào Sổ cái!');
+    }, [story, newLedgerText, newLedgerChapterId, ledgerEntries, resolveLedgerChapterMeta, updateStorySettings]);
+
+    const handleRescanLedger = useCallback(async () => {
+        if (!story) return;
+        const beforeCount = Array.isArray(story.continuityLedger) ? story.continuityLedger.length : 0;
+        const synced = ragService.syncContinuityLedgerEntries(story);
+        await updateStorySettings({ continuityLedger: synced });
+        const diff = synced.length - beforeCount;
+        setToast(
+            diff > 0
+                ? `🔄 Đã quét bổ sung ${diff} mục mới từ bản thảo (vẫn giữ nguyên các mục bạn đã sửa/xóa).`
+                : '🔄 Sổ cái đã đồng bộ mới nhất với bản thảo hiện tại.'
+        );
+    }, [story, updateStorySettings]);
+
+    const handleRestoreSuppressedLedger = useCallback(async () => {
+        if (!story) return;
+        const restoredStory = { ...story, continuityLedgerSuppressedKeys: [] };
+        const synced = ragService.syncContinuityLedgerEntries(restoredStory, { includeSuppressed: true });
+        await updateStorySettings({
+            continuityLedger: synced,
+            continuityLedgerSuppressedKeys: []
+        });
+        setToast('↩️ Đã khôi phục các mục tự động từng xóa trước đó.');
+    }, [story, updateStorySettings]);
+
     if (!isOpen) return null;
 
     const promptPresets = [
-        { label: "🔍 Quét lỗ hổng toàn truyện", prompt: "Hãy đối chiếu toàn bộ các chương, danh sách nhân vật và bối cảnh thế giới để chỉ ra các lỗ hổng mạch lạc (plot holes), chi tiết tiền hậu bất nhất, hoặc mâu thuẫn tính cách/thực lực." },
         ...(focusedChapter ? [{
+            label: `✍️ Viết/Nối tiếp: ${focusedChapter.title}`,
+            prompt: `Hãy kiểm tra toàn bộ World Bible, Hồ sơ nhân vật (vị trí, vết thương, tri thức, dấu chân đã đi qua), Sổ cái sự kiện và các chương trước/sau để VIẾT ĐẦY ĐỦ / VIẾT TIẾP chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho liền mạch tuyệt đối, KHÔNG quên thiết lập cũ và KHÔNG lặp lại chương trước. Bọc bản thảo trong:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <toàn bộ nội dung bản thảo>]\nvà kèm tóm tắt trí nhớ ngắn gọn trong:\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <sự kiện chính, địa điểm đã đến, vật phẩm & trạng thái nhân vật>]`
+        }, {
             label: `🔧 Sửa mạch lạc: ${focusedChapter.title}`,
-            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]`
+            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới, Sổ cái dấu chân và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt sự kiện, địa điểm đã đi qua & thay đổi trạng thái>]`
         }] : []),
+        { label: "🔍 Quét lỗ hổng toàn truyện", prompt: "Hãy đối chiếu toàn bộ các chương, danh sách nhân vật, dấu chân địa điểm và bối cảnh thế giới để chỉ ra các lỗ hổng mạch lạc (plot holes), chi tiết tiền hậu bất nhất, hoặc mâu thuẫn tính cách/thực lực." },
         { label: "🎭 Tạo nút thắt hợp logic", prompt: "Dựa trên các chi tiết đã cài cắm trong cốt truyện và tính cách nhân vật hiện tại, hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng logic để đẩy kịch tính lên cao trào." },
         { label: "⚔️ Đồng bộ tâm lý & lời thoại", prompt: "Rà soát diễn biến tâm lý và thoại của các nhân vật ở chương đang chọn xem có bị OOC (lệch tính cách) hay thiếu động cơ không, và đề xuất cách chỉnh sửa." },
         { label: "✨ Tối ưu Dàn ý tổng thể", prompt: "Dựa trên tiến trình hiện tại của truyện, hãy đề xuất dàn ý phát triển mạch lạc cho các chương tiếp theo trong khối [PROPOSAL_PLANNING: ...]." }
@@ -597,6 +759,16 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                 className={`px-2 sm:px-2.5 py-0.5 text-[8.5px] sm:text-[9.5px] text-center font-black uppercase rounded-md transition-all ${activeTab === 'co-edit' ? 'bg-rose-600 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}
                             >
                                 Co-Edit
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('ledger')} 
+                                className={`px-2 sm:px-2.5 py-0.5 text-[8.5px] sm:text-[9.5px] text-center font-black uppercase rounded-md transition-all flex items-center gap-1 ${activeTab === 'ledger' ? 'bg-amber-600 text-white shadow' : 'text-gray-400 hover:text-amber-300'}`}
+                                title="Xem, sửa hoặc xóa các chi tiết trong Sổ cái dấu chân & sự kiện"
+                            >
+                                <span>📒 Sổ cái</span>
+                                <span className={`px-1 rounded text-[8px] font-mono ${activeTab === 'ledger' ? 'bg-black/30 text-white' : 'bg-gray-800 text-amber-400'}`}>
+                                    {ledgerEntries.length}
+                                </span>
                             </button>
                             <button 
                                 onClick={() => setActiveTab('debug')} 
@@ -1120,7 +1292,7 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                             </h3>
                                             <p className="text-[9px] sm:text-[10px] text-gray-400">AI nắm toàn bộ nhân vật, bối cảnh & kiểm toán để cùng bạn sửa chương</p>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
                                             {sortedChapters.length > 0 && (
                                                 <select
                                                     value={focusedCoEditChapterId || focusedChapter?.id || ''}
@@ -1135,6 +1307,14 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                     ))}
                                                 </select>
                                             )}
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveTab('ledger')}
+                                                className="text-[9px] sm:text-[10px] bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border border-amber-500/40 px-2.5 py-1.5 rounded-lg font-bold transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                                                title="Mở Sổ cái dấu chân & sự kiện để xem, sửa chi tiết AI nhớ nhầm hoặc xóa mục sai"
+                                            >
+                                                <span>📒 Sổ cái ({ledgerEntries.length})</span>
+                                            </button>
                                             <button 
                                                 onClick={clearPlotChat}
                                                 className="text-[9px] sm:text-[10px] bg-gray-850 hover:bg-gray-800 text-gray-400 hover:text-white px-2.5 py-1.5 rounded-lg border border-gray-750 transition-colors shrink-0"
@@ -1329,20 +1509,25 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                             </div>
                                         )}
 
-                                        <div className="relative flex items-center bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
-                                            <input 
-                                                type="text"
+                                        <div className="relative flex items-end bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
+                                            <textarea 
+                                                rows={2}
                                                 value={coEditInput}
                                                 onChange={(e) => setCoEditInput(e.target.value)}
-                                                onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as any)?.isComposing) {
+                                                        e.preventDefault();
+                                                        handleSendChat();
+                                                    }
+                                                }}
                                                 disabled={isPlotPlanning}
-                                                className="flex-1 bg-transparent px-3 py-1.5 sm:py-2 text-base sm:text-sm text-white outline-none placeholder:text-gray-600"
-                                                placeholder="Nhập nội dung trao đổi cùng AI..."
+                                                className="flex-1 bg-transparent px-3 py-1.5 text-base sm:text-sm text-white outline-none placeholder:text-gray-600 resize-none max-h-36 custom-scrollbar"
+                                                placeholder="Nhập chỉ đạo viết hoặc sửa chương trong Co-Edit (Enter để gửi, Shift+Enter xuống dòng)..."
                                             />
                                             <button 
                                                 onClick={() => handleSendChat()}
                                                 disabled={!coEditInput.trim() || isPlotPlanning}
-                                                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-[10.5px] sm:text-xs uppercase tracking-wider transition-all disabled:opacity-40 active:scale-95 shrink-0 flex items-center gap-1 shadow-md"
+                                                className="px-3.5 py-2 mb-0.5 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-[10.5px] sm:text-xs uppercase tracking-wider transition-all disabled:opacity-40 active:scale-95 shrink-0 flex items-center gap-1 shadow-md"
                                             >
                                                 ⚡ Gửi
                                             </button>
@@ -1486,7 +1671,237 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                         </div>
                     )}
 
-                    {/* Tab 4: Debug Log Console */}
+                    {/* Tab 4: Editable Continuity Ledger */}
+                    {activeTab === 'ledger' && (
+                        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar bg-gray-950/30">
+                            <div className="bg-gradient-to-r from-amber-950/40 via-gray-900 to-gray-900 border border-amber-500/30 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                                <div className="space-y-1.5">
+                                    <h3 className="text-sm sm:text-base font-bold text-amber-300 flex items-center gap-2">
+                                        <span>📒 Sổ Cái Dấu Chân, Địa Điểm & Sự Kiện Xuyên Suốt</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-[10px] font-mono text-amber-200">
+                                            {ledgerEntries.length} mục
+                                        </span>
+                                    </h3>
+                                    <p className="text-xs text-gray-300 leading-relaxed max-w-3xl">
+                                        AI đọc trực tiếp Sổ cái này trước mỗi lượt viết/sửa ở <strong>mọi API</strong>. Nếu phát hiện chi tiết AI trích sai hoặc tình tiết sai logic, bạn có thể <strong>Sửa</strong> hoặc <strong>Xóa</strong> ngay tại đây — bản sửa của bạn được lưu cứng và ưu tiên tuyệt đối.
+                                    </p>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setActiveTab('co-edit')}
+                                        className="px-3 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow"
+                                    >
+                                        💬 Quay lại Co-Edit
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setNewLedgerChapterId(focusedChapter?.id || 'global');
+                                            setIsAddingLedger(v => !v);
+                                        }}
+                                        className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow"
+                                    >
+                                        + Thêm ghi chú
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleRescanLedger}
+                                        className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-amber-200 border border-amber-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                                        title="Quét thêm tình tiết từ các chương mới mà không ghi đè các mục bạn đã sửa hoặc xóa"
+                                    >
+                                        🔄 Quét thêm từ bản thảo
+                                    </button>
+                                    {suppressedLedgerCount > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={handleRestoreSuppressedLedger}
+                                            className="px-3 py-2 bg-gray-900 hover:bg-gray-800 text-gray-400 hover:text-white border border-gray-700 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+                                            title="Khôi phục lại các mục tự động bạn đã xóa trước đây"
+                                        >
+                                            ↩️ Khôi phục ({suppressedLedgerCount} đã xóa)
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {isAddingLedger && (
+                                <div className="p-4 bg-emerald-950/20 border border-emerald-500/40 rounded-2xl space-y-3 animate-fadeIn">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <span className="text-xs font-bold text-emerald-300">📌 Thêm chi tiết mới vào Sổ cái</span>
+                                        <select
+                                            value={newLedgerChapterId}
+                                            onChange={(e) => setNewLedgerChapterId(e.target.value)}
+                                            className="bg-gray-950 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-emerald-500 max-w-xs"
+                                        >
+                                            <option value="global">📌 Ghi chú chung toàn truyện</option>
+                                            {sortedChapters.map((c, idx) => (
+                                                <option key={c.id} value={c.id}>
+                                                    Ch {idx + 1}: {c.title}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <textarea
+                                        rows={2}
+                                        value={newLedgerText}
+                                        onChange={(e) => setNewLedgerText(e.target.value)}
+                                        placeholder="Ví dụ: Giữa chương 2, Lâm Phong bí mật ghé Cổ Mộ Hắc Ám dưới lòng đất Lạc Dương và giữ Ngọc Bội Huyết Long..."
+                                        className="w-full bg-gray-950 border border-gray-700 focus:border-emerald-500 rounded-xl p-3 text-xs sm:text-sm text-gray-100 outline-none resize-y"
+                                    />
+                                    <div className="flex justify-end gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsAddingLedger(false)}
+                                            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs font-semibold cursor-pointer"
+                                        >
+                                            Hủy
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddManualLedgerEntry}
+                                            className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                        >
+                                            💾 Lưu vào Sổ cái
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Search Bar */}
+                            <div className="relative">
+                                <svg className="w-4 h-4 text-gray-500 absolute left-3.5 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                                <input
+                                    type="text"
+                                    value={ledgerSearch}
+                                    onChange={(e) => setLedgerSearch(e.target.value)}
+                                    placeholder="Lọc trong Sổ cái theo số chương, địa danh, vật phẩm hoặc tên nhân vật..."
+                                    className="w-full pl-10 pr-8 py-2.5 bg-gray-900 border border-gray-800 focus:border-amber-500 rounded-xl text-xs text-gray-200 outline-none placeholder:text-gray-500"
+                                />
+                                {ledgerSearch && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setLedgerSearch('')}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-white cursor-pointer"
+                                    >
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+
+                            {filteredLedgerEntries.length === 0 ? (
+                                <div className="text-center py-12 bg-gray-900/40 border border-dashed border-gray-800 rounded-2xl text-xs text-gray-400 space-y-2">
+                                    <p>{ledgerSearch ? `Không tìm thấy mục nào khớp với "${ledgerSearch}".` : 'Chưa có dữ liệu trong Sổ cái.'}</p>
+                                    {!ledgerSearch && (
+                                        <p className="text-gray-500">Hãy viết thêm nội dung chương hoặc bấm "+ Thêm ghi chú" để ghi sự kiện quan trọng.</p>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="space-y-2.5">
+                                    {filteredLedgerEntries.map((entry) => {
+                                        const isEditing = editingLedgerId === entry.id;
+                                        return (
+                                            <div
+                                                key={entry.id}
+                                                className={`p-3.5 rounded-xl border transition-all ${
+                                                    entry.isManual
+                                                        ? 'bg-emerald-950/15 border-emerald-500/30 hover:border-emerald-500/50'
+                                                        : 'bg-gray-900/70 border-gray-800 hover:border-amber-500/30'
+                                                }`}
+                                            >
+                                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="px-2 py-0.5 rounded bg-gray-950 border border-gray-700 text-[10px] font-bold text-amber-300">
+                                                            {entry.chapterOrder === 0
+                                                                ? '📌 Ghi chú chung'
+                                                                : `Ch ${entry.chapterOrder} · ${entry.chapterTitle}`}
+                                                        </span>
+                                                        {entry.isManual ? (
+                                                            <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-300">
+                                                                ✓ Tác giả chốt
+                                                            </span>
+                                                        ) : (
+                                                            <span className="px-2 py-0.5 rounded bg-gray-800 text-[10px] font-medium text-gray-400">
+                                                                Tự động trích
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {!isEditing && (
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleStartEditLedger(entry)}
+                                                                className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-amber-600/80 text-gray-200 hover:text-white text-[11px] font-semibold transition-all cursor-pointer"
+                                                            >
+                                                                ✏️ Sửa
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteLedgerEntry(entry)}
+                                                                className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-rose-600/80 text-rose-300 hover:text-white text-[11px] font-semibold transition-all cursor-pointer"
+                                                            >
+                                                                🗑️ Xóa
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {isEditing ? (
+                                                    <div className="space-y-2.5 pt-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-[11px] text-gray-400 shrink-0">Gắn với chương:</span>
+                                                            <select
+                                                                value={editingLedgerChapterId}
+                                                                onChange={(e) => setEditingLedgerChapterId(e.target.value)}
+                                                                className="bg-gray-950 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200 outline-none focus:border-amber-500 max-w-xs"
+                                                            >
+                                                                <option value="global">📌 Ghi chú chung toàn truyện</option>
+                                                                {sortedChapters.map((c, idx) => (
+                                                                    <option key={c.id} value={c.id}>
+                                                                        Ch {idx + 1}: {c.title}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                        <textarea
+                                                            rows={3}
+                                                            value={editingLedgerText}
+                                                            onChange={(e) => setEditingLedgerText(e.target.value)}
+                                                            className="w-full bg-gray-950 border border-amber-500/50 rounded-xl p-2.5 text-xs sm:text-sm text-gray-100 outline-none resize-y"
+                                                        />
+                                                        <div className="flex justify-end gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setEditingLedgerId(null)}
+                                                                className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs font-semibold cursor-pointer"
+                                                            >
+                                                                Hủy
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleSaveEditLedger}
+                                                                className="px-3.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                                            >
+                                                                💾 Lưu thay đổi
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-xs sm:text-[13px] text-gray-200 leading-relaxed whitespace-pre-wrap">
+                                                        {entry.content}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Tab 5: Debug Log Console */}
                     {activeTab === 'debug' && (
                         <PlotArcDebugConsole onSwitchToChat={() => setActiveTab('co-edit')} />
                     )}

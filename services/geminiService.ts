@@ -7,6 +7,7 @@ import { plotDebugLogger, PlotDebugLogItem } from "./plotDebugLogger.ts";
 import { requestThrottleService } from "./requestThrottleService.ts";
 import { externalProviderService } from "./externalProviderService.ts";
 import { providerManagerService } from "./providerManagerService.ts";
+import { ragService } from "./ragService.ts";
 import { redactSecrets } from "./secureCredentialStorage.ts";
 import { isServerRuntime, runtimeKV, serverSyncClient } from "./runtimeAdapter.ts";
 
@@ -377,6 +378,7 @@ const VALID_MODELS = new Set([
   'gemini-4-hydrogen',
   'gemini-4-argon',
   'gemini-4-carbon',
+  'gemini-4-neon',
   'gemma-4-31b-queen',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
@@ -394,9 +396,10 @@ function normalizeModel(modelName: string | null | undefined, fallback: string):
   const clean = modelName.trim().toLowerCase().replace(/^models\//, '');
   if (VALID_MODELS.has(clean)) return clean;
   if (clean.includes('gemma') || clean.includes('queen')) return 'gemma-4-31b-queen';
-  if (clean.includes('hydrogen') || (clean.includes('4') && !clean.includes('argon') && !clean.includes('carbon'))) return 'gemini-4-hydrogen';
+  if (clean.includes('neon')) return 'gemini-4-neon';
   if (clean.includes('argon')) return 'gemini-4-argon';
   if (clean.includes('carbon')) return 'gemini-4-carbon';
+  if (clean.includes('hydrogen') || (clean.includes('4') && !clean.includes('argon') && !clean.includes('carbon') && !clean.includes('neon'))) return 'gemini-4-hydrogen';
   if (clean.includes('3.8')) return 'gemini-3.8-flash';
   if (clean.includes('3.7')) return 'gemini-3.7-flash';
   if (clean.includes('3.6') && clean.includes('pro')) return 'gemini-3.6-pro';
@@ -425,6 +428,7 @@ function getModelCascade(requestedModel: string): string[] {
   const allProModels = [
     'gemini-4-argon',
     'gemini-4-carbon',
+    'gemini-4-neon',
     'gemini-3.1-pro-preview',
     'gemini-3.6-pro',
     'gemini-4-hydrogen',
@@ -443,7 +447,7 @@ function getModelCascade(requestedModel: string): string[] {
     'gemma-4-31b-queen'
   ];
 
-  if (normalized.includes('pro') || normalized.includes('argon') || normalized.includes('carbon')) {
+  if (normalized.includes('pro') || normalized.includes('argon') || normalized.includes('carbon') || normalized.includes('neon')) {
     return Array.from(new Set([normalized, ...allProModels]));
   }
   return Array.from(new Set([normalized, ...allFlashModels]));
@@ -782,7 +786,7 @@ function extractChunkTextSafe(chunk: any): string {
 
 function resolveTaskTier(requestedModel: string): 'pro' | 'flash' {
   const lower = (requestedModel || '').toLowerCase();
-  if (lower.includes('pro') || lower.includes('argon') || lower.includes('carbon')) {
+  if (lower.includes('pro') || lower.includes('argon') || lower.includes('carbon') || lower.includes('neon')) {
     return 'pro';
   }
   return 'flash';
@@ -2596,21 +2600,30 @@ export const geminiService = {
     currentTimeline: string = "",
     historicalContext: string = "",
     canonContext: string = "",
-    fandomName: string = ""
+    fandomName: string = "",
+    extraContext?: {
+      nextChapterFence?: string;
+      earlierChapterSummary?: string;
+      allEarlierTimeline?: string;
+      retrievedChapters?: string;
+      continuityLedger?: string;
+      completeWorldBlock?: string;
+      currentChapterTitle?: string;
+    }
   ) {
     const systemInstruction = promptBuilderService.buildSystemInstruction(
       genre, worldBible, pov, pronounStyle, writingStyle, interactionRules, negativePrompt, nsfw, hasSystem, mechanics, persistentDirectives, writingDNA
     );
     const prompt = promptBuilderService.buildForgePrompt(
-      immediateContext, worldBible, planning, characters, interactionRules, userInstruction, pronounStyle, targetWordCount, persistentDirectives, mechanics, chapterOutline, verificationReport, currentChapterTime, previousChapterTime, currentTimeline, historicalContext, canonContext, genre, fandomName
+      immediateContext, worldBible, planning, characters, interactionRules, userInstruction, pronounStyle, targetWordCount, persistentDirectives, mechanics, chapterOutline, verificationReport, currentChapterTime, previousChapterTime, currentTimeline, historicalContext, canonContext, genre, fandomName, extraContext
     );
     const stream = safeGenerateContentStream({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: { 
         systemInstruction, 
-        temperature: 0.9, 
-        topP: 0.96, 
+        temperature: 0.72, 
+        topP: 0.9, 
         maxOutputTokens: 65536,
         thinkingConfig: { thinkingBudget: 2048 } 
       }
@@ -2631,12 +2644,20 @@ export const geminiService = {
 
   async generateChapterSummary(title: string, content: string): Promise<any> {
     return requestThrottleService.enqueuePromise(async () => {
-      const safeBody = sampleManuscript(content, 24000);
-      const prompt = `Hãy tóm tắt đầy đủ các sự kiện quan trọng trong chương "${title}" (khoảng 180-250 từ bằng tiếng Việt). Tập trung vào: diễn biến chính, chuyển biến tâm lý/trạng thái nhân vật, địa điểm, vật phẩm hoặc manh mối mới được tiết lộ.\n\n[NỘI DUNG CHƯƠNG]:\n${safeBody}`;
+      const safeBody = sampleManuscript(content, 28000);
+      const prompt = `Hãy tóm tắt đầy đủ và có cấu trúc sự kiện của chương "${title}" (khoảng 180-280 từ bằng tiếng Việt) để làm trí nhớ dài hạn giúp AI ở các chương rất xa sau này (Vd: chương 30) KHÔNG BAO GIỜ QUÊN các chi tiết quan trọng trong chương này.
+BẮT BUỘC ghi rõ:
+1. Diễn biến cốt lõi từ đầu đến giữa và kết chương.
+2. Nhân vật nào đã xuất hiện / gặp gỡ / giao đấu với ai.
+3. Địa điểm & Lịch trình di chuyển: Nhân vật đã ĐẾN hoặc ĐI QUA những địa danh cụ thể nào (kể cả cảnh ngắn ở giữa chương) và kết chương đang đứng ở đâu.
+4. Vật phẩm thu được / mất đi, bí mật phát hiện, lời hứa hoặc thương tích/thay đổi cảnh giới mới.
+
+[NỘI DUNG CHƯƠNG]:
+${safeBody}`;
       const response = await safeGenerateContent({ 
           model: getFlash(), 
           contents: [{ parts: [{ text: prompt }] }],
-          config: { temperature: 0.3 }
+          config: { temperature: 0.25 }
       });
       return { text: response.text || "", usageMetadata: response.usageMetadata };
     }, {
@@ -2649,15 +2670,31 @@ export const geminiService = {
   async generateChapterContentFromPlot(
     chapter: Chapter,
     story: Story,
-    options: { repairInstruction?: string; continuityNotes?: string } = {}
+    options: { repairInstruction?: string; continuityNotes?: string; retrievedKnowledge?: string; retrievedChapters?: string; continuityLedger?: string } = {}
   ): Promise<any> {
     return requestThrottleService.enqueuePromise(async () => {
+      const systemInstruction = promptBuilderService.buildSystemInstruction(
+        story.genre || '',
+        story.setting || '',
+        story.pov || '',
+        story.pronounStyle || '',
+        story.writingStyle || '',
+        story.interactionRules || '',
+        story.negativePrompt || '',
+        story.nsfw || false,
+        story.hasSystem || false,
+        story.mechanics || '',
+        story.persistentDirectives || '',
+        story.writingDNA
+      );
       const prompt = promptBuilderService.buildChapterPlotWriteOrFixPrompt(chapter, story, options);
       const response = await safeGenerateContent({ 
           model: getFlash(), 
           contents: [{ parts: [{ text: prompt }] }],
           config: {
-              temperature: 0.78,
+              systemInstruction,
+              temperature: 0.68,
+              topP: 0.9,
               maxOutputTokens: 65536,
               thinkingConfig: { thinkingBudget: 2048 } 
           }
@@ -2677,7 +2714,8 @@ export const geminiService = {
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],
       config: {
-        temperature: 0.7,
+        temperature: 0.65,
+        topP: 0.9,
         thinkingConfig: { thinkingBudget: 2048 } 
       }
     });
@@ -2965,17 +3003,22 @@ export const geminiService = {
     }
 
     let selectedBatches = allBatches;
-    if (allBatches.length > 6) {
-      const indices = new Set<number>([
-        0,
-        1,
-        Math.floor(allBatches.length * 0.35),
-        Math.floor(allBatches.length * 0.65),
-        allBatches.length - 2,
-        allBatches.length - 1
-      ]);
+    if (allBatches.length > 16) {
+      const indices = new Set<number>([0, 1, allBatches.length - 2, allBatches.length - 1]);
+      for (let k = 0; k < 12; k++) {
+        indices.add(Math.floor((k * (allBatches.length - 1)) / 11));
+      }
       selectedBatches = Array.from(indices).sort((a, b) => a - b).map(idx => allBatches[idx]);
     }
+
+    const mergeTextFields = (prevVal?: string, nextVal?: string, separator = ' | '): string => {
+      const p = String(prevVal || '').trim();
+      const n = String(nextVal || '').trim();
+      if (!n) return p;
+      if (!p) return n;
+      if (p.toLowerCase().includes(n.toLowerCase())) return p;
+      return `${p}${separator}${n}`;
+    };
 
     const existingNamesMap = new Map<string, Character>();
     (story.characters || []).forEach(c => existingNamesMap.set(c.name.trim().toLowerCase(), c));
@@ -3028,21 +3071,38 @@ export const geminiService = {
             const key = String(nc?.name || '').trim().toLowerCase();
             if (!key) continue;
             if (existingNamesMap.has(key)) {
+              const prevUpd = characterUpdatesMap.get(key) || {};
+              const locationTrail =
+                prevUpd.currentLocation &&
+                nc.currentLocation &&
+                prevUpd.currentLocation.toLowerCase() !== nc.currentLocation.toLowerCase()
+                  ? `Từng qua: ${prevUpd.currentLocation}`
+                  : '';
               characterUpdatesMap.set(key, {
                 name: existingNamesMap.get(key)!.name,
-                ...characterUpdatesMap.get(key),
-                status: nc.status,
-                currentLocation: nc.currentLocation,
-                powerLevel: nc.powerLevel,
-                abilities: nc.abilities,
-                knowledge: nc.knowledge,
-                enemies: nc.enemies
+                ...prevUpd,
+                status: nc.status || prevUpd.status,
+                currentLocation: nc.currentLocation || prevUpd.currentLocation,
+                powerLevel: nc.powerLevel || prevUpd.powerLevel,
+                abilities: mergeTextFields(prevUpd.abilities, nc.abilities, '; '),
+                knowledge: mergeTextFields(mergeTextFields(prevUpd.knowledge, locationTrail, '; '), nc.knowledge, '; '),
+                enemies: mergeTextFields(prevUpd.enemies, nc.enemies, '; ')
               });
             } else {
               const prev = discoveredNewCharsMap.get(key) || {};
+              const locationTrail =
+                prev.currentLocation &&
+                nc.currentLocation &&
+                prev.currentLocation.toLowerCase() !== nc.currentLocation.toLowerCase()
+                  ? `Từng qua: ${prev.currentLocation}`
+                  : '';
               discoveredNewCharsMap.set(key, {
                 ...prev,
                 ...nc,
+                currentLocation: nc.currentLocation || prev.currentLocation,
+                abilities: mergeTextFields(prev.abilities, nc.abilities, '; '),
+                knowledge: mergeTextFields(mergeTextFields(prev.knowledge, locationTrail, '; '), nc.knowledge, '; '),
+                enemies: mergeTextFields(prev.enemies, nc.enemies, '; '),
                 traits: Array.from(new Set([...(prev.traits || []), ...(nc.traits || [])])),
                 description: nc.description && (!prev.description || nc.description.length > prev.description.length) ? nc.description : prev.description
               });
@@ -3054,10 +3114,37 @@ export const geminiService = {
             if (!key) continue;
             if (discoveredNewCharsMap.has(key)) {
               const prev = discoveredNewCharsMap.get(key);
-              discoveredNewCharsMap.set(key, { ...prev, ...upd, name: prev.name });
+              const locationTrail =
+                prev.currentLocation &&
+                upd.currentLocation &&
+                prev.currentLocation.toLowerCase() !== upd.currentLocation.toLowerCase()
+                  ? `Từng qua: ${prev.currentLocation}`
+                  : '';
+              discoveredNewCharsMap.set(key, {
+                ...prev,
+                ...upd,
+                name: prev.name,
+                currentLocation: upd.currentLocation || prev.currentLocation,
+                abilities: mergeTextFields(prev.abilities, upd.abilities, '; '),
+                knowledge: mergeTextFields(mergeTextFields(prev.knowledge, locationTrail, '; '), upd.knowledge, '; '),
+                enemies: mergeTextFields(prev.enemies, upd.enemies, '; ')
+              });
             } else {
               const prevUpd = characterUpdatesMap.get(key) || {};
-              characterUpdatesMap.set(key, { ...prevUpd, ...upd });
+              const locationTrail =
+                prevUpd.currentLocation &&
+                upd.currentLocation &&
+                prevUpd.currentLocation.toLowerCase() !== upd.currentLocation.toLowerCase()
+                  ? `Từng qua: ${prevUpd.currentLocation}`
+                  : '';
+              characterUpdatesMap.set(key, {
+                ...prevUpd,
+                ...upd,
+                currentLocation: upd.currentLocation || prevUpd.currentLocation,
+                abilities: mergeTextFields(prevUpd.abilities, upd.abilities, '; '),
+                knowledge: mergeTextFields(mergeTextFields(prevUpd.knowledge, locationTrail, '; '), upd.knowledge, '; '),
+                enemies: mergeTextFields(prevUpd.enemies, upd.enemies, '; ')
+              });
             }
           }
 
@@ -3115,26 +3202,71 @@ export const geminiService = {
   },
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
-    const sanitizedHistory = (history || []).slice(-10).map(h => ({
-      role: h.role,
-      parts: (h.parts || []).map(p => ({
-        text: sanitizeModelText(p.text)
+    const retrievedKnowledge = ragService
+      .searchLexicalKnowledge(message, story, { topK: 12 })
+      .map(h => h.text)
+      .join('\n\n');
+    const continuityLedger = ragService.buildStoryContinuityLedger(story, {
+      maxChars: 24000
+    });
+    const fullWorldBlock = promptBuilderService.buildCompleteWorldBibleBlock(story, retrievedKnowledge, {
+      includePlanning: true,
+      maxKnowledgeChars: 32000,
+      maxLogEntries: 120
+    });
+    const chaptersOverview = formatSmartChapterContext(story.chapters, {
+      maxTotalChars: 320000,
+      targetChapterMention: message,
+      recentPrevWindow: 5
+    });
+    const characterRoster = (story.characters || []).length > 0
+      ? story.characters
+          .slice(0, 80)
+          .map(
+            c =>
+              `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}${c.status ? `, trạng thái: ${c.status}` : ''}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.knowledge ? `, tri thức/dấu chân: ${c.knowledge}` : ''}): ${c.description || ''}`
+          )
+          .join('\n')
+      : '(Chưa có hồ sơ nhân vật)';
+
+    const systemInstruction = `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán tuyệt đối với toàn bộ thiết lập & bản thảo đã viết.\n\n[NEO THIẾT LẬP TÁC PHẨM]:\n- Ngôi kể: ${story.pov || 'Ngôi thứ ba'} | Xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}\n${fullWorldBlock}`;
+
+    const groundedMessage = `[NGỮ CẢNH TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRƯỚC KHI TRẢ LỜI]
+[HỒ SƠ NHÂN VẬT (${(story.characters || []).length} nhân vật)]:
+${characterRoster}
+${continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM ĐÃ ĐẾN & SỰ KIỆN XUYÊN SUỐT]:\n${continuityLedger}` : ''}
+
+[TÌNH TRẠNG CÁC CHƯƠNG HIỆN CÓ]:
+${chaptersOverview}
+
+[CÂU HỎI / Ý TƯỞNG CỦA TÁC GIẢ]:
+${message}`;
+
+    const sanitizedHistory = (history || [])
+      .slice(-8)
+      .map(h => ({
+        role: h.role,
+        parts: (h.parts || [])
+          .map(p => ({
+            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role)
+          }))
+          .filter(p => p.text)
       }))
-    }));
+      .filter(h => h.parts.length > 0);
 
     const stream = requestThrottleService.enqueueStream(async function* () {
       try {
         const chat = ai.chats.create({
           model: getFlash(),
           config: { 
-            systemInstruction: `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán.\n- Bối cảnh: ${story.setting || '(Chưa có)'}\n- Cơ chế thế giới: ${story.mechanics || '(Không)'}\n- Chỉ thị bền vững: ${story.persistentDirectives || '(Không có)'}`,
+            systemInstruction,
             maxOutputTokens: 65536,
             temperature: 0.7,
             thinkingConfig: { thinkingBudget: 512 }
           },
           history: sanitizedHistory
         });
-        const response = await chat.sendMessageStream({ message });
+        const response = await chat.sendMessageStream({ message: groundedMessage });
         for await (const chunk of response) {
           yield chunk as GenerateContentResponse;
         }
@@ -3158,93 +3290,80 @@ export const geminiService = {
     message: string,
     story: Story,
     focusChapterId?: string,
-    extraContext?: { plotArcAnalysis?: any; auditReport?: any }
+    extraContext?: {
+      plotArcAnalysis?: any;
+      auditReport?: any;
+      retrievedKnowledge?: string;
+      retrievedChapters?: string;
+      continuityLedger?: string;
+      boostChapterIds?: string[];
+    }
   ) {
-    const chaptersContext = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 60000,
-      focusChapterId,
-      targetChapterMention: message
-    });
+    const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const focusedChapter = focusChapterId ? sortedChapters.find(c => c.id === focusChapterId) : undefined;
+    const ragQuery = [
+      message,
+      focusedChapter?.title,
+      focusedChapter?.outline,
+      focusedChapter?.summary
+    ]
+      .filter(Boolean)
+      .join(' ');
 
-    const activeKnowledge = (story.knowledgeLogs || [])
-      .filter(k => k.isActive)
-      .slice(-20)
-      .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
-      .join('\n') || '(Chưa có)';
+    const retrievedKnowledge =
+      extraContext?.retrievedKnowledge?.trim() ||
+      ragService
+        .searchLexicalKnowledge(ragQuery, story, { topK: 16 })
+        .map(h => h.text)
+        .join('\n\n');
 
-    const rosterText = (story.characters || []).length > 0
-      ? story.characters.slice(0, 35).map(c =>
-          `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}, trạng thái: ${c.status || 'alive'}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.healthStatus ? `, thể trạng: ${c.healthStatus}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.abilities ? `, kỹ năng: ${c.abilities}` : ''}${c.traits?.length ? `, tính cách/xưng hô: ${c.traits.join(', ')}` : ''}${c.knowledge ? `, tri thức: ${c.knowledge}` : ''}${c.enemies ? `, kẻ thù: ${c.enemies}` : ''}): ${c.description || ''}`
-        ).join('\n')
-      : '(Chưa có hồ sơ nhân vật — có thể hướng dẫn tác giả nhấn nút Quét Nhân Vật ở tab Thực Thể)';
+    const lexicalChapterHits = !extraContext?.retrievedChapters
+      ? ragService.searchLexicalChapters(ragQuery, story, {
+          excludeChapterIds: focusedChapter ? [focusedChapter.id] : [],
+          topK: 8,
+          maxCharsPerHit: 1000
+        })
+      : [];
 
-    const analysisInsights: string[] = [];
-    if (extraContext?.plotArcAnalysis) {
-      const pa = extraContext.plotArcAnalysis;
-      if (pa.unresolvedHooks?.length) analysisInsights.push(`• Nút thắt chưa giải quyết: ${pa.unresolvedHooks.join(' | ')}`);
-      if (pa.chapterIssues?.length) {
-        analysisInsights.push(`• Lỗi mạch lạc từng chương đã phát hiện:\n` + pa.chapterIssues.map((ci: any) => `  - ${ci.chapterTitle}: ${ci.issue} (Gợi ý sửa: ${ci.fixSuggestion})`).join('\n'));
-      }
-    }
-    if (extraContext?.auditReport?.plotCoherence?.plotHoles?.length) {
-      analysisInsights.push(`• Lỗ hổng từ Kiểm toán toàn truyện: ${extraContext.auditReport.plotCoherence.plotHoles.join(' | ')}`);
-    }
+    const retrievedChapters =
+      extraContext?.retrievedChapters?.trim() ||
+      lexicalChapterHits.map(h => h.text).join('\n\n');
 
-    const systemInstruction = `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor) của tác phẩm "${story.title}".
-Nhiệm vụ của bạn là cùng tác giả phân tích mạch truyện, rà soát tính nhất quán nhân vật & thế giới, sửa chữa lỗ hổng logic và nâng cấp/viết lại chương truyện theo đúng mạch lạc toàn tác phẩm.
-
-[HỒ SƠ WORLD BIBLE & QUY TẮC TÁC PHẨM]:
-- Tên truyện: "${story.title}" | Thể loại: ${story.genre || 'Tiểu thuyết'}
-- Ngôi kể (POV): ${story.pov || 'Ngôi thứ ba'} | Quy tắc xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}
-- Phong cách viết / Hồn văn: ${story.writingStyle || story.writingDNA?.narrativeVoice || 'Chuẩn mực văn học'}
-- Dòng thời gian: ${story.currentTimeline || '(Chưa thiết lập)'}
-- Dàn ý tổng thể (Blueprint): ${story.planning || '(Chưa có)'}
-- Bối cảnh thế giới (Setting): ${story.setting || '(Chưa thiết lập)'}
-- Hệ thống sức mạnh / Quy tắc thế giới (Mechanics): ${story.mechanics || '(Chưa thiết lập)'}
-- Quy tắc tương tác & Ràng buộc: ${story.interactionRules || '(Không có)'}
-- Chỉ thị bền vững: ${story.persistentDirectives || '(Không có)'}
-
-[TRI THỨC ĐÃ KHÓA (KNOWLEDGE LOGS)]:
-${activeKnowledge}
-
-[HỒ SƠ NHÂN VẬT (${(story.characters || []).length} nhân vật)]:
-${rosterText}
-${analysisInsights.length > 0 ? `\n[KẾT QUẢ PHÂN TÍCH MẠCH TRUYỆN & LỖI LOGIC HIỆN CÓ]:\n${analysisInsights.join('\n')}` : ''}
-
-${ORIGINAL_FIDELITY_PROTOCOL}
-
-[DỮ LIỆU CÁC CHƯƠNG - BẢN THẢO THỰC TẾ & ĐỀ CƯƠNG]:
-${chaptersContext}
-
-[GIAO THỨC BẢO TỒN BẢN THẢO & ĐỀ XUẤT SỬA ĐỔI]:
-1. 📖 BẢN THẢO THỰC TẾ LÀ CHÂN LÝ DUY NHẤT:
-   - Mọi nhận xét và đề xuất sửa đổi PHẢI dựa trên tình tiết thực tế, tên nhân vật, lời thoại và mạch liên kết giữa các chương. Trích dẫn cụ thể tên chương/chi tiết khi phân tích.
-2. 🔧 SỬA CHỮA THEO MẠCH LẠC:
-   - Khi tác giả yêu cầu sửa một chương hoặc vá lỗ hổng logic, hãy kiểm tra chương trước, chương sau, hồ sơ nhân vật (vết thương, vị trí, tri thức, xưng hô) và World Bible để bản sửa khớp nối hoàn hảo.
-3. ✍️ ĐỀ XUẤT SỬA ĐỔI CÓ THỂ ÁP DỤNG TRỰC TIẾP:
-   Khi đề xuất sửa đổi cụ thể, bọc nội dung hoàn chỉnh trong một trong các thẻ sau để giao diện tự động hiện nút "Xem Diff & Áp dụng":
-   - Cập nhật Dàn ý tổng thể:
-     [PROPOSAL_PLANNING: <nội dung dàn ý mới>]
-   - Cập nhật Đề cương một chương:
-     [PROPOSAL_OUTLINE_CHAPTER_<chapterId>: <nội dung đề cương mới>]
-   - Cập nhật Tóm tắt một chương:
-     [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <nội dung tóm tắt mới>]
-   - Cập nhật/Sửa chữa toàn văn Bản thảo chương (PHẢI viết đầy đủ 100% từ đầu đến cuối, KHÔNG viết "[... giữ nguyên phần còn lại ...]"):
-     [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh>]
-
-Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứng và tôn trọng tuyệt đối bản sắc tác phẩm.`;
-
-    // Retain recent message history with generous length (up to 35,000 chars per turn)
-    const sanitizedHistory = (history || []).slice(-6).map(h => {
-      const parts = (h.parts || []).map(p => {
-        let text = sanitizeModelText(p.text);
-        if (text.length > 35000) {
-          text = text.substring(0, 35000) + "... [Đã giữ 35k ký tự]";
-        }
-        return { text };
+    const continuityLedger =
+      extraContext?.continuityLedger?.trim() ||
+      ragService.buildStoryContinuityLedger(story, {
+        upToChapterId: focusedChapter?.id,
+        maxChars: 24000
       });
-      return { role: h.role, parts };
+
+    const boostChapterIds =
+      extraContext?.boostChapterIds && extraContext.boostChapterIds.length > 0
+        ? extraContext.boostChapterIds
+        : lexicalChapterHits.map(h => h.chapterId);
+
+    const systemInstruction = promptBuilderService.buildCoEditSystemInstruction(story);
+    const groundedUserMessage = promptBuilderService.buildCoEditGroundedMessage(story, message, {
+      focusChapterId,
+      retrievedKnowledge,
+      retrievedChapters,
+      continuityLedger,
+      boostChapterIds,
+      plotArcAnalysis: extraContext?.plotArcAnalysis,
+      auditReport: extraContext?.auditReport
     });
+
+    // Compact previous turns (especially huge old [PROPOSAL_CONTENT_CHAPTER_*] walls) so live World Bible & current chapters stay dominant
+    const sanitizedHistory = (history || [])
+      .slice(-8)
+      .map(h => {
+        const parts = (h.parts || [])
+          .map(p => ({
+            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role)
+          }))
+          .filter(p => p.text);
+        return { role: h.role, parts };
+      })
+      .filter(h => h.parts.length > 0);
 
     const stream = requestThrottleService.enqueueStream(async function* () {
       let chat;
@@ -3260,7 +3379,7 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
         message,
         systemInstruction,
         historyTurns: sanitizedHistory.length,
-        chaptersContextChars: chaptersContext.length
+        chaptersContextChars: groundedUserMessage.length
       });
 
       let fullAccumulatedResponse = "";
@@ -3278,7 +3397,7 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
           } as any,
           history: sanitizedHistory
         });
-        const response = await chat.sendMessageStream({ message });
+        const response = await chat.sendMessageStream({ message: groundedUserMessage });
         for await (const chunk of response) {
           const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
           const text = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
@@ -3310,7 +3429,7 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
           message,
           systemInstruction,
           historyTurns: 0,
-          chaptersContextChars: chaptersContext.length
+          chaptersContextChars: groundedUserMessage.length
         });
 
         try {
@@ -3321,11 +3440,11 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
               systemInstruction,
               temperature: 0.7,
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingBudget: 0 }
+              thinkingConfig: { thinkingBudget: 512 }
             } as any,
             history: []
           });
-          const response = await chat.sendMessageStream({ message });
+          const response = await chat.sendMessageStream({ message: groundedUserMessage });
           let retryAccumulated = "";
           let retryMetadata: any = null;
           for await (const chunk of response) {
@@ -3475,8 +3594,8 @@ TRẢ VỀ JSON:
     return { data: parsed, usageMetadata: response?.usageMetadata };
   },
 
-  async *refineChapterStream(content: string, worldBible: string, interactionRules: string, genre: string, writingStyle: string, pov: string, pronounStyle: string, negativePrompt: string, nsfw: boolean, customInstruction: string, persistentDirectives: string, mechanics: string, styleReference: string) {
-    const prompt = promptBuilderService.buildRefineChapterPrompt(content, worldBible, interactionRules, genre, writingStyle, pov, pronounStyle, negativePrompt, nsfw, customInstruction, persistentDirectives, mechanics, styleReference || "");
+  async *refineChapterStream(content: string, worldBible: string, interactionRules: string, genre: string, writingStyle: string, pov: string, pronounStyle: string, negativePrompt: string, nsfw: boolean, customInstruction: string, persistentDirectives: string, mechanics: string, styleReference: string, continuityContext: string = '') {
+    const prompt = promptBuilderService.buildRefineChapterPrompt(content, worldBible, interactionRules, genre, writingStyle, pov, pronounStyle, negativePrompt, nsfw, customInstruction, persistentDirectives, mechanics, styleReference || "", continuityContext);
     const stream = safeGenerateContentStream({
       model: getFlash(),
       contents: [{ parts: [{ text: prompt }] }],

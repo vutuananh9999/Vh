@@ -3,7 +3,14 @@ import { serverVault } from './serverVault.ts';
 import { geminiService } from '../services/geminiService.ts';
 import { ragService } from '../services/ragService.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
-import { cleanAndDeduplicateTranslation } from '../utils/textDeduplication.ts';
+import {
+  cleanAndDeduplicateContinuation,
+  cleanAndDeduplicateTranslation
+} from '../utils/textDeduplication.ts';
+import {
+  buildCompleteWorldBibleBlock,
+  sampleManuscript
+} from '../services/promptBuilderService.ts';
 import type { ServerJobState, ServerJobType } from '../services/runtimeAdapter.ts';
 import type { Chapter, ChatMessage, EvolutionLog, ExtractionCategory, Story } from '../types.ts';
 
@@ -25,23 +32,56 @@ function cleanAccumulatedText(text: string): string {
 }
 
 async function getRelevantKnowledge(queryText: string, s: Story): Promise<string> {
-  const pool = ragService.buildKnowledgePool(s);
-  if (pool.length === 0) return s.setting || 'Chưa có bối cảnh.';
-  try {
-    const queryEmbedding = await geminiService.embedText(queryText);
-    if (!queryEmbedding || queryEmbedding.length === 0) return s.setting || 'Chưa có bối cảnh.';
+  const seen = new Set<string>();
+  const snippets: string[] = [];
 
-    const matches = ragService.search(queryEmbedding, pool, { topK: 12, minScore: 0.5 });
-    const retrievedText = matches.map(m => m.text).join('\n\n');
-    const activeEvolutionRules =
-      s.evolutionLogs
-        ?.filter(l => l.isActive)
-        .map(l => `- Quy tắc: ${l.learnedRule}`)
-        .join('\n') || '';
-    return `[BỐI CẢNH GỐC]:\n${s.setting}\n\n[TRI THỨC TRUY XUẤT]:\n${retrievedText}\n\n[TIẾN HÓA VĂN PHONG]:\n${activeEvolutionRules}`;
-  } catch {
-    return s.setting || 'Chưa có bối cảnh.';
+  // 1. Zero-API lexical & entity-name retrieval (luôn hoạt động kể cả khi dùng Custom AI Provider hoặc chưa index vector)
+  const lexicalHits = ragService.searchLexicalKnowledge(queryText, s, { topK: 14 });
+  for (const hit of lexicalHits) {
+    if (!seen.has(hit.text)) {
+      seen.add(hit.text);
+      snippets.push(hit.text);
+    }
   }
+
+  // 2. Semantic vector retrieval if embeddings exist
+  const pool = ragService.buildKnowledgePool(s);
+  if (pool.length > 0) {
+    try {
+      const queryEmbedding = await geminiService.embedText(queryText);
+      if (queryEmbedding && queryEmbedding.length > 0) {
+        const matches = ragService.search(queryEmbedding, pool, { topK: 10, minScore: 0.48 });
+        for (const m of matches) {
+          if (!seen.has(m.text)) {
+            seen.add(m.text);
+            snippets.push(m.text);
+          }
+        }
+      }
+    } catch {
+      // Vector retrieval is additive; lexical hits remain intact
+    }
+  }
+
+  return snippets.join('\n\n');
+}
+
+function getRelevantChapterMemory(
+  queryText: string,
+  s: Story,
+  excludeChapterIds: string[] = [],
+  topK = 5,
+  maxCharsPerHit = 950
+): { retrievedChapters: string; boostChapterIds: string[] } {
+  const hits = ragService.searchLexicalChapters(queryText, s, {
+    excludeChapterIds,
+    topK,
+    maxCharsPerHit
+  });
+  return {
+    retrievedChapters: hits.map(h => h.text).join('\n\n'),
+    boostChapterIds: hits.map(h => h.chapterId)
+  };
 }
 
 const JOB_LABELS: Record<ServerJobType, string> = {
@@ -212,6 +252,10 @@ class ServerJobManager {
           const sortedChapters = [...currentStory.chapters].sort((a, b) => a.order - b.order);
           const currentIndex = sortedChapters.findIndex(c => c.id === chapterId);
           const previousChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
+          const nextChapter =
+            currentIndex >= 0 && currentIndex < sortedChapters.length - 1
+              ? sortedChapters[currentIndex + 1]
+              : null;
           const previousChapterTime = previousChapter?.timeSetting || 'Không rõ';
 
           const isTransMode = payload.editorVersion === 'translation';
@@ -224,30 +268,57 @@ class ServerJobManager {
               ? previousChapter.content
               : previousChapter.translatedContent || ''
             : '';
-          const stmContext = initialContent.slice(-2500);
+          const stmContext = initialContent.slice(-3000);
           const userInstruction = String(payload.userInstruction || '');
           const targetWordCount = Number(payload.targetWordCount || 2000);
           const entitySearchContext = [
+            chapter.title,
             chapter.outline,
             userInstruction,
             stmContext,
             previousChapter?.summary,
-            prevText.slice(-1000)
+            prevText.slice(-1500)
           ]
             .filter(Boolean)
             .join(' ');
 
-          const immediateContext =
-            initialContent.trim().length < 300 && previousChapter
-              ? `[DIỄN BIẾN CUỐI CHƯƠNG TRƯỚC - ${previousChapter.title}]:\n${
-                  previousChapter.summary ? `Tóm tắt: ${previousChapter.summary}\n` : ''
-                }${prevText.slice(-1500)}\n\n[BẢN THẢO CHƯƠNG HIỆN TẠI (${chapter.title})]:\n${initialContent}`
-              : initialContent;
+          // Mục lục sự kiện các chương xa hơn (từ đầu đến currentIndex - 6) để AI không quên tiền truyện
+          const earlierTimelineList: string[] = [];
+          if (currentIndex > 6) {
+            for (let ci = 0; ci < currentIndex - 6; ci++) {
+              const c = sortedChapters[ci];
+              const cText = (c.content?.trim() ? c.content : c.translatedContent || '').trim();
+              const sum = (c.summary?.trim() || c.outline?.trim() || (cText ? sampleManuscript(cText, 240) : '(Chưa có nội dung)'))
+                .replace(/\s+/g, ' ')
+                .slice(0, 260);
+              earlierTimelineList.push(`• Chương ${ci + 1} (${c.title}): ${sum}`);
+            }
+          }
+          const allEarlierTimeline = earlierTimelineList.join('\n');
 
-          const recentSummaries = sortedChapters
-            .slice(Math.max(0, currentIndex - 4), currentIndex)
-            .map(c => `- ${c.title}: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`)
+          // Giữ ngữ cảnh nối từ 6 chương liền trước cho dù chương hiện tại đã viết > 300 ký tự
+          const recentSummariesList: string[] = [];
+          for (let ci = Math.max(0, currentIndex - 6); ci < currentIndex; ci++) {
+            const c = sortedChapters[ci];
+            const cText = (c.content?.trim() ? c.content : c.translatedContent || '').trim();
+            const sum =
+              c.summary?.trim() ||
+              c.outline?.trim() ||
+              (cText ? sampleManuscript(cText, 600) : '(Chưa có nội dung)');
+            recentSummariesList.push(`- ${c.title}: ${sum}`);
+          }
+          const earlierChapterSummary = [
+            recentSummariesList.join('\n'),
+            previousChapter && prevText.trim()
+              ? `\n[ĐOẠN KẾT CHƯƠNG LIỀN TRƯỚC (${previousChapter.title}) — ĐÃ VIẾT XONG, KHÔNG LẶP LẠI]:\n"""\n${prevText.slice(-2400)}\n"""`
+              : ''
+          ]
+            .filter(Boolean)
             .join('\n');
+
+          const nextChapterFence = nextChapter
+            ? `Chương kế tiếp: "${nextChapter.title}" — ${nextChapter.outline || nextChapter.summary || '(Chưa có đề cương)'}`
+            : '';
 
           let canonContext = '';
           if (currentStory.isFanfiction && currentStory.referenceDocs?.length) {
@@ -258,19 +329,26 @@ class ServerJobManager {
 
           this.updateJob(jobId, {
             progress: 25,
-            statusText: 'Đang truy xuất World Bible & mạch nhân vật...'
+            statusText: 'Đang khóa toàn bộ World Bible, nhân vật, ký ức liên chương & ranh giới chống lặp...'
           });
           checkAborted();
 
-          const dynamicWorldBible = await getRelevantKnowledge(entitySearchContext, currentStory);
-          const activeLogs = (currentStory.knowledgeLogs || [])
-            .filter(l => l.isActive)
-            .slice(0, 20)
-            .map(l => `- [${l.category}] ${l.title}: ${l.content}`)
-            .join('\n');
-          const combinedWorldBible = activeLogs
-            ? `${dynamicWorldBible}\n\n[KÝ ỨC THẾ GIỚI & LUẬT LỆ ĐÃ QUÉT]:\n${activeLogs}`
-            : dynamicWorldBible;
+          const retrievedSnippets = await getRelevantKnowledge(entitySearchContext, currentStory);
+          const { retrievedChapters } = getRelevantChapterMemory(
+            entitySearchContext,
+            currentStory,
+            [chapterId, ...(previousChapter ? [previousChapter.id] : [])],
+            6,
+            950
+          );
+          const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
+            upToChapterId: previousChapter?.id || chapterId,
+            maxChars: 14000
+          });
+          const completeWorldBlock = buildCompleteWorldBibleBlock(currentStory, retrievedSnippets, {
+            includePlanning: false,
+            maxKnowledgeChars: 22000
+          });
 
           this.updateJob(jobId, {
             progress: 45,
@@ -279,31 +357,40 @@ class ServerJobManager {
           checkAborted();
 
           const stream = geminiService.generateStoryStream(
-            immediateContext,
-            combinedWorldBible,
+            initialContent,
+            currentStory.setting || completeWorldBlock,
             currentStory.planning,
             currentStory.characters,
-            currentStory.interactionRules,
+            currentStory.interactionRules || '',
             userInstruction,
             currentStory.genre,
             currentStory.writingStyle || '',
             currentStory.pov,
             currentStory.pronounStyle,
-            currentStory.negativePrompt,
+            currentStory.negativePrompt || '',
             currentStory.nsfw || false,
             currentStory.hasSystem || false,
             targetWordCount,
             currentStory.persistentDirectives || '',
             currentStory.mechanics || '',
             chapter.outline,
-            recentSummaries,
+            '',
             currentStory.writingDNA,
             chapter.timeSetting || '',
             previousChapterTime,
             currentStory.currentTimeline || '',
             '',
             canonContext,
-            currentStory.fandomName || ''
+            currentStory.fandomName || '',
+            {
+              earlierChapterSummary,
+              allEarlierTimeline,
+              retrievedChapters,
+              continuityLedger,
+              nextChapterFence,
+              completeWorldBlock,
+              currentChapterTitle: chapter.title
+            }
           );
 
           let accumulated = '';
@@ -327,9 +414,12 @@ class ServerJobManager {
           }
 
           checkAborted();
-          const cleaned = cleanAccumulatedText(accumulated);
+          const rawAccumulated = cleanAccumulatedText(accumulated);
+          const dedupedContinuation = cleanAndDeduplicateContinuation(rawAccumulated, initialContent);
           const finalDraft =
-            initialContent + (initialContent && !initialContent.endsWith('\n') ? '\n\n' : '') + cleaned;
+            initialContent +
+            (initialContent && !initialContent.endsWith('\n') ? '\n\n' : '') +
+            dedupedContinuation;
 
           const latestStory = loadStoryOrThrow();
           const updatedStory: Story = {
@@ -385,10 +475,48 @@ class ServerJobManager {
 
           this.updateJob(jobId, {
             progress: 20,
-            statusText: 'Đang truy xuất tri thức để tinh chỉnh chương...'
+            statusText: 'Đang truy xuất tri thức & mạch nối liên chương để tinh chỉnh...'
           });
-          const ragQuery = chapter.outline?.trim() || `${chapter.title} ${sourceText.slice(0, 1500)}`;
-          const dynamicWorldBible = await getRelevantKnowledge(ragQuery, currentStory);
+          const ragQuery = `${chapter.title} ${chapter.outline || ''} ${sourceText.slice(0, 1500)}`.trim();
+          const retrievedSnippets = await getRelevantKnowledge(ragQuery, currentStory);
+          const dynamicWorldBible = buildCompleteWorldBibleBlock(currentStory, retrievedSnippets, {
+            includePlanning: true,
+            maxKnowledgeChars: 18000
+          });
+
+          const sortedChapters = [...currentStory.chapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          const chIdx = sortedChapters.findIndex(c => c.id === chapterId);
+          const prevCh = chIdx > 0 ? sortedChapters[chIdx - 1] : undefined;
+          const nextCh = chIdx >= 0 && chIdx < sortedChapters.length - 1 ? sortedChapters[chIdx + 1] : undefined;
+          const prevText = prevCh ? (prevCh.content?.trim() ? prevCh.content : prevCh.translatedContent || '') : '';
+          const earlierTimeline = chIdx > 0
+            ? sortedChapters
+                .slice(0, chIdx)
+                .map((c, ci) => `• Chương ${ci + 1} (${c.title}): ${(c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 220)).replace(/\s+/g, ' ').slice(0, 240)}`)
+                .join('\n')
+            : '';
+          const { retrievedChapters } = getRelevantChapterMemory(
+            ragQuery,
+            currentStory,
+            [chapterId, ...(prevCh ? [prevCh.id] : [])],
+            4,
+            800
+          );
+          const continuityLedger = prevCh
+            ? ragService.buildStoryContinuityLedger(currentStory, {
+                upToChapterId: prevCh.id,
+                maxChars: 12000
+              })
+            : '';
+          const continuityContext = [
+            earlierTimeline ? `[DÒNG DIỄN BIẾN CÁC CHƯƠNG TRƯỚC]:\n${earlierTimeline}` : '',
+            continuityLedger ? `[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM ĐÃ ĐẾN & SỰ KIỆN TRƯỚC ĐÓ]:\n${continuityLedger}` : '',
+            prevCh ? `[CHƯƠNG LIỀN TRƯỚC (${prevCh.title})]:\n- Tóm tắt: ${prevCh.summary || prevCh.outline || '(Chưa có)'}${prevText.trim() ? `\n- Đoạn kết để khớp nối:\n"""\n${prevText.slice(-1800)}\n"""` : ''}` : '',
+            nextCh ? `[RANH GIỚI CHƯƠNG KẾ TIẾP (${nextCh.title})]: ${nextCh.outline || nextCh.summary || '(Chưa có)'}` : '',
+            retrievedChapters ? `[TRÍCH ĐOẠN LIÊN QUAN TỪ CÁC CHƯƠNG KHÁC]:\n${retrievedChapters}` : ''
+          ]
+            .filter(Boolean)
+            .join('\n\n');
           checkAborted();
 
           this.updateJob(jobId, {
@@ -408,7 +536,8 @@ class ServerJobManager {
             String(payload.customInstruction || payload.userInstruction || ''),
             currentStory.persistentDirectives || '',
             currentStory.mechanics || '',
-            currentStory.styleReference || ''
+            currentStory.styleReference || '',
+            continuityContext
           );
 
           let accumulated = '';
@@ -518,20 +647,48 @@ class ServerJobManager {
           if (!chapter) throw new Error('Không tìm thấy chương chỉ định.');
 
           this.updateJob(jobId, {
-            progress: 35,
-            statusText: 'Đang dùng AI tự động viết/sửa bản thảo chương theo mạch lạc...'
+            progress: 20,
+            statusText: 'Đang truy xuất World Bible & tri thức liên quan...'
+          });
+
+          const searchQuery = [
+            chapter.title,
+            chapter.outline,
+            chapter.summary,
+            payload.options?.repairInstruction,
+            payload.options?.continuityNotes,
+            (chapter.content || '').slice(0, 1200)
+          ]
+            .filter(Boolean)
+            .join(' ');
+          const retrievedKnowledge = await getRelevantKnowledge(searchQuery, currentStory);
+          const { retrievedChapters } = getRelevantChapterMemory(searchQuery, currentStory, [chapterId], 6, 950);
+          const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
+            upToChapterId: chapterId,
+            maxChars: 14000
+          });
+          checkAborted();
+
+          this.updateJob(jobId, {
+            progress: 40,
+            statusText: 'Đang dùng AI tự động viết/sửa bản thảo chương theo đúng thiết lập...'
           });
 
           const result = await geminiService.generateChapterContentFromPlot(
             chapter,
             currentStory,
-            payload.options
+            {
+              ...(payload.options || {}),
+              retrievedKnowledge,
+              retrievedChapters,
+              continuityLedger
+            }
           );
           checkAborted();
 
           let finalText = chapter.content;
           if (result?.text) {
-            finalText = result.text;
+            finalText = cleanAndDeduplicateContinuation(result.text, '');
             const latest = loadStoryOrThrow();
             const updated: Story = {
               ...latest,
@@ -540,7 +697,7 @@ class ServerJobManager {
                   ? {
                       ...c,
                       originalContent: c.originalContent || c.content,
-                      content: result.text,
+                      content: finalText,
                       lastUpdated: Date.now()
                     }
                   : c
@@ -939,7 +1096,7 @@ class ServerJobManager {
           const prevCh = curIdx > 0 ? sorted[curIdx - 1] : null;
           const currentBody = (
             chapter.content?.trim() ? chapter.content : chapter.translatedContent || ''
-          ).slice(-2000);
+          ).slice(-3000);
           const shortTermMemory =
             currentBody ||
             (prevCh
@@ -947,13 +1104,13 @@ class ServerJobManager {
                   prevCh.content ||
                   prevCh.translatedContent ||
                   ''
-                ).slice(-1500)}`
+                ).slice(-2000)}`
               : '');
           const longTermMemory = sorted
-            .slice(Math.max(0, curIdx - 3), curIdx)
+            .slice(Math.max(0, curIdx - 5), curIdx)
             .map(
               c =>
-                `[${c.title}]: ${c.summary || (c.content || c.translatedContent || '').slice(0, 350)}`
+                `[${c.title}]: ${c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 450)}`
             )
             .join('\n');
 
@@ -1298,18 +1455,53 @@ class ServerJobManager {
           serverVault.saveStory({ ...currentStory, plotChatHistory: withUser });
 
           this.updateJob(jobId, {
-            progress: 35,
-            statusText: 'Plot AI đang phân tích và phản hồi...'
+            progress: 25,
+            statusText: 'Đang truy xuất World Bible, Pinned Memory & ký ức các chương trước...'
+          });
+
+          const focusChapterId = payload.focusChapterId ? String(payload.focusChapterId) : undefined;
+          const focusedChapter = focusChapterId
+            ? currentStory.chapters.find(c => c.id === focusChapterId)
+            : undefined;
+          const ragQuery = [
+            message,
+            focusedChapter?.title,
+            focusedChapter?.outline,
+            focusedChapter?.summary
+          ]
+            .filter(Boolean)
+            .join(' ');
+          const retrievedKnowledge = await getRelevantKnowledge(ragQuery, currentStory);
+          const { retrievedChapters, boostChapterIds } = getRelevantChapterMemory(
+            ragQuery,
+            currentStory,
+            focusChapterId ? [focusChapterId] : [],
+            8,
+            1000
+          );
+          const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
+            upToChapterId: focusChapterId,
+            maxChars: 24000
+          });
+          checkAborted();
+
+          this.updateJob(jobId, {
+            progress: 40,
+            statusText: 'Plot AI đang đối chiếu toàn bộ thiết lập, sổ cái dấu chân & phân tích...'
           });
 
           const stream = geminiService.chatPlotStream(
             baseHistory,
             message,
             currentStory,
-            payload.focusChapterId ? String(payload.focusChapterId) : undefined,
+            focusChapterId,
             {
               plotArcAnalysis: payload.plotArcAnalysis,
-              auditReport: payload.auditReport
+              auditReport: payload.auditReport,
+              retrievedKnowledge,
+              retrievedChapters,
+              continuityLedger,
+              boostChapterIds
             }
           );
 

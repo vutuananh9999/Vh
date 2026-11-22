@@ -119,6 +119,17 @@ export interface PinnedMemory {
   inventory: string[];
 }
 
+export interface ContinuityLedgerEntry {
+  id: string;
+  chapterId?: string;
+  chapterOrder: number;
+  chapterTitle: string;
+  content: string;
+  originKey?: string;
+  isManual?: boolean;
+  updatedAt: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'model';
   parts: { text: string }[];
@@ -174,6 +185,8 @@ export interface Story {
   writingDNA?: WritingDNA; 
   styleReference?: string;
   pinnedMemory?: PinnedMemory;
+  continuityLedger?: ContinuityLedgerEntry[];
+  continuityLedgerSuppressedKeys?: string[];
   planningChatHistory?: ChatMessage[];
   plotChatHistory?: ChatMessage[];
   characters: Character[];

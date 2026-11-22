@@ -182,3 +182,116 @@ function deduplicateConsecutiveParagraphs(text: string): string {
 
   return result.join('\n');
 }
+
+function normalizeForOverlapMatch(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Strips repeated tail passages from `existingPrefix`, prompt preambles,
+ * stream-restart duplicates, and already-written long paragraphs from an AI story continuation.
+ */
+export function cleanAndDeduplicateContinuation(rawText: string, existingPrefix: string = ''): string {
+  if (!rawText) return '';
+
+  let cleaned = rawText.trim();
+  cleaned = cleaned.replace(/^```[a-zA-Z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  const preamblePatterns = [
+    /^BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN[^:\n]*:\s*/i,
+    /^BẮT ĐẦU VIẾT TIẾP[^:\n]*:\s*/i,
+    /^\[(?:PHẦN )?(?:BẢN THẢO )?NỐI TIẾP\]:?\s*/i,
+    /^Dưới đây là phần viết tiếp[^:\n]*:\s*/i,
+    /^Phần tiếp theo[^:\n]*:\s*/i
+  ];
+  for (const pattern of preamblePatterns) {
+    cleaned = cleaned.replace(pattern, '').trim();
+  }
+
+  // Strip overlap if the model began by repeating the ending of existingPrefix
+  const prefixTrimmed = (existingPrefix || '').trim();
+  if (prefixTrimmed.length >= 40 && cleaned.length >= 30) {
+    const tailWindow = prefixTrimmed.slice(-2200);
+    const tailParas = tailWindow.split(/\n+/).map(p => p.trim()).filter(p => p.length >= 25);
+
+    // 1. Check if generated text starts with one or more trailing paragraphs of existingPrefix
+    for (let count = Math.min(4, tailParas.length); count >= 1; count--) {
+      const candidateBlock = tailParas.slice(-count).join('\n\n');
+      const normCandidate = normalizeForOverlapMatch(candidateBlock);
+      if (normCandidate.length < 25) continue;
+
+      const headNorm = normalizeForOverlapMatch(cleaned.slice(0, candidateBlock.length + 120));
+      if (headNorm.startsWith(normCandidate)) {
+        // Walk character index in cleaned until normalized length reaches normCandidate.length
+        let consumed = 0;
+        let normCount = 0;
+        let inSpace = false;
+        while (consumed < cleaned.length && normCount < normCandidate.length) {
+          const ch = cleaned[consumed];
+          if (/[\s\r\n\t]/.test(ch)) {
+            if (!inSpace && normCount > 0) {
+              normCount++;
+              inSpace = true;
+            }
+          } else {
+            normCount++;
+            inSpace = false;
+          }
+          consumed++;
+        }
+        const remainder = cleaned.slice(consumed).replace(/^[\s.,;:—–-]+/, '').trim();
+        if (remainder.length > 0) {
+          cleaned = remainder;
+        }
+        break;
+      }
+    }
+
+    // 2. Also check exact sentence/suffix overlap (last 45-250 chars) at the very start of continuation
+    const tailTail = tailWindow.slice(-300);
+    const cleanedHead = cleaned.slice(0, 300);
+    for (let len = Math.min(tailTail.length, cleanedHead.length); len >= 40; len--) {
+      if (tailTail.slice(-len) === cleanedHead.slice(0, len)) {
+        const remainder = cleaned.slice(len).trim();
+        if (remainder.length > 0) {
+          cleaned = remainder;
+        }
+        break;
+      }
+    }
+  }
+
+  cleaned = removeStreamRestartDuplicates(cleaned);
+  cleaned = deduplicateConsecutiveParagraphs(cleaned);
+
+  // Drop substantial paragraphs (>110 chars) that duplicate existing paragraphs verbatim in existingPrefix
+  if (prefixTrimmed.length > 120) {
+    const existingNormParas = new Set(
+      prefixTrimmed
+        .split(/\n+/)
+        .map(p => normalizeForOverlapMatch(p))
+        .filter(p => p.length > 110)
+    );
+    if (existingNormParas.size > 0) {
+      const filteredLines: string[] = [];
+      for (const line of cleaned.split('\n')) {
+        const norm = normalizeForOverlapMatch(line);
+        if (norm.length > 110 && existingNormParas.has(norm)) {
+          continue;
+        }
+        filteredLines.push(line);
+      }
+      const joined = filteredLines.join('\n').trim();
+      if (joined.length > 0) {
+        cleaned = joined;
+      }
+    }
+  }
+
+  return cleaned.trim() || rawText.trim();
+}
+
