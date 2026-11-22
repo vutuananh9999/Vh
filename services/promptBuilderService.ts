@@ -1157,30 +1157,33 @@ BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
     const cleaned = (text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/gi, '').trim();
     if (!cleaned) return '';
     if (role !== 'model' && role !== 'assistant') {
-      return cleaned.length > 6000 ? `${cleaned.slice(0, 6000)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
+      return cleaned.length > 3000 ? `${cleaned.slice(0, 3000)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
     }
     // Replace huge old [PROPOSAL_*] chapter walls with compact markers so stale drafts never override current live chapters/settings!
     const compacted = cleaned.replace(
       /\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)([^\]:\n]+)[:\]\s]*([\s\S]*?)(?=(?:\[PROPOSAL_|$))/gi,
       (_m, kind, idPart, body) => {
         const cleanBody = String(body || '').trim();
-        if (cleanBody.length <= 700) {
+        if (cleanBody.length <= 500) {
           return `[PROPOSAL_${kind}${idPart}: ${cleanBody}]`;
         }
-        return `[PROPOSAL_${kind}${idPart}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 260)}...\nCuối đoạn: ...${cleanBody.slice(-220)}]`;
+        return `[PROPOSAL_${kind}${idPart}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 220)}...\nCuối đoạn: ...${cleanBody.slice(-180)}]`;
       }
     );
-    return compacted.length > 7500
-      ? `${compacted.slice(0, 5000)}\n... [Đã rút gọn lịch sử AI cũ để giữ ngữ cảnh hiện hành sắc nét]\n${compacted.slice(-2000)}`
+    return compacted.length > 3200
+      ? `${compacted.slice(0, 2000)}\n... [Đã rút gọn lịch sử AI cũ để tiết kiệm token & giữ ngữ cảnh hiện hành sắc nét]\n${compacted.slice(-1000)}`
       : compacted;
   },
 
   buildCoEditSystemInstruction: (story: Story): string => {
-    const coreAnchors = buildCompleteWorldBibleBlock(story, '', {
-      includePlanning: true,
-      maxKnowledgeChars: 24000,
-      maxLogEntries: 100
-    });
+    const shortAnchors = [
+      story.persistentDirectives?.trim() ? `- Chỉ thị bền vững: ${story.persistentDirectives.trim().slice(0, 1800)}` : '',
+      story.negativePrompt?.trim() ? `- Điều cấm: ${story.negativePrompt.trim().slice(0, 1000)}` : '',
+      story.interactionRules?.trim() ? `- Quy tắc tương tác: ${story.interactionRules.trim().slice(0, 1200)}` : '',
+      story.mechanics?.trim() ? `- Cơ chế thế giới (tóm tắt): ${story.mechanics.trim().slice(0, 1500)}` : '',
+      formatPinnedMemoryBlock(story)
+    ].filter(Boolean).join('\n');
+
     return `Bạn là Chuyên gia Cố vấn & Đồng hành Hiệu đính Cốt truyện (AI Plot Collaborator & Co-Editor) của tác phẩm "${story.title}" (${story.genre || 'Tiểu thuyết'}).
 Nhiệm vụ của bạn là cùng tác giả phân tích mạch truyện, rà soát tính nhất quán nhân vật & thế giới, sửa chữa lỗ hổng logic, viết mới và nâng cấp/viết lại chương truyện theo đúng thiết lập và diễn biến toàn tác phẩm.
 
@@ -1191,7 +1194,7 @@ ${ORIGINAL_FIDELITY_PROTOCOL}
 - Tên truyện: "${story.title}" | Thể loại: ${story.genre || 'Tiểu thuyết'}
 - Ngôi kể (POV): ${story.pov || 'Ngôi thứ ba'} | Quy tắc xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}
 - Phong cách viết / Hồn văn: ${story.writingStyle || story.writingDNA?.narrativeVoice || 'Chuẩn mực văn học'}
-${coreAnchors}
+${shortAnchors ? `${shortAnchors}\n(Hồ sơ World Bible đầy đủ, Nhân vật & Sổ cái nằm ngay trong dữ liệu tác phẩm ở lượt tin nhắn bên dưới)` : ''}
 
 [GIAO THỨC CHỐNG QUÊN THIẾT LẬP, CHỐNG LẶP & BẢO TỒN BẢN THẢO]:
 1. 📖 HỒ SƠ & BẢN THẢO TRONG [DỮ LIỆU TÁC PHẨM HIỆN HÀNH] LÀ CHÂN LÝ DUY NHẤT:
@@ -1226,6 +1229,8 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
       boostChapterIds?: string[];
       plotArcAnalysis?: any;
       auditReport?: any;
+      maxChapterChars?: number;
+      maxKnowledgeChars?: number;
     } = {}
   ): string => {
     const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -1234,20 +1239,20 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
       sortedChapters[0];
 
     const chaptersContext = formatSmartChapterContext(sortedChapters, {
-      maxTotalChars: 750000,
+      maxTotalChars: options.maxChapterChars ?? 85000,
       focusChapterId: focusedChapter?.id,
       targetChapterMention: message,
       boostChapterIds: options.boostChapterIds,
-      recentPrevWindow: 8
+      recentPrevWindow: 3
     });
 
     const fullWorldBlock = buildCompleteWorldBibleBlock(story, options.retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: 60000,
-      maxLogEntries: 200
+      maxKnowledgeChars: options.maxKnowledgeChars ?? 22000,
+      maxLogEntries: 60
     });
 
-    const rosterText = formatCharacterRosterForPrompt(story.characters || [], 150);
+    const rosterText = formatCharacterRosterForPrompt(story.characters || [], 50);
 
     const analysisInsights: string[] = [];
     if (options.plotArcAnalysis) {

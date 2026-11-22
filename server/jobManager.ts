@@ -1476,12 +1476,12 @@ class ServerJobManager {
             ragQuery,
             currentStory,
             focusChapterId ? [focusChapterId] : [],
-            8,
-            1000
+            6,
+            800
           );
           const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
             upToChapterId: focusChapterId,
-            maxChars: 24000
+            maxChars: 14000
           });
           checkAborted();
 

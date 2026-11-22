@@ -3203,25 +3203,25 @@ ${safeBody}`;
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
     const retrievedKnowledge = ragService
-      .searchLexicalKnowledge(message, story, { topK: 12 })
+      .searchLexicalKnowledge(message, story, { topK: 10 })
       .map(h => h.text)
       .join('\n\n');
     const continuityLedger = ragService.buildStoryContinuityLedger(story, {
-      maxChars: 24000
+      maxChars: 14000
     });
     const fullWorldBlock = promptBuilderService.buildCompleteWorldBibleBlock(story, retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: 32000,
-      maxLogEntries: 120
+      maxKnowledgeChars: 20000,
+      maxLogEntries: 60
     });
     const chaptersOverview = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 320000,
+      maxTotalChars: 75000,
       targetChapterMention: message,
-      recentPrevWindow: 5
+      recentPrevWindow: 3
     });
     const characterRoster = (story.characters || []).length > 0
       ? story.characters
-          .slice(0, 80)
+          .slice(0, 50)
           .map(
             c =>
               `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}${c.status ? `, trạng thái: ${c.status}` : ''}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.knowledge ? `, tri thức/dấu chân: ${c.knowledge}` : ''}): ${c.description || ''}`
@@ -3229,9 +3229,12 @@ ${safeBody}`;
           .join('\n')
       : '(Chưa có hồ sơ nhân vật)';
 
-    const systemInstruction = `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán tuyệt đối với toàn bộ thiết lập & bản thảo đã viết.\n\n[NEO THIẾT LẬP TÁC PHẨM]:\n- Ngôi kể: ${story.pov || 'Ngôi thứ ba'} | Xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}\n${fullWorldBlock}`;
+    const systemInstruction = `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán tuyệt đối với toàn bộ thiết lập & bản thảo đã viết.\n\n[NEO THIẾT LẬP TÁC PHẨM]:\n- Ngôi kể: ${story.pov || 'Ngôi thứ ba'} | Xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}`;
 
     const groundedMessage = `[NGỮ CẢNH TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRƯỚC KHI TRẢ LỜI]
+[HỒ SƠ WORLD BIBLE & THIẾT LẬP ĐẦY ĐỦ]:
+${fullWorldBlock}
+
 [HỒ SƠ NHÂN VẬT (${(story.characters || []).length} nhân vật)]:
 ${characterRoster}
 ${continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM ĐÃ ĐẾN & SỰ KIỆN XUYÊN SUỐT]:\n${continuityLedger}` : ''}
@@ -3243,7 +3246,7 @@ ${chaptersOverview}
 ${message}`;
 
     const sanitizedHistory = (history || [])
-      .slice(-8)
+      .slice(-6)
       .map(h => ({
         role: h.role,
         parts: (h.parts || [])
@@ -3313,15 +3316,15 @@ ${message}`;
     const retrievedKnowledge =
       extraContext?.retrievedKnowledge?.trim() ||
       ragService
-        .searchLexicalKnowledge(ragQuery, story, { topK: 16 })
+        .searchLexicalKnowledge(ragQuery, story, { topK: 12 })
         .map(h => h.text)
         .join('\n\n');
 
     const lexicalChapterHits = !extraContext?.retrievedChapters
       ? ragService.searchLexicalChapters(ragQuery, story, {
           excludeChapterIds: focusedChapter ? [focusedChapter.id] : [],
-          topK: 8,
-          maxCharsPerHit: 1000
+          topK: 6,
+          maxCharsPerHit: 800
         })
       : [];
 
@@ -3333,7 +3336,7 @@ ${message}`;
       extraContext?.continuityLedger?.trim() ||
       ragService.buildStoryContinuityLedger(story, {
         upToChapterId: focusedChapter?.id,
-        maxChars: 24000
+        maxChars: 14000
       });
 
     const boostChapterIds =
@@ -3354,7 +3357,7 @@ ${message}`;
 
     // Compact previous turns (especially huge old [PROPOSAL_CONTENT_CHAPTER_*] walls) so live World Bible & current chapters stay dominant
     const sanitizedHistory = (history || [])
-      .slice(-8)
+      .slice(-6)
       .map(h => {
         const parts = (h.parts || [])
           .map(p => ({
@@ -3415,12 +3418,22 @@ ${message}`;
           usageMetadata: finalUsageMetadata
         });
       } catch (e: any) {
-        console.warn("Plot chat error, retrying without history:", e);
-        plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 sau khi lược bỏ toàn bộ lịch sử chat...");
+        console.warn("Plot chat error, retrying with compact payload & no history:", e);
+        plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 với ngữ cảnh gọn nhẹ & không lịch sử chat...");
+
+        const compactRetryMessage = promptBuilderService.buildCoEditGroundedMessage(story, message, {
+          focusChapterId,
+          retrievedKnowledge: retrievedKnowledge.slice(0, 5000),
+          retrievedChapters: retrievedChapters.slice(0, 3000),
+          continuityLedger: continuityLedger.slice(0, 9000),
+          boostChapterIds,
+          maxChapterChars: 36000,
+          maxKnowledgeChars: 12000
+        });
 
         const retryLogId = plotDebugLogger.startLog({
           type: 'plot_chat',
-          title: `[Retry Không Lịch Sử] Plot Co-Edit: ${message.substring(0, 35)}...`,
+          title: `[Retry Gọn Token] Plot Co-Edit: ${message.substring(0, 35)}...`,
           model: getFlash(),
           apiKey: getApiKey(),
           keyIndex: lastKeyIndex + 1,
@@ -3429,7 +3442,7 @@ ${message}`;
           message,
           systemInstruction,
           historyTurns: 0,
-          chaptersContextChars: groundedUserMessage.length
+          chaptersContextChars: compactRetryMessage.length
         });
 
         try {
@@ -3444,7 +3457,7 @@ ${message}`;
             } as any,
             history: []
           });
-          const response = await chat.sendMessageStream({ message: groundedUserMessage });
+          const response = await chat.sendMessageStream({ message: compactRetryMessage });
           let retryAccumulated = "";
           let retryMetadata: any = null;
           for await (const chunk of response) {
