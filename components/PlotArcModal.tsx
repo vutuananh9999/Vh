@@ -913,7 +913,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                     </div>
                 )}
 
-                <div className="flex-1 flex min-h-0 overflow-hidden">
+                <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden">
                     {/* Tab 1: Timeline */}
                     {activeTab === 'timeline' && (
                         <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6 sm:space-y-10 custom-scrollbar bg-gray-950/20">
@@ -1355,7 +1355,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
 
                     {/* Tab 3: Co-Edit (User-AI Collaborative plot & manuscript repair workshop) */}
                     {activeTab === 'co-edit' && (
-                        <div className="flex-1 flex flex-col overflow-hidden bg-gray-950/40">
+                        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-gray-950/40">
                             {/* Responsive Mobile Sub-Tab Bar - Displays ONLY on screens below lg */}
                             <div className="lg:hidden flex p-2 bg-gray-950/60 border-b border-gray-850 gap-2 shrink-0">
                                 <button 
@@ -1385,9 +1385,9 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                 </button>
                             </div>
 
-                            <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+                            <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 overflow-hidden">
                                 {/* Left Column: Chat Container */}
-                                <div className={`flex-1 flex flex-col h-full bg-gray-900/10 border-r border-gray-800/80 ${
+                                <div className={`flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-gray-900/10 border-r border-gray-800/80 ${
                                     coEditSubTab === 'chat' ? 'flex' : 'hidden lg:flex'
                                 }`}>
                                     {/* Chat Header Info + Target Chapter Selector */}
@@ -1432,7 +1432,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                     </div>
 
                                     {/* Message Log */}
-                                    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
+                                    <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 space-y-4 custom-scrollbar">
                                         {(!story?.plotChatHistory || story.plotChatHistory.length === 0) ? (
                                             <div className="h-full flex flex-col items-center justify-center text-center p-6 sm:p-8 space-y-4 max-w-md mx-auto">
                                                 <div className="p-4 bg-rose-500/10 rounded-full border border-rose-500/20">
@@ -1454,19 +1454,19 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                 if (!hasContent && !isUser) return null;
 
                                                 return (
-                                                    <div key={i} className={`flex gap-3 max-w-[92%] sm:max-w-[85%] ${isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'}`}>
+                                                    <div key={i} className={`flex gap-3 min-w-0 max-w-[92%] sm:max-w-[85%] ${isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'}`}>
                                                         {/* Avatar Icon */}
                                                         <div className={`w-8 h-8 rounded-xl shrink-0 border flex items-center justify-center text-xs font-black uppercase ${isUser ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-purple-500/10 border-purple-500/20 text-purple-400'}`}>
                                                             {isUser ? 'U' : 'AI'}
                                                         </div>
 
-                                                        <div className={`p-3.5 sm:p-4 rounded-2xl text-[13.5px] sm:text-sm border leading-relaxed shadow-md ${
+                                                        <div className={`min-w-0 max-w-full overflow-hidden p-3.5 sm:p-4 rounded-2xl text-[13.5px] sm:text-sm border leading-relaxed shadow-md ${
                                                             isUser 
                                                                 ? 'bg-rose-950/20 border-rose-500/30 text-rose-100 rounded-tr-none' 
                                                                 : 'bg-gray-800 border-gray-700/60 text-gray-200 rounded-tl-none font-serif shadow-inner'
                                                         }`}>
                                                             {parsed.cleanText && (
-                                                                <div className="whitespace-pre-wrap">{parsed.cleanText}</div>
+                                                                <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{parsed.cleanText}</div>
                                                             )}
 
                                                              {parsed.proposals.map((prop, pIdx) => {
@@ -1577,7 +1577,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                                             </button>
                                                                         </div>
                                                                     </div>
-                                                                    <div className={`${isExpanded ? 'max-h-none' : 'max-h-96'} overflow-y-auto p-3.5 rounded-xl bg-gray-950/90 border border-gray-750 text-xs sm:text-[13px] font-serif leading-relaxed text-gray-200 whitespace-pre-wrap select-text custom-scrollbar`}>
+                                                                    <div className={`${isExpanded ? 'max-h-none' : 'max-h-96'} overflow-y-auto overflow-x-hidden p-3.5 rounded-xl bg-gray-950/90 border border-gray-750 text-xs sm:text-[13px] font-serif leading-relaxed text-gray-200 whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text custom-scrollbar`}>
                                                                         {prop.content}
                                                                     </div>
                                                                 </div>
@@ -1611,16 +1611,16 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
 
 
                                     {/* Chat Input bar */}
-                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 space-y-2">
+                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 min-w-0 space-y-2">
                                         {/* Quick Presets Bar */}
                                         {!isPlotPlanning && (
-                                            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] custom-scrollbar">
+                                            <div className="flex flex-wrap items-center gap-1.5 pb-0.5 text-[11px]">
                                                 {promptPresets.map((preset, idx) => (
                                                     <button
                                                         key={idx}
                                                         type="button"
                                                         onClick={() => handleSendChat(preset.prompt)}
-                                                        className="px-2.5 py-1 rounded-lg bg-gray-800/90 hover:bg-purple-900/50 text-gray-200 border border-gray-700 hover:border-purple-500/40 shrink-0 transition-all cursor-pointer font-semibold"
+                                                        className="px-2.5 py-1 rounded-lg bg-gray-800/90 hover:bg-purple-900/50 text-gray-200 border border-gray-700 hover:border-purple-500/40 max-w-full truncate transition-all cursor-pointer font-semibold"
                                                     >
                                                         {preset.label}
                                                     </button>
@@ -1640,7 +1640,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                             </div>
                                         )}
 
-                                        <div className="relative flex items-end bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
+                                        <div className="relative flex items-end min-w-0 bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
                                             <textarea 
                                                 rows={2}
                                                 value={coEditInput}
@@ -1652,7 +1652,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                     }
                                                 }}
                                                 disabled={isPlotPlanning}
-                                                className="flex-1 bg-transparent px-3 py-1.5 text-base sm:text-sm text-white outline-none placeholder:text-gray-600 resize-none max-h-36 custom-scrollbar"
+                                                className="flex-1 min-w-0 bg-transparent px-3 py-1.5 text-base sm:text-sm text-white outline-none placeholder:text-gray-600 resize-none max-h-36 custom-scrollbar"
                                                 placeholder="Nhập chỉ đạo viết hoặc sửa chương trong Co-Edit (Enter để gửi, Shift+Enter xuống dòng)..."
                                             />
                                             <button 
@@ -1667,7 +1667,7 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                 </div>
 
                                 {/* Right Column: Revision Proposals Drawer */}
-                                <div className={`w-full lg:w-96 flex flex-col h-full bg-gray-900/40 p-4 sm:p-6 space-y-4 overflow-y-auto custom-scrollbar ${
+                                <div className={`w-full lg:w-96 shrink-0 flex flex-col h-full min-w-0 bg-gray-900/40 p-4 sm:p-6 space-y-4 overflow-y-auto overflow-x-hidden custom-scrollbar ${
                                     coEditSubTab === 'proposals' ? 'flex' : 'hidden lg:flex'
                                 }`}>
                                     <div className="shrink-0 border-b border-gray-800 pb-3">
@@ -1793,18 +1793,18 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                         </div>
 
                                                         {/* Side-by-side / Compare View Box */}
-                                                        <div className="space-y-2">
+                                                        <div className="space-y-2 min-w-0">
                                                             {proposal.originalContent && (
-                                                                <div className="space-y-1">
+                                                                <div className="space-y-1 min-w-0">
                                                                     <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider block">Nội dung hiện tại:</span>
-                                                                    <p className="text-[10px] text-gray-400 bg-black/30 p-2 rounded-lg max-h-20 overflow-y-auto font-mono whitespace-pre-wrap line-clamp-3">
+                                                                    <p className="text-[10px] text-gray-400 bg-black/30 p-2 rounded-lg max-h-20 overflow-y-auto overflow-x-hidden font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere] line-clamp-3">
                                                                         {proposal.originalContent}
                                                                     </p>
                                                                 </div>
                                                             )}
-                                                            <div className="space-y-1">
+                                                            <div className="space-y-1 min-w-0">
                                                                 <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block">Đề xuất cập nhật:</span>
-                                                                <p className="text-[10px] text-gray-200 bg-black/60 p-2.5 rounded-lg border border-white/5 max-h-36 overflow-y-auto font-serif whitespace-pre-wrap select-text">
+                                                                <p className="text-[10px] text-gray-200 bg-black/60 p-2.5 rounded-lg border border-white/5 max-h-36 overflow-y-auto overflow-x-hidden font-serif whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text">
                                                                     {proposal.content}
                                                                 </p>
                                                             </div>
