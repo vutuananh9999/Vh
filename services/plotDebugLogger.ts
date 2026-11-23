@@ -1,8 +1,10 @@
 import { redactSecrets } from './secureCredentialStorage.ts';
 import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import { getActiveJobAbortContext, isAbortError } from './jobAbortContext.ts';
 
 export interface PlotDebugLogItem {
   id: string;
+  jobId?: string;
   timestamp: number;
   lastUpdateAt?: number;
   type:
@@ -24,6 +26,7 @@ export interface PlotDebugLogItem {
     | 'pending'
     | 'streaming'
     | 'success'
+    | 'cancelled'
     | 'rate_limit_429'
     | 'error_400'
     | 'error_403'
@@ -84,6 +87,8 @@ class PlotDebugLoggerService {
   private listeners: Array<(logs: PlotDebugLogItem[]) => void> = [];
   private notifyTimer: ReturnType<typeof setTimeout> | null = null;
   private broadcastHook: ((logs: PlotDebugLogItem[]) => void) | null = null;
+  private cancelledJobIds = new Set<string>();
+  private cancelledLogIds = new Set<string>();
 
   public setBroadcastHook(hook: (logs: PlotDebugLogItem[]) => void): void {
     this.broadcastHook = hook;
@@ -93,6 +98,29 @@ class PlotDebugLoggerService {
     if (!Array.isArray(serverLogs)) return;
     this.logs = serverLogs.slice(0, MAX_LOGS);
     this.emitNow();
+  }
+
+  private rememberCancelledJob(jobId: string) {
+    this.cancelledJobIds.add(jobId);
+    if (this.cancelledJobIds.size > 200) {
+      const first = this.cancelledJobIds.values().next().value;
+      if (first) this.cancelledJobIds.delete(first);
+    }
+  }
+
+  private rememberCancelledLog(logId: string) {
+    this.cancelledLogIds.add(logId);
+    if (this.cancelledLogIds.size > 300) {
+      const first = this.cancelledLogIds.values().next().value;
+      if (first) this.cancelledLogIds.delete(first);
+    }
+  }
+
+  private isItemCancelled(item: PlotDebugLogItem): boolean {
+    if (item.status === 'cancelled') return true;
+    if (this.cancelledLogIds.has(item.id)) return true;
+    if (item.jobId && this.cancelledJobIds.has(item.jobId)) return true;
+    return false;
   }
 
   private emitNow() {
@@ -185,6 +213,7 @@ class PlotDebugLoggerService {
   }
 
   public startLog(params: {
+    jobId?: string;
     type: PlotDebugLogItem['type'];
     title: string;
     model: string;
@@ -201,6 +230,11 @@ class PlotDebugLoggerService {
   }): string {
     const id = 'plot_log_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
     const now = Date.now();
+    const activeCtx = getActiveJobAbortContext();
+    const resolvedJobId = params.jobId || activeCtx.jobId;
+    const preAborted =
+      Boolean(resolvedJobId && this.cancelledJobIds.has(resolvedJobId)) ||
+      Boolean(activeCtx.signal?.aborted);
 
     const sysChars = params.systemInstruction?.length || 0;
     const msgChars = params.message?.length || 0;
@@ -209,6 +243,7 @@ class PlotDebugLoggerService {
 
     const logItem: PlotDebugLogItem = {
       id,
+      jobId: resolvedJobId,
       timestamp: now,
       lastUpdateAt: now,
       type: params.type,
@@ -218,8 +253,11 @@ class PlotDebugLoggerService {
       keyIndex: params.keyIndex,
       totalKeys: params.totalKeys,
       keySource: params.keySource,
-      status: 'pending',
-      currentPhase: params.currentPhase || `Đang gửi yêu cầu tới ${params.model}...`,
+      status: preAborted ? 'cancelled' : 'pending',
+      ...(preAborted ? { statusCode: 'HỦY', durationMs: 1 } : {}),
+      currentPhase: preAborted
+        ? 'Đã hủy bởi người dùng'
+        : params.currentPhase || `Đang gửi yêu cầu tới ${params.model}...`,
       attemptCount: 1,
       chunksCount: 0,
       receivedChars: 0,
@@ -242,12 +280,63 @@ class PlotDebugLoggerService {
       hostEnv: this.getHostEnv()
     };
 
+    if (preAborted) {
+      this.rememberCancelledLog(id);
+    }
+
     this.logs.unshift(logItem);
     if (this.logs.length > MAX_LOGS) {
       this.logs = this.logs.slice(0, MAX_LOGS);
     }
     this.saveLogsImmediate();
     return id;
+  }
+
+  public cancelByJobId(jobId: string, reason: string = 'Đã hủy bởi người dùng'): number {
+    if (!jobId) return 0;
+    this.rememberCancelledJob(jobId);
+    const now = Date.now();
+    let count = 0;
+    for (const item of this.logs) {
+      if (item.jobId !== jobId) continue;
+      if (item.status === 'pending' || item.status === 'streaming' || item.status === 'rate_limit_429') {
+        item.status = 'cancelled';
+        item.statusCode = 'HỦY';
+        item.currentPhase = reason;
+        item.lastUpdateAt = now;
+        item.durationMs = Math.max(1, now - item.timestamp);
+        item.diagnosticAdvice = undefined;
+        item.rawError = undefined;
+        item.errorStack = undefined;
+        this.rememberCancelledLog(item.id);
+        count++;
+      }
+    }
+    if (count > 0) {
+      this.saveLogsImmediate();
+    }
+    return count;
+  }
+
+  public cancelLog(id: string, reason: string = 'Đã hủy bởi người dùng'): boolean {
+    if (!id) return false;
+    this.rememberCancelledLog(id);
+    const item = this.logs.find(l => l.id === id);
+    if (!item) return false;
+    if (item.status !== 'pending' && item.status !== 'streaming' && item.status !== 'rate_limit_429') {
+      return false;
+    }
+    const now = Date.now();
+    item.status = 'cancelled';
+    item.statusCode = 'HỦY';
+    item.currentPhase = reason;
+    item.lastUpdateAt = now;
+    item.durationMs = Math.max(1, now - item.timestamp);
+    item.diagnosticAdvice = undefined;
+    item.rawError = undefined;
+    item.errorStack = undefined;
+    this.saveLogsImmediate();
+    return true;
   }
 
   public updateAttempt(
@@ -264,7 +353,7 @@ class PlotDebugLoggerService {
     }
   ) {
     const item = this.logs.find(l => l.id === id);
-    if (!item) return;
+    if (!item || this.isItemCancelled(item)) return;
 
     if (params.model) item.model = params.model;
     if (params.apiKey !== undefined) item.keyMask = maskApiKey(params.apiKey);
@@ -280,7 +369,7 @@ class PlotDebugLoggerService {
 
   public updateStreaming(id: string, chunkSnippet: string) {
     const item = this.logs.find(l => l.id === id);
-    if (!item) return;
+    if (!item || this.isItemCancelled(item)) return;
 
     item.status = 'streaming';
     item.chunksCount = (item.chunksCount || 0) + 1;
@@ -313,7 +402,7 @@ class PlotDebugLoggerService {
     }
   ) {
     const item = this.logs.find(l => l.id === id);
-    if (!item) return;
+    if (!item || this.isItemCancelled(item)) return;
 
     const now = Date.now();
     const resolvedFull =
@@ -340,6 +429,26 @@ class PlotDebugLoggerService {
     if (!item) return;
 
     const now = Date.now();
+    const activeCtx = getActiveJobAbortContext();
+    const isCancelled =
+      this.isItemCancelled(item) ||
+      isAbortError(error) ||
+      Boolean(activeCtx.signal?.aborted && (!item.jobId || item.jobId === activeCtx.jobId));
+
+    if (isCancelled) {
+      item.status = 'cancelled';
+      item.statusCode = 'HỦY';
+      item.lastUpdateAt = now;
+      item.currentPhase = 'Đã hủy bởi người dùng';
+      item.diagnosticAdvice = undefined;
+      item.rawError = undefined;
+      item.errorStack = undefined;
+      item.durationMs = Math.max(1, durationMsOverride ?? (now - item.timestamp));
+      this.rememberCancelledLog(item.id);
+      this.saveLogsImmediate();
+      return;
+    }
+
     const errMsg = error?.message || String(error);
     const errLower = errMsg.toLowerCase();
 
@@ -349,9 +458,7 @@ class PlotDebugLoggerService {
 
     if (
       errLower.includes('timeout') ||
-      errLower.includes('quá thời gian') ||
-      errLower.includes('aborted') ||
-      errLower.includes('abort')
+      errLower.includes('quá thời gian')
     ) {
       status = 'network_error';
       statusCode = 'TIMEOUT';

@@ -1,7 +1,17 @@
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { serverVault } from './serverVault.ts';
 import { geminiService } from '../services/geminiService.ts';
 import { ragService } from '../services/ragService.ts';
+import { plotDebugLogger } from '../services/plotDebugLogger.ts';
+import { requestThrottleService } from '../services/requestThrottleService.ts';
+import {
+  abortableSleep,
+  createAbortError,
+  isAbortError,
+  registerServerJobContextProvider,
+  type JobAbortContext
+} from '../services/jobAbortContext.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
 import {
   cleanAndDeduplicateContinuation,
@@ -13,6 +23,9 @@ import {
 } from '../services/promptBuilderService.ts';
 import type { ServerJobState, ServerJobType } from '../services/runtimeAdapter.ts';
 import type { Chapter, ChatMessage, EvolutionLog, ExtractionCategory, Story } from '../types.ts';
+
+const jobAbortStorage = new AsyncLocalStorage<JobAbortContext>();
+registerServerJobContextProvider(() => jobAbortStorage.getStore());
 
 function generateId(): string {
   try {
@@ -171,12 +184,18 @@ class ServerJobManager {
 
   public cancelJob(id: string): boolean {
     const job = this.jobs.find(j => j.id === id);
-    if (!job || job.status !== 'running') return false;
     const ctrl = this.controllers.get(id);
     if (ctrl) {
       ctrl.abort();
       this.controllers.delete(id);
     }
+    const cancelledLogs = plotDebugLogger.cancelByJobId(id, 'Người dùng đã bấm Hủy lệnh AI');
+    const cancelledQueue = requestThrottleService.cancelByJobId(id);
+
+    if (!job || job.status !== 'running') {
+      return Boolean(ctrl) || cancelledLogs > 0 || cancelledQueue > 0;
+    }
+
     this.updateJob(
       id,
       {
@@ -188,6 +207,45 @@ class ServerJobManager {
       true
     );
     return true;
+  }
+
+  public cancelDebugLog(logId: string): boolean {
+    const log = plotDebugLogger.getLogs().find(l => l.id === logId);
+    let cancelled = plotDebugLogger.cancelLog(logId, 'Người dùng đã bấm Hủy trong Debug Log');
+    if (log?.jobId) {
+      cancelled = this.cancelJob(log.jobId) || cancelled;
+    }
+    return cancelled;
+  }
+
+  public cancelAllActive(): { cancelledJobs: number; cancelledLogs: number; cancelledQueue: number } {
+    let cancelledJobs = 0;
+    for (const job of this.jobs) {
+      if (job.status === 'running') {
+        if (this.cancelJob(job.id)) {
+          cancelledJobs++;
+        }
+      }
+    }
+    // Abort any dangling controllers just in case
+    for (const [id, ctrl] of this.controllers.entries()) {
+      ctrl.abort();
+      this.controllers.delete(id);
+      plotDebugLogger.cancelByJobId(id, 'Người dùng đã hủy toàn bộ lệnh AI');
+      requestThrottleService.cancelByJobId(id);
+    }
+
+    const cancelledQueue = requestThrottleService.clearQueue();
+    let cancelledLogs = 0;
+    for (const log of plotDebugLogger.getLogs()) {
+      if (log.status === 'pending' || log.status === 'streaming') {
+        if (plotDebugLogger.cancelLog(log.id, 'Người dùng đã hủy toàn bộ lệnh AI')) {
+          cancelledLogs++;
+        }
+      }
+    }
+
+    return { cancelledJobs, cancelledLogs, cancelledQueue };
   }
 
   public startJob(type: ServerJobType, payload: any): ServerJobState {
@@ -228,10 +286,11 @@ class ServerJobManager {
     payload: any,
     signal: AbortSignal
   ): Promise<void> {
+    return jobAbortStorage.run({ jobId, signal }, async () => {
     try {
       const checkAborted = () => {
         if (signal.aborted) {
-          throw new Error('Tác vụ đã được hủy.');
+          throw createAbortError('Tác vụ đã được hủy.');
         }
       };
 
@@ -882,11 +941,11 @@ class ServerJobManager {
                 serverVault.saveStory(updated);
               }
             } catch (err: any) {
-              if (signal.aborted) throw err;
+              if (signal.aborted || isAbortError(err)) throw err;
               console.error(`[JobManager] Summarize failed for ${latestChapter.title}:`, err);
             }
 
-            await new Promise(r => setTimeout(r, 700));
+            await abortableSleep(700, signal);
           }
 
           this.updateJob(
@@ -1023,7 +1082,7 @@ class ServerJobManager {
             });
 
             if (idx < chaptersToProcess.length - 1) {
-              await new Promise(r => setTimeout(r, 700));
+              await abortableSleep(700, signal);
             }
           }
 
@@ -1733,7 +1792,9 @@ class ServerJobManager {
           throw new Error(`Không hỗ trợ loại tác vụ "${type}".`);
       }
     } catch (err: any) {
-      if (signal.aborted) {
+      if (signal.aborted || isAbortError(err)) {
+        plotDebugLogger.cancelByJobId(jobId, 'Tác vụ đã bị hủy bởi người dùng');
+        requestThrottleService.cancelByJobId(jobId);
         this.updateJob(
           jobId,
           {
@@ -1758,7 +1819,12 @@ class ServerJobManager {
       }
     } finally {
       this.controllers.delete(jobId);
+      if (signal.aborted) {
+        plotDebugLogger.cancelByJobId(jobId, 'Tác vụ đã bị hủy bởi người dùng');
+        requestThrottleService.cancelByJobId(jobId);
+      }
     }
+    });
   }
 
   public async runUtilityAction(action: string, payload: any): Promise<any> {

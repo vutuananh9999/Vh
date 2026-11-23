@@ -11,6 +11,7 @@ import {
 } from './modelDiscoveryService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
 import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
+import { getActiveJobAbortContext } from './jobAbortContext.ts';
 
 export class ProviderClientError extends Error {
   public readonly status?: number;
@@ -329,6 +330,12 @@ export const providerClientService = {
     sendParams?: any,
     signal?: AbortSignal
   ): Promise<any> {
+    const effectiveSignal = signal || getActiveJobAbortContext().signal;
+    if (effectiveSignal?.aborted) {
+      throw new ProviderClientError(`[${profile.name}] Yêu cầu đã bị hủy bởi người dùng.`, {
+        errorCode: 'CANCELLED'
+      });
+    }
     const validationErr = validateProviderBeforeRequest(profile);
     if (validationErr) {
       throw new ProviderClientError(`[${profile.name}] ${validationErr}`, {
@@ -368,7 +375,7 @@ export const providerClientService = {
           }
           return fetch(endpoint, {
             method: 'POST',
-            signal,
+            signal: effectiveSignal,
             headers,
             body: JSON.stringify(body)
           });
@@ -430,7 +437,7 @@ export const providerClientService = {
 
           return fetch(endpoint, {
             method: 'POST',
-            signal,
+            signal: effectiveSignal,
             headers,
             body: JSON.stringify(body)
           });
@@ -508,7 +515,7 @@ export const providerClientService = {
 
         return fetch(endpoint, {
           method: 'POST',
-          signal,
+          signal: effectiveSignal,
           headers,
           body: JSON.stringify(payload)
         });
@@ -571,9 +578,9 @@ export const providerClientService = {
       });
     } catch (err: any) {
       if (err instanceof ProviderClientError) throw err;
-      if (err?.name === 'AbortError' || signal?.aborted) {
-        throw new ProviderClientError(`[${profile.name}] Yêu cầu hết thời gian chờ hoặc bị hủy.`, {
-          errorCode: 'TIMEOUT'
+      if (err?.name === 'AbortError' || effectiveSignal?.aborted) {
+        throw new ProviderClientError(`[${profile.name}] Yêu cầu đã bị hủy bởi người dùng.`, {
+          errorCode: 'CANCELLED'
         });
       }
       const safeMsg = redactSecrets(String(err?.message || err || 'Lỗi kết nối'), [profile.apiKey]);
@@ -597,6 +604,12 @@ export const providerClientService = {
     onChunk?: (text: string) => void,
     signal?: AbortSignal
   ): AsyncGenerator<any, void, unknown> {
+    const effectiveSignal = signal || getActiveJobAbortContext().signal;
+    if (effectiveSignal?.aborted) {
+      throw new ProviderClientError(`[${profile.name}] Yêu cầu stream đã bị hủy bởi người dùng.`, {
+        errorCode: 'CANCELLED'
+      });
+    }
     const validationErr = validateProviderBeforeRequest(profile);
     if (validationErr) {
       throw new ProviderClientError(`[${profile.name}] ${validationErr}`, {
@@ -633,7 +646,7 @@ export const providerClientService = {
       };
       res = await fetch(endpoint, {
         method: 'POST',
-        signal,
+        signal: effectiveSignal,
         headers,
         body: JSON.stringify(body)
       });
@@ -654,7 +667,7 @@ export const providerClientService = {
 
       res = await fetch(endpoint, {
         method: 'POST',
-        signal,
+        signal: effectiveSignal,
         headers,
         body: JSON.stringify({
           contents,
@@ -700,7 +713,7 @@ export const providerClientService = {
         }
         return fetch(endpoint, {
           method: 'POST',
-          signal,
+          signal: effectiveSignal,
           headers,
           body: JSON.stringify(payload)
         });
@@ -746,65 +759,104 @@ export const providerClientService = {
     let buffer = '';
     let promptTokens = 0;
     let completionTokens = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line || !line.startsWith('data:')) continue;
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr || jsonStr === '[DONE]') continue;
-
-        try {
-          const parsed = JSON.parse(jsonStr);
-
-          if (format === 'anthropic') {
-            if (parsed.type === 'message_start' && parsed.message?.usage) {
-              promptTokens = parsed.message.usage.input_tokens || 0;
-            } else if (parsed.type === 'message_delta' && parsed.usage) {
-              completionTokens = parsed.usage.output_tokens || completionTokens;
-            } else if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-              const txt = parsed.delta.text;
-              onChunk?.(txt);
-              yield buildGeminiCompatibleResponse(txt);
-            }
-          } else if (format === 'gemini') {
-            if (parsed.usageMetadata) {
-              promptTokens = parsed.usageMetadata.promptTokenCount || promptTokens;
-              completionTokens = parsed.usageMetadata.candidatesTokenCount || completionTokens;
-            }
-            const partsText = parsed?.candidates?.[0]?.content?.parts
-              ?.map((p: any) => p?.text || '')
-              .join('');
-            if (typeof partsText === 'string' && partsText.length > 0) {
-              onChunk?.(partsText);
-              yield buildGeminiCompatibleResponse(partsText);
-            }
-          } else {
-            if (parsed.usage) {
-              promptTokens = parsed.usage.prompt_tokens || promptTokens;
-              completionTokens = parsed.usage.completion_tokens || completionTokens;
-            }
-            const deltaText = parsed?.choices?.[0]?.delta?.content;
-            if (typeof deltaText === 'string' && deltaText.length > 0) {
-              onChunk?.(deltaText);
-              yield buildGeminiCompatibleResponse(deltaText);
-            }
-          }
-        } catch {
-          // Ignore partial SSE chunk JSON
-        }
+    const onAbortReader = () => {
+      try {
+        void reader.cancel().catch(() => {});
+      } catch {
+        // ignore
       }
+    };
+    if (effectiveSignal) {
+      effectiveSignal.addEventListener('abort', onAbortReader, { once: true });
     }
 
-    if (promptTokens > 0 || completionTokens > 0) {
-      yield buildGeminiCompatibleResponse('', { promptTokens, completionTokens });
+    try {
+      while (true) {
+        if (effectiveSignal?.aborted) {
+          throw new ProviderClientError(`[${profile.name}] Yêu cầu stream đã bị hủy bởi người dùng.`, {
+            errorCode: 'CANCELLED'
+          });
+        }
+        const { done, value } = await reader.read();
+        if (effectiveSignal?.aborted) {
+          throw new ProviderClientError(`[${profile.name}] Yêu cầu stream đã bị hủy bởi người dùng.`, {
+            errorCode: 'CANCELLED'
+          });
+        }
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line || !line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr || jsonStr === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+
+            if (format === 'anthropic') {
+              if (parsed.type === 'message_start' && parsed.message?.usage) {
+                promptTokens = parsed.message.usage.input_tokens || 0;
+              } else if (parsed.type === 'message_delta' && parsed.usage) {
+                completionTokens = parsed.usage.output_tokens || completionTokens;
+              } else if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+                const txt = parsed.delta.text;
+                onChunk?.(txt);
+                yield buildGeminiCompatibleResponse(txt);
+              }
+            } else if (format === 'gemini') {
+              if (parsed.usageMetadata) {
+                promptTokens = parsed.usageMetadata.promptTokenCount || promptTokens;
+                completionTokens = parsed.usageMetadata.candidatesTokenCount || completionTokens;
+              }
+              const partsText = parsed?.candidates?.[0]?.content?.parts
+                ?.map((p: any) => p?.text || '')
+                .join('');
+              if (typeof partsText === 'string' && partsText.length > 0) {
+                onChunk?.(partsText);
+                yield buildGeminiCompatibleResponse(partsText);
+              }
+            } else {
+              if (parsed.usage) {
+                promptTokens = parsed.usage.prompt_tokens || promptTokens;
+                completionTokens = parsed.usage.completion_tokens || completionTokens;
+              }
+              const deltaText = parsed?.choices?.[0]?.delta?.content;
+              if (typeof deltaText === 'string' && deltaText.length > 0) {
+                onChunk?.(deltaText);
+                yield buildGeminiCompatibleResponse(deltaText);
+              }
+            }
+          } catch {
+            // Ignore partial SSE chunk JSON
+          }
+        }
+      }
+
+      if (promptTokens > 0 || completionTokens > 0) {
+        yield buildGeminiCompatibleResponse('', { promptTokens, completionTokens });
+      }
+    } catch (err: any) {
+      if (err instanceof ProviderClientError) throw err;
+      if (err?.name === 'AbortError' || effectiveSignal?.aborted) {
+        throw new ProviderClientError(`[${profile.name}] Yêu cầu stream đã bị hủy bởi người dùng.`, {
+          errorCode: 'CANCELLED'
+        });
+      }
+      throw err;
+    } finally {
+      if (effectiveSignal) {
+        effectiveSignal.removeEventListener('abort', onAbortReader);
+      }
+      try {
+        await reader.cancel().catch(() => {});
+      } catch {
+        // ignore
+      }
     }
   },
 
@@ -828,7 +880,11 @@ export const providerClientService = {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let didTimeout = false;
+    const timer = setTimeout(() => {
+      didTimeout = true;
+      controller.abort();
+    }, timeoutMs);
 
     try {
       const testProfile: ExternalProviderProfile = {
@@ -855,7 +911,7 @@ export const providerClientService = {
       };
     } catch (err: any) {
       const latencyMs = Math.max(1, Date.now() - start);
-      if (controller.signal.aborted || err?.errorCode === 'TIMEOUT') {
+      if (didTimeout || err?.errorCode === 'TIMEOUT') {
         return {
           success: false,
           latencyMs,

@@ -384,6 +384,14 @@ export const serverSyncClient = {
     await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
   },
 
+  async cancelAllJobs(): Promise<void> {
+    await apiFetch('/api/jobs/cancel-all', { method: 'POST' });
+  },
+
+  async cancelDebugLog(logId: string): Promise<void> {
+    await apiFetch(`/api/debug/logs/${encodeURIComponent(logId)}/cancel`, { method: 'POST' });
+  },
+
   async ackJob(jobId: string): Promise<void> {
     await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/ack`, { method: 'POST' });
   },

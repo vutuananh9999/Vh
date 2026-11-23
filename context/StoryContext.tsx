@@ -686,9 +686,21 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
 
   const cancelServerJob = useCallback(
     async (jobId: string) => {
+      setServerJobs(prev =>
+        prev.map(j =>
+          j.id === jobId && j.status === 'running'
+            ? {
+                ...j,
+                status: 'cancelled',
+                statusText: 'Người dùng đã hủy tác vụ.',
+                completedAt: Date.now()
+              }
+            : j
+        )
+      );
       try {
         await serverSyncClient.cancelJob(jobId);
-        showToast('Đã gửi lệnh hủy tác vụ AI trên máy chủ.', 'info');
+        showToast('Đã hủy lệnh AI.', 'info');
       } catch (err: any) {
         showToast(err?.message || 'Không thể hủy tác vụ.', 'error');
       }

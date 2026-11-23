@@ -10,6 +10,14 @@ import { providerManagerService } from "./providerManagerService.ts";
 import { ragService } from "./ragService.ts";
 import { redactSecrets } from "./secureCredentialStorage.ts";
 import { isServerRuntime, runtimeKV, serverSyncClient } from "./runtimeAdapter.ts";
+import {
+  abortableSleep,
+  createAbortError,
+  getActiveJobAbortContext,
+  isAbortError,
+  raceWithAbort,
+  throwIfAborted
+} from "./jobAbortContext.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -46,7 +54,7 @@ function notifyCooldownChanged() {
   }
 }
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms: number, signal?: AbortSignal) => abortableSleep(ms, signal);
 
 function isKeyCoolingDown(key: string, model?: string): boolean {
   if (!key) return false;
@@ -632,6 +640,9 @@ function stripGoogleSearch(config: any): any {
 }
 
 function handleApiError(err: any, modelId?: string): Error {
+  if (isAbortError(err) || getActiveJobAbortContext().signal?.aborted) {
+    return err instanceof Error && isAbortError(err) ? err : createAbortError();
+  }
   console.error("Gemini API Error caught:", err);
   const msg = err?.message || String(err);
   
@@ -796,6 +807,10 @@ class DynamicAI {
   get models() {
     return {
       generateContent: async (params: any) => {
+        const activeCtx = getActiveJobAbortContext(params?.config?.abortSignal);
+        const effectiveSignal = activeCtx.signal;
+        throwIfAborted(effectiveSignal);
+
         const keys = getAllKeys();
         const keysCount = Math.max(1, keys.length);
         const requestedModel = params.model || getFlash();
@@ -808,6 +823,7 @@ class DynamicAI {
         const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
         const ownsLog = !externalLogId;
         const logId = externalLogId || plotDebugLogger.startLog({
+          jobId: activeCtx.jobId,
           type: dbgCtx.type,
           title: dbgCtx.title,
           model: requestedModel,
@@ -825,15 +841,21 @@ class DynamicAI {
 
         try {
           await providerManagerService.initialize();
+          throwIfAborted(effectiveSignal);
+
           const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
           if (extProfiles.length > 0) {
             try {
               return await externalProviderService.executeWithPool(extProfiles, params, {
                 logId,
                 ownsLog,
-                extractText: extractResponseText
+                extractText: extractResponseText,
+                signal: effectiveSignal
               });
             } catch (extErr: any) {
+              if (effectiveSignal?.aborted || isAbortError(extErr)) {
+                throw createAbortError();
+              }
               const routing = externalProviderService.getRoutingConfig();
               if (!routing.fallbackToGemini || keys.length === 0) {
                 throw extErr;
@@ -846,12 +868,17 @@ class DynamicAI {
           }
 
           for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+            throwIfAborted(effectiveSignal);
             const currentModelId = modelCascade[mIdx];
             const isFirstModel = mIdx === 0;
+            const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+            if (effectiveSignal && !cleanedConfig.abortSignal) {
+              cleanedConfig.abortSignal = effectiveSignal;
+            }
             let currentParams = {
               ...params,
               model: currentModelId,
-              config: cleanConfigForModel(params.config, currentModelId)
+              config: cleanedConfig
             };
 
             const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
@@ -860,13 +887,15 @@ class DynamicAI {
             let modelUnavailable = false;
 
             for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+              throwIfAborted(effectiveSignal);
               if (keys.length === 1 && attempt > 0) {
                 plotDebugLogger.updateAttempt(logId, {
                   model: currentModelId,
                   phase: `Chỉ có 1 Key — chờ 1s thử lại trên ${currentModelId}...`
                 });
-                await sleep(1000);
+                await sleep(1000, effectiveSignal);
               }
+              throwIfAborted(effectiveSignal);
 
               const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
               const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
@@ -897,7 +926,8 @@ class DynamicAI {
               const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
 
               try {
-                const res = await rawModels.generateContent(currentParams);
+                const res = await raceWithAbort(rawModels.generateContent(currentParams), effectiveSignal);
+                throwIfAborted(effectiveSignal);
                 if (res && res.usageMetadata) {
                   tokenTracker.recordRequestSuccess(
                     reqId,
@@ -917,6 +947,9 @@ class DynamicAI {
                 return res;
               } catch (err: any) {
                 tokenTracker.recordRequestFailure(reqId);
+                if (effectiveSignal?.aborted || isAbortError(err)) {
+                  throw createAbortError();
+                }
                 lastErr = err;
 
                 if (isQuotaError(err)) {
@@ -947,7 +980,8 @@ class DynamicAI {
                     phase: `Bỏ Google Search Grounding trên ${currentModelId} và thử lại...`
                   });
                   try {
-                    const res = await rawModels.generateContent(currentParams);
+                    const res = await raceWithAbort(rawModels.generateContent(currentParams), effectiveSignal);
+                    throwIfAborted(effectiveSignal);
                     if (res && res.usageMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
@@ -966,6 +1000,9 @@ class DynamicAI {
                     }
                     return res;
                   } catch (retryErr: any) {
+                    if (effectiveSignal?.aborted || isAbortError(retryErr)) {
+                      throw createAbortError();
+                    }
                     lastErr = retryErr;
                     if (isQuotaError(retryErr)) {
                       markKeyRateLimited(key, 25000, currentModelId);
@@ -1007,7 +1044,8 @@ class DynamicAI {
                     phase: `Điều chỉnh tham số tương thích Gemma cho ${currentModelId} và thử lại...`
                   });
                   try {
-                    const retryRes = await rawModels.generateContent(currentParams);
+                    const retryRes = await raceWithAbort(rawModels.generateContent(currentParams), effectiveSignal);
+                    throwIfAborted(effectiveSignal);
                     if (retryRes && retryRes.usageMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
@@ -1026,6 +1064,9 @@ class DynamicAI {
                     }
                     return retryRes;
                   } catch (gemmaRetryErr: any) {
+                    if (effectiveSignal?.aborted || isAbortError(gemmaRetryErr)) {
+                      throw createAbortError();
+                    }
                     lastErr = gemmaRetryErr;
                   }
                 }
@@ -1044,12 +1085,18 @@ class DynamicAI {
         } catch (fatalErr: any) {
           if (ownsLog) {
             plotDebugLogger.recordFailure(logId, fatalErr);
+          } else if (effectiveSignal?.aborted || isAbortError(fatalErr)) {
+            plotDebugLogger.cancelLog(logId);
           }
           throw fatalErr;
         }
       },
 
       generateContentStream: async function* (params: any) {
+        const activeCtx = getActiveJobAbortContext(params?.config?.abortSignal);
+        const effectiveSignal = activeCtx.signal;
+        throwIfAborted(effectiveSignal);
+
         const keys = getAllKeys();
         const keysCount = Math.max(1, keys.length);
         const requestedModel = params.model || getFlash();
@@ -1062,6 +1109,7 @@ class DynamicAI {
         const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
         const ownsLog = !externalLogId;
         const logId = externalLogId || plotDebugLogger.startLog({
+          jobId: activeCtx.jobId,
           type: dbgCtx.type,
           title: dbgCtx.title,
           model: requestedModel,
@@ -1079,19 +1127,26 @@ class DynamicAI {
 
         try {
           await providerManagerService.initialize();
+          throwIfAborted(effectiveSignal);
+
           const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
           if (extProfiles.length > 0) {
             let extYielded = false;
             try {
               for await (const chunk of externalProviderService.executeStreamWithPool(extProfiles, params, {
                 logId,
-                ownsLog
+                ownsLog,
+                signal: effectiveSignal
               })) {
+                throwIfAborted(effectiveSignal);
                 extYielded = true;
                 yield chunk as GenerateContentResponse;
               }
               return;
             } catch (extErr: any) {
+              if (effectiveSignal?.aborted || isAbortError(extErr)) {
+                throw createAbortError();
+              }
               const routing = externalProviderService.getRoutingConfig();
               if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
                 throw extErr;
@@ -1104,12 +1159,17 @@ class DynamicAI {
           }
 
           for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+            throwIfAborted(effectiveSignal);
             const currentModelId = modelCascade[mIdx];
             const isFirstModel = mIdx === 0;
+            const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+            if (effectiveSignal && !cleanedConfig.abortSignal) {
+              cleanedConfig.abortSignal = effectiveSignal;
+            }
             let currentParams = {
               ...params,
               model: currentModelId,
-              config: cleanConfigForModel(params.config, currentModelId)
+              config: cleanedConfig
             };
 
             const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
@@ -1118,13 +1178,15 @@ class DynamicAI {
             let modelUnavailable = false;
 
             for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+              throwIfAborted(effectiveSignal);
               if (keys.length === 1 && attempt > 0) {
                 plotDebugLogger.updateAttempt(logId, {
                   model: currentModelId,
                   phase: `Chỉ có 1 Key — chờ 1s thử lại stream trên ${currentModelId}...`
                 });
-                await sleep(1000);
+                await sleep(1000, effectiveSignal);
               }
+              throwIfAborted(effectiveSignal);
 
               const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
               const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
@@ -1154,13 +1216,15 @@ class DynamicAI {
               const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
 
               try {
-                const stream = await rawModels.generateContentStream(currentParams);
+                const stream = await raceWithAbort(rawModels.generateContentStream(currentParams), effectiveSignal);
+                throwIfAborted(effectiveSignal);
                 let finalMetadata: any = null;
                 let yieldedAny = false;
                 let fullAccumulated = "";
 
                 try {
                   for await (const chunk of stream) {
+                    throwIfAborted(effectiveSignal);
                     yieldedAny = true;
                     if (chunk && chunk.usageMetadata) {
                       finalMetadata = chunk.usageMetadata;
@@ -1175,6 +1239,9 @@ class DynamicAI {
                     yield chunk as GenerateContentResponse;
                   }
                 } catch (streamErr: any) {
+                  if (effectiveSignal?.aborted || isAbortError(streamErr)) {
+                    throw createAbortError();
+                  }
                   if (!yieldedAny && isQuotaError(streamErr)) {
                     markKeyRateLimited(key, 25000, currentModelId);
                     tokenTracker.recordRequestFailure(reqId);
@@ -1198,6 +1265,7 @@ class DynamicAI {
                   throw streamErr;
                 }
 
+                throwIfAborted(effectiveSignal);
                 if (finalMetadata) {
                   tokenTracker.recordRequestSuccess(
                     reqId,
@@ -1217,6 +1285,9 @@ class DynamicAI {
                 return; // Succeeded!
               } catch (err: any) {
                 tokenTracker.recordRequestFailure(reqId);
+                if (effectiveSignal?.aborted || isAbortError(err)) {
+                  throw createAbortError();
+                }
                 lastErr = err;
 
                 if (isQuotaError(err)) {
@@ -1244,10 +1315,12 @@ class DynamicAI {
                 if (is403 && hasSearch) {
                   currentParams.config = stripGoogleSearch(currentParams.config);
                   try {
-                    const stream = await rawModels.generateContentStream(currentParams);
+                    const stream = await raceWithAbort(rawModels.generateContentStream(currentParams), effectiveSignal);
+                    throwIfAborted(effectiveSignal);
                     let finalMetadata: any = null;
                     let retryAccumulated = "";
                     for await (const chunk of stream) {
+                      throwIfAborted(effectiveSignal);
                       if (chunk && chunk.usageMetadata) {
                         finalMetadata = chunk.usageMetadata;
                       }
@@ -1260,6 +1333,7 @@ class DynamicAI {
                       }
                       yield chunk as GenerateContentResponse;
                     }
+                    throwIfAborted(effectiveSignal);
                     if (finalMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
@@ -1278,6 +1352,9 @@ class DynamicAI {
                     }
                     return;
                   } catch (retryErr: any) {
+                    if (effectiveSignal?.aborted || isAbortError(retryErr)) {
+                      throw createAbortError();
+                    }
                     lastErr = retryErr;
                     if (isQuotaError(retryErr)) {
                       markKeyRateLimited(key, 25000, currentModelId);
@@ -1319,10 +1396,12 @@ class DynamicAI {
                     phase: `Điều chỉnh tham số tương thích Gemma cho stream ${currentModelId} và thử lại...`
                   });
                   try {
-                    const stream = await rawModels.generateContentStream(currentParams);
+                    const stream = await raceWithAbort(rawModels.generateContentStream(currentParams), effectiveSignal);
+                    throwIfAborted(effectiveSignal);
                     let finalMetadata: any = null;
                     let retryAccumulated = "";
                     for await (const chunk of stream) {
+                      throwIfAborted(effectiveSignal);
                       if (chunk && chunk.usageMetadata) {
                         finalMetadata = chunk.usageMetadata;
                       }
@@ -1335,6 +1414,7 @@ class DynamicAI {
                       }
                       yield chunk as GenerateContentResponse;
                     }
+                    throwIfAborted(effectiveSignal);
                     if (finalMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
@@ -1353,6 +1433,9 @@ class DynamicAI {
                     }
                     return;
                   } catch (gemmaRetryErr: any) {
+                    if (effectiveSignal?.aborted || isAbortError(gemmaRetryErr)) {
+                      throw createAbortError();
+                    }
                     lastErr = gemmaRetryErr;
                   }
                 }
@@ -1370,25 +1453,36 @@ class DynamicAI {
         } catch (fatalErr: any) {
           if (ownsLog) {
             plotDebugLogger.recordFailure(logId, fatalErr);
+          } else if (effectiveSignal?.aborted || isAbortError(fatalErr)) {
+            plotDebugLogger.cancelLog(logId);
           }
           throw fatalErr;
         }
       },
 
       embedContent: async (params: any) => {
+        const { signal } = getActiveJobAbortContext(params?.config?.abortSignal);
+        throwIfAborted(signal);
         const keys = getAllKeys();
         const keysCount = Math.max(1, keys.length);
         const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
         let lastErr: any = null;
 
         for (let attempt = 0; attempt < keysCount; attempt++) {
+          throwIfAborted(signal);
           const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
           const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
           if (keys.length > 0) lastKeyIndex = (keyIdx + 1) % keys.length;
           const rawModels = createGenAI(key).models;
           try {
-            return await rawModels.embedContent(params);
+            const reqParams = signal
+              ? { ...params, config: { ...(params?.config || {}), abortSignal: signal } }
+              : params;
+            return await raceWithAbort(rawModels.embedContent(reqParams), signal);
           } catch (err: any) {
+            if (signal?.aborted || isAbortError(err)) {
+              throw createAbortError();
+            }
             lastErr = err;
             if (isQuotaError(err)) {
               markKeyRateLimited(key);
@@ -1411,19 +1505,28 @@ class DynamicAI {
       },
 
       generateVideos: async (params: any) => {
+        const { signal } = getActiveJobAbortContext(params?.config?.abortSignal);
+        throwIfAborted(signal);
         const keys = getAllKeys();
         const keysCount = Math.max(1, keys.length);
         const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
         let lastErr: any = null;
 
         for (let attempt = 0; attempt < keysCount; attempt++) {
+          throwIfAborted(signal);
           const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
           const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
           if (keys.length > 0) lastKeyIndex = (keyIdx + 1) % keys.length;
           const rawModels = createGenAI(key).models;
           try {
-            return await rawModels.generateVideos(params);
+            const reqParams = signal
+              ? { ...params, config: { ...(params?.config || {}), abortSignal: signal } }
+              : params;
+            return await raceWithAbort(rawModels.generateVideos(reqParams), signal);
           } catch (err: any) {
+            if (signal?.aborted || isAbortError(err)) {
+              throw createAbortError();
+            }
             lastErr = err;
             if (isQuotaError(err)) {
               markKeyRateLimited(key);
@@ -1456,6 +1559,10 @@ class DynamicAI {
 
         // Wrap sendMessage with round-robin 429/503 key rotation & model cascade
         wrappedSession.sendMessage = async (sendParams: any) => {
+          const activeCtx = getActiveJobAbortContext(sendParams?.config?.abortSignal || params?.config?.abortSignal);
+          const effectiveSignal = activeCtx.signal;
+          throwIfAborted(effectiveSignal);
+
           const modelCascade = getModelCascade(requestedModel);
           const keys = getAllKeys();
           const keysCount = Math.max(1, keys.length);
@@ -1466,6 +1573,7 @@ class DynamicAI {
           const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
           const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
           const logId = externalLogId || plotDebugLogger.startLog({
+            jobId: activeCtx.jobId,
             type: dbgCtx.type,
             title: dbgCtx.title,
             model: requestedModel,
@@ -1482,6 +1590,8 @@ class DynamicAI {
 
           try {
             await providerManagerService.initialize();
+            throwIfAborted(effectiveSignal);
+
             const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
             if (extProfiles.length > 0) {
               try {
@@ -1489,9 +1599,13 @@ class DynamicAI {
                   logId,
                   ownsLog,
                   sendParams,
-                  extractText: extractResponseText
+                  extractText: extractResponseText,
+                  signal: effectiveSignal
                 });
               } catch (extErr: any) {
+                if (effectiveSignal?.aborted || isAbortError(extErr)) {
+                  throw createAbortError();
+                }
                 const routing = externalProviderService.getRoutingConfig();
                 if (!routing.fallbackToGemini || keys.length === 0) {
                   throw extErr;
@@ -1504,12 +1618,17 @@ class DynamicAI {
             }
 
             for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+              throwIfAborted(effectiveSignal);
               const currentModelId = modelCascade[mIdx];
               const isFirstModel = mIdx === 0;
+              const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+              if (effectiveSignal && !cleanedConfig.abortSignal) {
+                cleanedConfig.abortSignal = effectiveSignal;
+              }
               const currentParams = {
                 ...params,
                 model: currentModelId,
-                config: cleanConfigForModel(params.config, currentModelId)
+                config: cleanedConfig
               };
 
               const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
@@ -1518,13 +1637,15 @@ class DynamicAI {
               let modelUnavailable = false;
 
               for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+                throwIfAborted(effectiveSignal);
                 if (keys.length === 1 && attempt > 0) {
                   plotDebugLogger.updateAttempt(logId, {
                     model: currentModelId,
                     phase: `Chỉ có 1 Key — chờ 1s thử lại chat trên ${currentModelId}...`
                   });
-                  await sleep(1000);
+                  await sleep(1000, effectiveSignal);
                 }
+                throwIfAborted(effectiveSignal);
 
                 const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
                 const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
@@ -1556,10 +1677,16 @@ class DynamicAI {
                   ...currentParams,
                   history: currentHistory
                 });
+                const effectiveSendParams = effectiveSignal
+                  ? (typeof sendParams === 'string'
+                      ? { message: sendParams, config: { abortSignal: effectiveSignal } }
+                      : { ...(sendParams || {}), config: { ...((sendParams && sendParams.config) || {}), abortSignal: effectiveSignal } })
+                  : sendParams;
 
                 const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                 try {
-                  const res = await session.sendMessage(sendParams);
+                  const res = await raceWithAbort(session.sendMessage(effectiveSendParams), effectiveSignal);
+                  throwIfAborted(effectiveSignal);
                   if (res && res.usageMetadata) {
                     tokenTracker.recordRequestSuccess(
                       reqId,
@@ -1579,6 +1706,9 @@ class DynamicAI {
                   return res;
                 } catch (err: any) {
                   tokenTracker.recordRequestFailure(reqId);
+                  if (effectiveSignal?.aborted || isAbortError(err)) {
+                    throw createAbortError();
+                  }
                   lastErr = err;
 
                   if (isQuotaError(err)) {
@@ -1627,7 +1757,13 @@ class DynamicAI {
                         ...gemmaChatAdapted.sessionParams,
                         history: currentHistory
                       });
-                      const retryRes = await retrySession.sendMessage(gemmaChatAdapted.sendParams);
+                      const retrySend = effectiveSignal
+                        ? (typeof gemmaChatAdapted.sendParams === 'string'
+                            ? { message: gemmaChatAdapted.sendParams, config: { abortSignal: effectiveSignal } }
+                            : { ...(gemmaChatAdapted.sendParams || {}), config: { ...((gemmaChatAdapted.sendParams && gemmaChatAdapted.sendParams.config) || {}), abortSignal: effectiveSignal } })
+                        : gemmaChatAdapted.sendParams;
+                      const retryRes = await raceWithAbort(retrySession.sendMessage(retrySend), effectiveSignal);
+                      throwIfAborted(effectiveSignal);
                       if (retryRes && retryRes.usageMetadata) {
                         tokenTracker.recordRequestSuccess(
                           reqId,
@@ -1646,6 +1782,9 @@ class DynamicAI {
                       }
                       return retryRes;
                     } catch (gemmaRetryErr: any) {
+                      if (effectiveSignal?.aborted || isAbortError(gemmaRetryErr)) {
+                        throw createAbortError();
+                      }
                       lastErr = gemmaRetryErr;
                     }
                   }
@@ -1662,6 +1801,8 @@ class DynamicAI {
           } catch (fatalErr: any) {
             if (ownsLog) {
               plotDebugLogger.recordFailure(logId, fatalErr);
+            } else if (effectiveSignal?.aborted || isAbortError(fatalErr)) {
+              plotDebugLogger.cancelLog(logId);
             }
             throw fatalErr;
           }
@@ -1670,6 +1811,10 @@ class DynamicAI {
         // Wrap sendMessageStream with round-robin 429/503 key rotation & model cascade
         wrappedSession.sendMessageStream = async (sendParams: any) => {
           async function* runStreamWithRetry() {
+            const activeCtx = getActiveJobAbortContext(sendParams?.config?.abortSignal || params?.config?.abortSignal);
+            const effectiveSignal = activeCtx.signal;
+            throwIfAborted(effectiveSignal);
+
             const modelCascade = getModelCascade(requestedModel);
             const keys = getAllKeys();
             const keysCount = Math.max(1, keys.length);
@@ -1680,6 +1825,7 @@ class DynamicAI {
             const initialCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
             const initialKey = keys.length > 0 ? keys[initialCursor] : getApiKey();
             const logId = externalLogId || plotDebugLogger.startLog({
+              jobId: activeCtx.jobId,
               type: dbgCtx.type,
               title: dbgCtx.title,
               model: requestedModel,
@@ -1696,6 +1842,8 @@ class DynamicAI {
 
             try {
               await providerManagerService.initialize();
+              throwIfAborted(effectiveSignal);
+
               const extProfiles = externalProviderService.getCandidateProfilesForTask(resolveTaskTier(requestedModel));
               if (extProfiles.length > 0) {
                 let extYielded = false;
@@ -1703,13 +1851,18 @@ class DynamicAI {
                   for await (const chunk of externalProviderService.executeStreamWithPool(extProfiles, params, {
                     logId,
                     ownsLog,
-                    sendParams
+                    sendParams,
+                    signal: effectiveSignal
                   })) {
+                    throwIfAborted(effectiveSignal);
                     extYielded = true;
                     yield chunk as GenerateContentResponse;
                   }
                   return;
                 } catch (extErr: any) {
+                  if (effectiveSignal?.aborted || isAbortError(extErr)) {
+                    throw createAbortError();
+                  }
                   const routing = externalProviderService.getRoutingConfig();
                   if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
                     throw extErr;
@@ -1722,12 +1875,17 @@ class DynamicAI {
               }
 
               for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
+                throwIfAborted(effectiveSignal);
                 const currentModelId = modelCascade[mIdx];
                 const isFirstModel = mIdx === 0;
+                const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+                if (effectiveSignal && !cleanedConfig.abortSignal) {
+                  cleanedConfig.abortSignal = effectiveSignal;
+                }
                 const currentParams = {
                   ...params,
                   model: currentModelId,
-                  config: cleanConfigForModel(params.config, currentModelId)
+                  config: cleanedConfig
                 };
 
                 const startCursor = keys.length > 0 ? lastKeyIndex % keys.length : 0;
@@ -1736,13 +1894,15 @@ class DynamicAI {
                 let modelUnavailable = false;
 
                 for (let attempt = 0; attempt < maxPassAttempts; attempt++) {
+                  throwIfAborted(effectiveSignal);
                   if (keys.length === 1 && attempt > 0) {
                     plotDebugLogger.updateAttempt(logId, {
                       model: currentModelId,
                       phase: `Chỉ có 1 Key — chờ 1s thử lại chat stream trên ${currentModelId}...`
                     });
-                    await sleep(1000);
+                    await sleep(1000, effectiveSignal);
                   }
+                  throwIfAborted(effectiveSignal);
 
                   const keyIdx = keys.length > 0 ? (startCursor + attempt) % keys.length : 0;
                   const key = keys.length > 0 ? keys[keyIdx] : getApiKey();
@@ -1774,16 +1934,23 @@ class DynamicAI {
                     ...currentParams,
                     history: currentHistory
                   });
+                  const effectiveSendParams = effectiveSignal
+                    ? (typeof sendParams === 'string'
+                        ? { message: sendParams, config: { abortSignal: effectiveSignal } }
+                        : { ...(sendParams || {}), config: { ...((sendParams && sendParams.config) || {}), abortSignal: effectiveSignal } })
+                    : sendParams;
 
                   const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                   try {
-                    const rawStream = await session.sendMessageStream(sendParams);
+                    const rawStream = await raceWithAbort(session.sendMessageStream(effectiveSendParams), effectiveSignal);
+                    throwIfAborted(effectiveSignal);
                     let finalMetadata: any = null;
                     let yieldedAny = false;
                     let fullAccumulated = "";
 
                     try {
                       for await (const chunk of rawStream) {
+                        throwIfAborted(effectiveSignal);
                         yieldedAny = true;
                         if (chunk && chunk.usageMetadata) {
                           finalMetadata = chunk.usageMetadata;
@@ -1798,6 +1965,9 @@ class DynamicAI {
                         yield chunk as GenerateContentResponse;
                       }
                     } catch (streamErr: any) {
+                      if (effectiveSignal?.aborted || isAbortError(streamErr)) {
+                        throw createAbortError();
+                      }
                       if (!yieldedAny && isQuotaError(streamErr)) {
                         markKeyRateLimited(key, 25000, currentModelId);
                         tokenTracker.recordRequestFailure(reqId);
@@ -1821,6 +1991,7 @@ class DynamicAI {
                       throw streamErr;
                     }
 
+                    throwIfAborted(effectiveSignal);
                     if (finalMetadata) {
                       tokenTracker.recordRequestSuccess(
                         reqId,
@@ -1841,6 +2012,9 @@ class DynamicAI {
                     return; // Success
                   } catch (err: any) {
                     tokenTracker.recordRequestFailure(reqId);
+                    if (effectiveSignal?.aborted || isAbortError(err)) {
+                      throw createAbortError();
+                    }
                     lastErr = err;
 
                     if (isQuotaError(err)) {
@@ -1889,10 +2063,17 @@ class DynamicAI {
                           ...gemmaChatAdapted.sessionParams,
                           history: currentHistory
                         });
-                        const rawStream = await retrySession.sendMessageStream(gemmaChatAdapted.sendParams);
+                        const retrySend = effectiveSignal
+                          ? (typeof gemmaChatAdapted.sendParams === 'string'
+                              ? { message: gemmaChatAdapted.sendParams, config: { abortSignal: effectiveSignal } }
+                              : { ...(gemmaChatAdapted.sendParams || {}), config: { ...((gemmaChatAdapted.sendParams && gemmaChatAdapted.sendParams.config) || {}), abortSignal: effectiveSignal } })
+                          : gemmaChatAdapted.sendParams;
+                        const rawStream = await raceWithAbort(retrySession.sendMessageStream(retrySend), effectiveSignal);
+                        throwIfAborted(effectiveSignal);
                         let finalMetadata: any = null;
                         let retryAccumulated = "";
                         for await (const chunk of rawStream) {
+                          throwIfAborted(effectiveSignal);
                           if (chunk && chunk.usageMetadata) {
                             finalMetadata = chunk.usageMetadata;
                           }
@@ -1905,6 +2086,7 @@ class DynamicAI {
                           }
                           yield chunk as GenerateContentResponse;
                         }
+                        throwIfAborted(effectiveSignal);
                         if (finalMetadata) {
                           tokenTracker.recordRequestSuccess(
                             reqId,
@@ -1923,6 +2105,9 @@ class DynamicAI {
                         }
                         return;
                       } catch (gemmaRetryErr: any) {
+                        if (effectiveSignal?.aborted || isAbortError(gemmaRetryErr)) {
+                          throw createAbortError();
+                        }
                         lastErr = gemmaRetryErr;
                       }
                     }
@@ -1939,6 +2124,8 @@ class DynamicAI {
             } catch (fatalErr: any) {
               if (ownsLog) {
                 plotDebugLogger.recordFailure(logId, fatalErr);
+              } else if (effectiveSignal?.aborted || isAbortError(fatalErr)) {
+                plotDebugLogger.cancelLog(logId);
               }
               throw fatalErr;
             }
@@ -2272,9 +2459,11 @@ async function generateAuditJsonWithFallback(
       `Attempt 1 (responseSchema) trả về JSON không hợp lệ hoặc rỗng (finishReason=${getResponseFinishReason(res1)}, len=${text1.length}). Thử fallback không schema...`
     );
   } catch (err: any) {
+    if (isAbortError(err) || getActiveJobAbortContext().signal?.aborted) throw err;
     if (isAuthOrQuotaError(err)) throw err;
     console.warn("Audit attempt 1 with responseSchema failed, retrying without schema...", err);
   }
+  throwIfAborted();
 
   // Attempt 2: JSON mimeType WITHOUT responseSchema & WITHOUT thinkingConfig (avoids schema rejection & thinking token overhead)
   const strictJsonPrompt = `${prompt}\n\n[LƯU Ý ĐỊNH DẠNG]: CHỈ trả về DUY NHẤT 1 JSON object hợp lệ khớp các trường yêu cầu. Không thêm markdown, không lời dẫn hay giải thích.`;
@@ -2306,9 +2495,11 @@ async function generateAuditJsonWithFallback(
       `Attempt 2 (JSON mimeType only) trả về JSON không hợp lệ (finishReason=${getResponseFinishReason(res2)}, len=${text2.length}). Thử fallback raw JSON...`
     );
   } catch (err: any) {
+    if (isAbortError(err) || getActiveJobAbortContext().signal?.aborted) throw err;
     if (isAuthOrQuotaError(err)) throw err;
     console.warn("Audit attempt 2 with JSON mimeType failed, retrying raw prompt...", err);
   }
+  throwIfAborted();
 
   // Attempt 3: Plain text JSON generation (no responseMimeType / no safetySettings in case model/proxy rejects them)
   const res3 = await safeGenerateContent({
@@ -3037,6 +3228,7 @@ ${safeBody}`;
     let firstBatchError: any = null;
 
     for (const batch of selectedBatches) {
+      throwIfAborted();
       stepIdx++;
       onProgress?.({ current: stepIdx, total: totalSteps, label: `Đang quét nhân vật & bối cảnh (${batch.label})...` });
 
@@ -3159,6 +3351,9 @@ ${safeBody}`;
           }
         }
       } catch (batchErr: any) {
+        if (isAbortError(batchErr) || getActiveJobAbortContext().signal?.aborted) {
+          throw batchErr;
+        }
         const msg = String(batchErr?.message || batchErr || '').toLowerCase();
         const isCriticalAuthOrQuota =
           msg.includes('429') ||
@@ -3177,6 +3372,7 @@ ${safeBody}`;
       throw firstBatchError;
     }
 
+    throwIfAborted();
     if (!writingDNA && selectedBatches[0]) {
       stepIdx++;
       onProgress?.({ current: stepIdx, total: totalSteps, label: `Đang phân tích Hồn Văn (Writing DNA)...` });
@@ -3184,6 +3380,9 @@ ${safeBody}`;
         const dnaRes = await this.extractWritingDNA(selectedBatches[0].text);
         if (dnaRes?.data) writingDNA = dnaRes.data;
       } catch (e) {
+        if (isAbortError(e) || getActiveJobAbortContext().signal?.aborted) {
+          throw e;
+        }
         console.warn("Optional Writing DNA scan failed:", e);
       }
     }
@@ -3257,7 +3456,9 @@ ${message}`;
       }))
       .filter(h => h.parts.length > 0);
 
+    const activeCtx = getActiveJobAbortContext();
     const stream = requestThrottleService.enqueueStream(async function* () {
+      throwIfAborted(activeCtx.signal);
       try {
         const chat = ai.chats.create({
           model: getFlash(),
@@ -3265,25 +3466,36 @@ ${message}`;
             systemInstruction,
             maxOutputTokens: 65536,
             temperature: 0.7,
-            thinkingConfig: { thinkingBudget: 512 }
-          },
+            thinkingConfig: { thinkingBudget: 512 },
+            abortSignal: activeCtx.signal
+          } as any,
           history: sanitizedHistory
         });
-        const response = await chat.sendMessageStream({ message: groundedMessage });
+        const response = await chat.sendMessageStream({
+          message: groundedMessage,
+          ...(activeCtx.signal ? { config: { abortSignal: activeCtx.signal } } : {})
+        } as any);
         for await (const chunk of response) {
+          throwIfAborted(activeCtx.signal);
           yield chunk as GenerateContentResponse;
         }
       } catch (e) {
+        if (activeCtx.signal?.aborted || isAbortError(e)) {
+          throw createAbortError();
+        }
         console.warn("chatPlanningStream failed:", e);
         throw e;
       }
     }, {
       name: `Planning Chat: ${message.substring(0, 30)}`,
       type: 'content_gen',
-      priority: 'high'
+      priority: 'high',
+      signal: activeCtx.signal,
+      jobId: activeCtx.jobId
     });
 
     for await (const chunk of stream) {
+      throwIfAborted(activeCtx.signal);
       yield chunk;
     }
   },
@@ -3368,10 +3580,13 @@ ${message}`;
       })
       .filter(h => h.parts.length > 0);
 
+    const activeCtx = getActiveJobAbortContext();
     const stream = requestThrottleService.enqueueStream(async function* () {
+      throwIfAborted(activeCtx.signal);
       let chat;
       const activeKey = getApiKey();
       const logId = plotDebugLogger.startLog({
+        jobId: activeCtx.jobId,
         type: 'plot_chat',
         title: `Plot Co-Edit: ${message.substring(0, 35)}${message.length > 35 ? '...' : ''}`,
         model: getFlash(),
@@ -3396,12 +3611,17 @@ ${message}`;
             systemInstruction,
             temperature: 0.7,
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingBudget: 1024 }
+            thinkingConfig: { thinkingBudget: 1024 },
+            abortSignal: activeCtx.signal
           } as any,
           history: sanitizedHistory
         });
-        const response = await chat.sendMessageStream({ message: groundedUserMessage });
+        const response = await chat.sendMessageStream({
+          message: groundedUserMessage,
+          ...(activeCtx.signal ? { config: { abortSignal: activeCtx.signal } } : {})
+        } as any);
         for await (const chunk of response) {
+          throwIfAborted(activeCtx.signal);
           const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
           const text = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
           if (text) {
@@ -3413,11 +3633,17 @@ ${message}`;
           }
           yield chunk as GenerateContentResponse;
         }
+        throwIfAborted(activeCtx.signal);
         plotDebugLogger.completeSuccess(logId, {
           fullResponse: fullAccumulatedResponse,
           usageMetadata: finalUsageMetadata
         });
       } catch (e: any) {
+        if (activeCtx.signal?.aborted || isAbortError(e)) {
+          plotDebugLogger.cancelLog(logId);
+          throw createAbortError();
+        }
+
         console.warn("Plot chat error, retrying with compact payload & no history:", e);
         plotDebugLogger.recordFailure(logId, e, "Thử lại lượt 2 với ngữ cảnh gọn nhẹ & không lịch sử chat...");
 
@@ -3431,7 +3657,9 @@ ${message}`;
           maxKnowledgeChars: 12000
         });
 
+        throwIfAborted(activeCtx.signal);
         const retryLogId = plotDebugLogger.startLog({
+          jobId: activeCtx.jobId,
           type: 'plot_chat',
           title: `[Retry Gọn Token] Plot Co-Edit: ${message.substring(0, 35)}...`,
           model: getFlash(),
@@ -3453,14 +3681,19 @@ ${message}`;
               systemInstruction,
               temperature: 0.7,
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingBudget: 512 }
+              thinkingConfig: { thinkingBudget: 512 },
+              abortSignal: activeCtx.signal
             } as any,
             history: []
           });
-          const response = await chat.sendMessageStream({ message: compactRetryMessage });
+          const response = await chat.sendMessageStream({
+            message: compactRetryMessage,
+            ...(activeCtx.signal ? { config: { abortSignal: activeCtx.signal } } : {})
+          } as any);
           let retryAccumulated = "";
           let retryMetadata: any = null;
           for await (const chunk of response) {
+            throwIfAborted(activeCtx.signal);
             const rawChunkText = typeof chunk?.text === 'string' ? chunk.text : "";
             const text = (rawChunkText !== 'undefined' && rawChunkText !== 'null') ? rawChunkText : "";
             if (text) {
@@ -3472,11 +3705,16 @@ ${message}`;
             }
             yield chunk as GenerateContentResponse;
           }
+          throwIfAborted(activeCtx.signal);
           plotDebugLogger.completeSuccess(retryLogId, {
             fullResponse: retryAccumulated,
             usageMetadata: retryMetadata
           });
         } catch (retryErr: any) {
+          if (activeCtx.signal?.aborted || isAbortError(retryErr)) {
+            plotDebugLogger.cancelLog(retryLogId);
+            throw createAbortError();
+          }
           plotDebugLogger.recordFailure(retryLogId, retryErr);
           throw retryErr;
         }
@@ -3484,10 +3722,13 @@ ${message}`;
     }, {
       name: `Plot Co-Edit Chat: ${message.substring(0, 30)}`,
       type: 'plot_chat',
-      priority: 'high'
+      priority: 'high',
+      signal: activeCtx.signal,
+      jobId: activeCtx.jobId
     });
 
     for await (const chunk of stream) {
+      throwIfAborted(activeCtx.signal);
       yield chunk;
     }
   },
@@ -3506,7 +3747,10 @@ ${message}`;
         if (chunk.web) sources.push({ title: chunk.web.title, url: chunk.web.uri, snippet: "", sourceType: 'general' });
       });
       return { data: { insights, sources }, usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    } catch (e) {
+      if (isAbortError(e) || getActiveJobAbortContext().signal?.aborted) throw e;
+      return null;
+    }
   },
 
   async expandWorldBuilding(input: string): Promise<any> {
@@ -3527,7 +3771,10 @@ ${input}
             config: { temperature: 0.8, thinkingConfig: { thinkingBudget: 2048 } }
         });
         return { text: response.text || input, usageMetadata: response.usageMetadata };
-    } catch (e) { return null; }
+    } catch (e) {
+      if (isAbortError(e) || getActiveJobAbortContext().signal?.aborted) throw e;
+      return null;
+    }
   },
 
   async suggestWorldSettings(title: string, genre: string, synopsis: string, timeline: string): Promise<any> {

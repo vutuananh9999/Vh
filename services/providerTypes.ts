@@ -128,6 +128,7 @@ export interface ConnectionTestResult {
     | 'RATE_LIMITED'
     | 'SERVER_ERROR'
     | 'TIMEOUT'
+    | 'CANCELLED'
     | 'NETWORK_ERROR'
     | 'INVALID_RESPONSE'
     | 'UNSUPPORTED_PARAM'

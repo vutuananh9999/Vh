@@ -696,8 +696,18 @@ app.post('/api/jobs', requireAuth, (req, res) => {
   res.json({ job });
 });
 
+app.post('/api/jobs/cancel-all', requireAuth, (_req, res) => {
+  const result = serverJobManager.cancelAllActive();
+  res.json({ ok: true, ...result });
+});
+
 app.post('/api/jobs/:id/cancel', requireAuth, (req, res) => {
   const ok = serverJobManager.cancelJob(String(req.params.id));
+  res.json({ ok });
+});
+
+app.post('/api/debug/logs/:id/cancel', requireAuth, (req, res) => {
+  const ok = serverJobManager.cancelDebugLog(String(req.params.id));
   res.json({ ok });
 });
 

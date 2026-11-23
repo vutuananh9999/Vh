@@ -18,6 +18,7 @@ import {
 } from './providerManagerService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
 import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
+import { getActiveJobAbortContext, isAbortError, throwIfAborted } from './jobAbortContext.ts';
 
 export type {
   AIProviderType,
@@ -146,11 +147,15 @@ export const externalProviderService = {
       ownsLog: boolean;
       sendParams?: any;
       extractText: (res: any) => string;
+      signal?: AbortSignal;
     }
   ): Promise<any> {
     if (profiles.length === 0) {
       throw new Error('Không có Custom AI Provider nào được bật.');
     }
+
+    const effectiveSignal = ctx.signal || getActiveJobAbortContext().signal;
+    throwIfAborted(effectiveSignal);
 
     let lastErr: any = null;
     const defaultProfile = profiles.find(p => p.isDefault);
@@ -163,6 +168,7 @@ export const externalProviderService = {
     let attemptNum = 0;
 
     for (let i = 0; i < profiles.length; i++) {
+      throwIfAborted(effectiveSignal);
       const idx = (startCursor + i) % profiles.length;
       const profile = profiles[idx];
       const cooling = this.isProfileCoolingDown(profile.id);
@@ -185,7 +191,8 @@ export const externalProviderService = {
 
       const reqId = tokenTracker.recordRequestStart(label, 1000, profile.apiKey);
       try {
-        const res = await this.invokeGenerateSingle(profile, params, ctx.sendParams);
+        const res = await this.invokeGenerateSingle(profile, params, ctx.sendParams, effectiveSignal);
+        throwIfAborted(effectiveSignal);
         tokenTracker.recordRequestSuccess(
           reqId,
           res?.usageMetadata?.promptTokenCount || 0,
@@ -201,6 +208,9 @@ export const externalProviderService = {
         return res;
       } catch (err: any) {
         tokenTracker.recordRequestFailure(reqId);
+        if (effectiveSignal?.aborted || isAbortError(err)) {
+          throw err;
+        }
         lastErr = err;
         const safeErrMsg = redactSecrets(String(err?.message || err || ''), [profile.apiKey]);
         if (err?.isQuota || err?.status === 429) {
@@ -234,11 +244,15 @@ export const externalProviderService = {
       logId: string;
       ownsLog: boolean;
       sendParams?: any;
+      signal?: AbortSignal;
     }
   ): AsyncGenerator<any, void, unknown> {
     if (profiles.length === 0) {
       throw new Error('Không có Custom AI Provider nào được bật.');
     }
+
+    const effectiveSignal = ctx.signal || getActiveJobAbortContext().signal;
+    throwIfAborted(effectiveSignal);
 
     let lastErr: any = null;
     const defaultProfile = profiles.find(p => p.isDefault);
@@ -250,6 +264,7 @@ export const externalProviderService = {
     let attemptNum = 0;
 
     for (let i = 0; i < profiles.length; i++) {
+      throwIfAborted(effectiveSignal);
       const idx = (startCursor + i) % profiles.length;
       const profile = profiles[idx];
       const cooling = this.isProfileCoolingDown(profile.id);
@@ -276,12 +291,20 @@ export const externalProviderService = {
       let finalUsage: any = undefined;
 
       try {
-        for await (const chunk of this.invokeStreamSingle(profile, params, ctx.sendParams, (txt) => {
-          fullText += txt;
-          if (ctx.ownsLog) {
-            plotDebugLogger.updateStreaming(ctx.logId, txt);
-          }
-        })) {
+        for await (const chunk of this.invokeStreamSingle(
+          profile,
+          params,
+          ctx.sendParams,
+          (txt) => {
+            if (effectiveSignal?.aborted) return;
+            fullText += txt;
+            if (ctx.ownsLog) {
+              plotDebugLogger.updateStreaming(ctx.logId, txt);
+            }
+          },
+          effectiveSignal
+        )) {
+          throwIfAborted(effectiveSignal);
           if (chunk?.usageMetadata) {
             finalUsage = chunk.usageMetadata;
           }
@@ -291,6 +314,7 @@ export const externalProviderService = {
           }
         }
 
+        throwIfAborted(effectiveSignal);
         tokenTracker.recordRequestSuccess(
           reqId,
           finalUsage?.promptTokenCount || 0,
@@ -306,6 +330,9 @@ export const externalProviderService = {
         return;
       } catch (err: any) {
         tokenTracker.recordRequestFailure(reqId);
+        if (effectiveSignal?.aborted || isAbortError(err)) {
+          throw err;
+        }
         lastErr = err;
         if (!yieldedAny && (err?.isQuota || err?.status === 429)) {
           this.markProfileRateLimited(profile.id, 25000);

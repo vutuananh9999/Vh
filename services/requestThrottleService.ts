@@ -3,6 +3,12 @@
  */
 
 import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import {
+  abortableSleep,
+  createAbortError,
+  getActiveJobAbortContext,
+  isAbortError
+} from './jobAbortContext.ts';
 
 export type EnvironmentType = 'netlify' | 'preview' | 'custom' | 'server';
 export type QueuePriority = 'critical' | 'high' | 'normal' | 'low';
@@ -10,13 +16,14 @@ export type QueueMode = 'auto' | 'sequential' | 'parallel';
 
 export interface QueueJob<T = any> {
   id: string;
+  jobId?: string;
   name: string;
   type: 'plot_chat' | 'plot_analysis' | 'chapter_summary' | 'content_gen' | 'general';
   priority: QueuePriority;
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'retrying';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'retrying';
   error?: string;
   retryCount: number;
 }
@@ -55,9 +62,12 @@ class RequestThrottleService {
     task: () => Promise<any>;
     resolve: (val: any) => void;
     reject: (err: any) => void;
+    signal?: AbortSignal;
+    cleanup?: () => void;
   }> = [];
 
   private recentJobs: QueueJob[] = [];
+  private waitCancelsByJobId = new Map<string, Set<() => void>>();
   private listeners: Array<(state: ThrottleState) => void> = [];
   private broadcastHook: ((state: ThrottleState) => void) | null = null;
   private lastRequestCompletedTime: number = 0;
@@ -211,17 +221,44 @@ class RequestThrottleService {
     }, cooldownMs);
   }
 
+  private registerWaitCancel(serverJobId: string | undefined, cancelFn: () => void): () => void {
+    if (!serverJobId) return () => {};
+    let set = this.waitCancelsByJobId.get(serverJobId);
+    if (!set) {
+      set = new Set();
+      this.waitCancelsByJobId.set(serverJobId, set);
+    }
+    set.add(cancelFn);
+    return () => {
+      set?.delete(cancelFn);
+      if (set && set.size === 0) {
+        this.waitCancelsByJobId.delete(serverJobId);
+      }
+    };
+  }
+
   public enqueuePromise<T>(
     task: () => Promise<T>,
     options: {
       name: string;
       type?: QueueJob['type'];
       priority?: QueuePriority;
+      signal?: AbortSignal;
+      jobId?: string;
     }
   ): Promise<T> {
+    const activeCtx = getActiveJobAbortContext(options.signal);
+    const signal = activeCtx.signal;
+    const serverJobId = options.jobId || activeCtx.jobId;
+
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError());
+    }
+
     return new Promise<T>((resolve, reject) => {
       const job: QueueJob = {
         id: 'job_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now(),
+        jobId: serverJobId,
         name: options.name,
         type: options.type || 'general',
         priority: options.priority || 'normal',
@@ -230,11 +267,51 @@ class RequestThrottleService {
         retryCount: 0
       };
 
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        const idx = this.queue.findIndex(q => q.job.id === job.id);
+        if (idx !== -1) {
+          this.queue.splice(idx, 1);
+          settled = true;
+          cleanup();
+          job.status = 'cancelled';
+          job.error = 'Đã hủy bởi người dùng';
+          job.completedAt = Date.now();
+          this.notifyState();
+          reject(createAbortError());
+        }
+      };
+
+      const unregisterWait = this.registerWaitCancel(serverJobId, onAbort);
+      const cleanup = () => {
+        unregisterWait();
+        if (signal) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      };
+
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
       this.queue.push({
         job,
         task,
-        resolve,
-        reject
+        resolve: (val) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(val);
+        },
+        reject: (err) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        },
+        signal,
+        cleanup
       });
 
       this.sortQueue();
@@ -250,10 +327,21 @@ class RequestThrottleService {
       name: string;
       type?: QueueJob['type'];
       priority?: QueuePriority;
+      signal?: AbortSignal;
+      jobId?: string;
     }
   ): AsyncGenerator<T, void, unknown> {
+    const activeCtx = getActiveJobAbortContext(options.signal);
+    const signal = activeCtx.signal;
+    const serverJobId = options.jobId || activeCtx.jobId;
+
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
     const job: QueueJob = {
       id: 'stream_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now(),
+      jobId: serverJobId,
       name: options.name,
       type: options.type || 'plot_chat',
       priority: options.priority || 'high',
@@ -265,27 +353,45 @@ class RequestThrottleService {
     this.recordJob(job);
     this.notifyState();
 
-    await this.acquireSlot(job);
-
+    let slotAcquired = false;
     try {
+      await this.acquireSlot(job, signal, serverJobId);
+      slotAcquired = true;
+
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+
       job.status = 'running';
       job.startedAt = Date.now();
       this.notifyState();
 
       const stream = streamFactory();
       for await (const chunk of stream) {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
         yield chunk;
       }
 
       job.status = 'completed';
       job.completedAt = Date.now();
     } catch (err: any) {
-      job.status = 'failed';
-      job.error = err?.message || String(err);
+      if (signal?.aborted || isAbortError(err)) {
+        job.status = 'cancelled';
+        job.error = 'Đã hủy bởi người dùng';
+      } else {
+        job.status = 'failed';
+        job.error = err?.message || String(err);
+      }
       job.completedAt = Date.now();
       throw err;
     } finally {
-      this.releaseSlot(job);
+      if (slotAcquired) {
+        this.releaseSlot(job);
+      } else {
+        this.notifyState();
+      }
     }
   }
 
@@ -297,22 +403,64 @@ class RequestThrottleService {
     });
   }
 
-  private async acquireSlot(job: QueueJob): Promise<void> {
+  private async acquireSlot(job: QueueJob, signal?: AbortSignal, serverJobId?: string): Promise<void> {
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
     const maxConcurrency = this.getEffectiveConcurrency();
     if (this.activeJobsCount < maxConcurrency && !this.isPaused && this.queue.length === 0) {
-      await this.enforceInterRequestGap();
+      await this.enforceInterRequestGap(signal);
+      if (signal?.aborted) throw createAbortError();
       this.activeJobsCount++;
       return;
     }
 
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
+      let pollTimer: ReturnType<typeof setTimeout> | null = null;
+      let done = false;
+
+      const finishReject = (err: any) => {
+        if (done) return;
+        done = true;
+        if (pollTimer) clearTimeout(pollTimer);
+        unregisterWait();
+        if (signal) signal.removeEventListener('abort', onAbort);
+        reject(err);
+      };
+
+      const onAbort = () => finishReject(createAbortError());
+      const unregisterWait = this.registerWaitCancel(serverJobId, onAbort);
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
       const checkAndAcquire = async () => {
+        if (done) return;
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
         if (this.activeJobsCount < this.getEffectiveConcurrency() && !this.isPaused) {
-          await this.enforceInterRequestGap();
+          try {
+            await this.enforceInterRequestGap(signal);
+          } catch (gapErr) {
+            finishReject(gapErr);
+            return;
+          }
+          if (done) return;
+          if (signal?.aborted) {
+            onAbort();
+            return;
+          }
+          done = true;
+          if (pollTimer) clearTimeout(pollTimer);
+          unregisterWait();
+          if (signal) signal.removeEventListener('abort', onAbort);
           this.activeJobsCount++;
           resolve();
         } else {
-          setTimeout(checkAndAcquire, 150);
+          pollTimer = setTimeout(checkAndAcquire, 150);
         }
       };
       void checkAndAcquire();
@@ -326,14 +474,15 @@ class RequestThrottleService {
     setTimeout(() => void this.processQueue(), 50);
   }
 
-  private async enforceInterRequestGap(): Promise<void> {
+  private async enforceInterRequestGap(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw createAbortError();
     const delay = this.interRequestDelayMs;
     if (delay <= 0 || this.lastRequestCompletedTime === 0) return;
 
     const elapsed = Date.now() - this.lastRequestCompletedTime;
     if (elapsed < delay) {
       const waitMs = delay - elapsed;
-      await new Promise(r => setTimeout(r, waitMs));
+      await abortableSleep(waitMs, signal);
     }
   }
 
@@ -350,10 +499,31 @@ class RequestThrottleService {
       const item = this.queue.shift();
       if (!item) break;
 
-      const { job, task, resolve, reject } = item;
+      const { job, task, resolve, reject, signal, cleanup } = item;
+      cleanup?.();
+
+      if (signal?.aborted) {
+        job.status = 'cancelled';
+        job.error = 'Đã hủy bởi người dùng';
+        job.completedAt = Date.now();
+        this.notifyState();
+        reject(createAbortError());
+        continue;
+      }
+
       this.activeJobsCount++;
 
-      await this.enforceInterRequestGap();
+      try {
+        await this.enforceInterRequestGap(signal);
+      } catch (gapErr) {
+        this.activeJobsCount = Math.max(0, this.activeJobsCount - 1);
+        job.status = 'cancelled';
+        job.error = 'Đã hủy bởi người dùng';
+        job.completedAt = Date.now();
+        this.notifyState();
+        reject(gapErr);
+        continue;
+      }
 
       job.status = 'running';
       job.startedAt = Date.now();
@@ -366,11 +536,15 @@ class RequestThrottleService {
           job.completedAt = Date.now();
           resolve(result);
         } catch (err: any) {
-          job.status = 'failed';
-          job.error = err?.message || String(err);
+          const cancelled = signal?.aborted || isAbortError(err);
+          job.status = cancelled ? 'cancelled' : 'failed';
+          job.error = cancelled ? 'Đã hủy bởi người dùng' : (err?.message || String(err));
           job.completedAt = Date.now();
 
-          if (err?.status === 429 || String(err).includes('429') || String(err).includes('RESOURCE_EXHAUSTED')) {
+          if (
+            !cancelled &&
+            (err?.status === 429 || String(err).includes('429') || String(err).includes('RESOURCE_EXHAUSTED'))
+          ) {
             this.pauseForCooldown(25000, 'Phát hiện mã lỗi 429 (Đã tạm dừng hàng đợi 25s để hồi Quota)');
           }
 
@@ -444,16 +618,74 @@ class RequestThrottleService {
     });
   }
 
-  public clearQueue() {
+  public cancelByJobId(serverJobId: string): number {
+    if (!serverJobId) return 0;
+    let cancelledCount = 0;
+
+    const callbacks = this.waitCancelsByJobId.get(serverJobId);
+    if (callbacks) {
+      for (const fn of Array.from(callbacks)) {
+        try {
+          fn();
+          cancelledCount++;
+        } catch {
+          // ignore
+        }
+      }
+      this.waitCancelsByJobId.delete(serverJobId);
+    }
+
+    const now = Date.now();
+    for (const j of this.recentJobs) {
+      if (j.jobId === serverJobId && (j.status === 'pending' || j.status === 'running' || j.status === 'retrying')) {
+        j.status = 'cancelled';
+        j.error = 'Đã hủy bởi người dùng';
+        j.completedAt = now;
+        cancelledCount++;
+      }
+    }
+
+    if (cancelledCount > 0) {
+      this.notifyState();
+    }
+    return cancelledCount;
+  }
+
+  public clearQueue(): number {
+    let count = 0;
     while (this.queue.length > 0) {
       const item = this.queue.shift();
       if (item) {
-        item.job.status = 'failed';
+        item.cleanup?.();
+        item.job.status = 'cancelled';
         item.job.error = 'Bị hủy do người dùng xóa hàng đợi';
-        item.reject(new Error('Hàng đợi đã bị xóa thủ công'));
+        item.job.completedAt = Date.now();
+        item.reject(createAbortError('Hàng đợi đã bị hủy thủ công'));
+        count++;
+      }
+    }
+    for (const callbacks of this.waitCancelsByJobId.values()) {
+      for (const fn of Array.from(callbacks)) {
+        try {
+          fn();
+          count++;
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this.waitCancelsByJobId.clear();
+    const now = Date.now();
+    for (const j of this.recentJobs) {
+      if (j.status === 'pending' || j.status === 'running' || j.status === 'retrying') {
+        j.status = 'cancelled';
+        j.error = 'Bị hủy do người dùng xóa hàng đợi';
+        j.completedAt = now;
+        count++;
       }
     }
     this.notifyState();
+    return count;
   }
 }
 

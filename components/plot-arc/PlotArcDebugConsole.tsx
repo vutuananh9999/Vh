@@ -7,7 +7,7 @@ import { externalProviderService } from '../../services/externalProviderService.
 import { providerClientService } from '../../services/providerClientService.ts';
 import { ExternalProviderProfile, ProviderRoutingConfig } from '../../services/providerTypes.ts';
 import { SearchableModelSelect } from '../providers/SearchableModelSelect.tsx';
-import { runtimeKV } from '../../services/runtimeAdapter.ts';
+import { runtimeKV, serverSyncClient } from '../../services/runtimeAdapter.ts';
 
 interface Props {
   onSwitchToChat?: () => void;
@@ -53,6 +53,13 @@ function getStatusPresentation(log: PlotDebugLogItem): {
       codeText: String(log.statusCode || 200),
       textClass: 'text-emerald-400',
       rowHighlight: '',
+    };
+  }
+  if (log.status === 'cancelled') {
+    return {
+      codeText: 'ĐÃ HỦY',
+      textClass: 'text-slate-400',
+      rowHighlight: 'bg-slate-800/30',
     };
   }
   if (log.status === 'rate_limit_429' || log.statusCode === 429) {
@@ -279,7 +286,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
     if (filter === 'live') base = logs.filter(l => l.status === 'pending' || l.status === 'streaming');
     else if (filter === 'scan_audit') base = logs.filter(l => l.type === 'entity_scan' || l.type === 'audit');
     else if (filter === '429') base = logs.filter(l => l.status === 'rate_limit_429' || l.statusCode === 429);
-    else if (filter === 'errors') base = logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming');
+    else if (filter === 'errors') base = logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming' && l.status !== 'cancelled');
     else if (filter === 'chat') base = logs.filter(l => l.type === 'plot_chat');
     else if (filter === 'analysis') base = logs.filter(l => l.type === 'plot_analysis');
 
@@ -298,7 +305,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
     const total = logs.length;
     const live = logs.filter(l => l.status === 'pending' || l.status === 'streaming').length;
     const count429 = logs.filter(l => l.status === 'rate_limit_429' || l.statusCode === 429).length;
-    const errors = logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming').length;
+    const errors = logs.filter(l => l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming' && l.status !== 'cancelled').length;
     const scanAudit = logs.filter(l => l.type === 'entity_scan' || l.type === 'audit').length;
     return { total, live, count429, errors, scanAudit };
   }, [logs]);
@@ -309,6 +316,36 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
       showNotification('Đang dừng kiểm tra API Key...');
     }
   };
+
+  const handleCancelLog = useCallback(
+    async (logId: string, jobId?: string) => {
+      plotDebugLogger.cancelLog(logId, 'Người dùng đã bấm Hủy trong Debug Log');
+      if (jobId) {
+        plotDebugLogger.cancelByJobId(jobId, 'Người dùng đã bấm Hủy trong Debug Log');
+      }
+      try {
+        await serverSyncClient.cancelDebugLog(logId);
+        showNotification('Đã hủy lệnh AI thành công');
+      } catch (err: any) {
+        showNotification(err?.message || 'Không thể gửi lệnh hủy lên máy chủ');
+      }
+    },
+    [showNotification]
+  );
+
+  const handleCancelAllActive = useCallback(async () => {
+    for (const l of logs) {
+      if (l.status === 'pending' || l.status === 'streaming') {
+        plotDebugLogger.cancelLog(l.id, 'Người dùng đã hủy toàn bộ lệnh AI');
+      }
+    }
+    try {
+      await serverSyncClient.cancelAllJobs();
+      showNotification('Đã hủy toàn bộ lệnh AI đang chạy');
+    } catch (err: any) {
+      showNotification(err?.message || 'Không thể hủy tác vụ trên máy chủ');
+    }
+  }, [logs, showNotification]);
 
   const handleCommitCustomModel = useCallback(
     async (nextModelId: string, providerOverride?: ExternalProviderProfile) => {
@@ -1015,14 +1052,24 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 ({activeLiveLogs.length} đang chạy · {queuedPendingJobs.length} chờ hàng đợi)
               </span>
             </div>
-            {onSwitchToChat && (
+            <div className="flex items-center gap-2 shrink-0">
               <button
-                onClick={onSwitchToChat}
-                className="text-xs font-medium text-sky-400 hover:text-sky-300 whitespace-nowrap"
+                type="button"
+                onClick={() => void handleCancelAllActive()}
+                className="px-2.5 py-1 bg-rose-600/90 hover:bg-rose-500 text-white rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap cursor-pointer"
               >
-                Mở Co-Edit →
+                ⏹️ Hủy tất cả
               </button>
-            )}
+              {onSwitchToChat && (
+                <button
+                  type="button"
+                  onClick={onSwitchToChat}
+                  className="text-xs font-medium text-sky-400 hover:text-sky-300 whitespace-nowrap"
+                >
+                  Mở Co-Edit →
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="divide-y divide-slate-800/80 max-h-32 overflow-y-auto ios-scroll custom-scrollbar">
@@ -1034,14 +1081,22 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
               const liveTail = (liveLog.fullResponse || liveLog.responseSnippet || '').slice(-110).replace(/\s+/g, ' ').trim();
 
               return (
-                <button
+                <div
                   key={liveLog.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => {
                     setSelectedLog(liveLog);
                     setInspectorTab(liveLog.status === 'streaming' ? 'response' : 'overview');
                   }}
-                  className="w-full text-left py-2 px-1 hover:bg-slate-900/60 transition-colors flex flex-col gap-1 min-h-[44px]"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedLog(liveLog);
+                      setInspectorTab(liveLog.status === 'streaming' ? 'response' : 'overview');
+                    }
+                  }}
+                  className="w-full text-left py-2 px-1 hover:bg-slate-900/60 transition-colors flex flex-col gap-1 min-h-[44px] cursor-pointer"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
@@ -1050,9 +1105,22 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                       </span>
                       <span className="text-xs font-semibold text-slate-100 truncate">{liveLog.title}</span>
                     </div>
-                    <span className="text-xs font-mono font-semibold text-sky-300 tabular-nums shrink-0">
-                      {formatDuration(elapsedMs)}
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs font-mono font-semibold text-sky-300 tabular-nums">
+                        {formatDuration(elapsedMs)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleCancelLog(liveLog.id, liveLog.jobId);
+                        }}
+                        className="px-2 py-0.5 bg-rose-600/85 hover:bg-rose-500 text-white rounded text-[11px] font-semibold transition-colors cursor-pointer"
+                        title="Hủy ngay lệnh AI này"
+                      >
+                        ⏹️ Hủy
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono text-slate-400 tabular-nums">
@@ -1080,16 +1148,31 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                       &ldquo;...{liveTail}&rdquo;
                     </p>
                   )}
-                </button>
+                </div>
               );
             })}
 
             {queuedPendingJobs.map(job => (
               <div key={job.id} className="py-1.5 px-1 flex items-center justify-between gap-2 text-xs text-amber-200">
                 <span className="truncate font-medium">Đang xếp hàng: {job.name}</span>
-                <span className="font-mono text-[11px] text-amber-400 tabular-nums shrink-0">
-                  {formatDuration(Math.max(0, nowTime - job.createdAt))}
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-mono text-[11px] text-amber-400 tabular-nums">
+                    {formatDuration(Math.max(0, nowTime - job.createdAt))}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (job.jobId) {
+                        void serverSyncClient.cancelJob(job.jobId);
+                      } else {
+                        void handleCancelAllActive();
+                      }
+                    }}
+                    className="px-2 py-0.5 bg-rose-600/80 hover:bg-rose-500 text-white rounded text-[11px] font-semibold transition-colors cursor-pointer"
+                  >
+                    Hủy
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1325,6 +1408,15 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {(selectedLog.status === 'streaming' || selectedLog.status === 'pending') && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelLog(selectedLog.id, selectedLog.jobId)}
+                      className="min-h-[36px] px-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      ⏹️ Hủy lệnh
+                    </button>
+                  )}
                   <button
                     onClick={() => handleCopyText(JSON.stringify(selectedLog, null, 2), 'chi tiết log JSON')}
                     className="min-h-[36px] px-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-medium border border-slate-800 whitespace-nowrap"

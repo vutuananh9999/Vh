@@ -47,8 +47,27 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         activeChapterId,
         updateChapterContent,
         setPendingEdit,
-        bumpEditorSyncToken
+        bumpEditorSyncToken,
+        activeServerJobs,
+        cancelServerJob
     } = useStory();
+
+    const activePlotChatJob = useMemo(
+        () => activeServerJobs.find(j => j.type === 'chat_plot' && (!story?.id || j.storyId === story.id)),
+        [activeServerJobs, story?.id]
+    );
+    const activeAnalyzeJob = useMemo(
+        () => activeServerJobs.find(j => j.type === 'analyze_plot_arc' && (!story?.id || j.storyId === story.id)),
+        [activeServerJobs, story?.id]
+    );
+    const activeSummarizeSeqJob = useMemo(
+        () => activeServerJobs.find(j => (j.type === 'summarize_all_sequential' || j.type === 'summarize_chapter') && (!story?.id || j.storyId === story.id)),
+        [activeServerJobs, story?.id]
+    );
+    const activeScanJob = useMemo(
+        () => activeServerJobs.find(j => j.type === 'scan_story_entities' && (!story?.id || j.storyId === story.id)),
+        [activeServerJobs, story?.id]
+    );
 
     const [activeTab, setActiveTab] = useState<'timeline' | 'intelligence' | 'co-edit' | 'ledger' | 'debug'>('timeline');
     const [focusedCoEditChapterId, setFocusedCoEditChapterId] = useState<string>('');
@@ -63,7 +82,11 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
     useEffect(() => {
         const unsubscribe = plotDebugLogger.subscribe(logs => {
-            const errs = logs.filter(l => l.status === 'rate_limit_429' || (l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming')).length;
+            const errs = logs.filter(
+                l =>
+                    l.status === 'rate_limit_429' ||
+                    (l.status !== 'success' && l.status !== 'pending' && l.status !== 'streaming' && l.status !== 'cancelled')
+            ).length;
             setDebugErrorCount(errs);
         });
         return () => unsubscribe();
@@ -776,23 +799,6 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
 
     if (!isOpen) return null;
 
-    const promptPresets = [
-        ...(focusedChapter ? [{
-            label: `✍️ Viết/Nối tiếp: ${focusedChapter.title}`,
-            prompt: `Hãy kiểm tra toàn bộ World Bible, Hồ sơ nhân vật (vị trí, vết thương, tri thức, dấu chân đã đi qua), Sổ cái sự kiện và các chương trước/sau để VIẾT ĐẦY ĐỦ / VIẾT TIẾP chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho liền mạch tuyệt đối, KHÔNG quên thiết lập cũ và KHÔNG lặp lại chương trước. Bọc bản thảo trong:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <toàn bộ nội dung bản thảo>]\nkèm tóm tắt trong:\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt ngắn>]\nvà cập nhật Sổ cái dấu chân trong:\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: - <địa điểm đã đến/đi qua, vật phẩm, nhân vật gặp & trạng thái mới>]`
-        }, {
-            label: `🔧 Sửa mạch lạc: ${focusedChapter.title}`,
-            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới, Sổ cái dấu chân và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt sự kiện, địa điểm đã đi qua & thay đổi trạng thái>]\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: - <các gạch đầu dòng Sổ cái đã cập nhật>]`
-        }, {
-            label: `📒 Cập nhật Sổ cái: ${focusedChapter.title}`,
-            prompt: `Hãy đọc kỹ toàn văn bản thảo & tóm tắt chương "${focusedChapter.title}" (ID: ${focusedChapter.id}), đối chiếu với Sổ cái hiện tại, rồi trích xuất/cập nhật đầy đủ mọi chi tiết dấu chân quan trọng (địa điểm đã đến hoặc đi qua ở đầu/giữa/cuối chương, nhân vật gặp gỡ, vật phẩm thu/mất, bí mật, lời hứa, thương tích/cảnh giới) theo từng gạch đầu dòng ngắn gọn trong thẻ:\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: <danh sách gạch đầu dòng sự kiện & dấu chân của chương>]`
-        }] : []),
-        { label: "🔍 Quét lỗ hổng toàn truyện", prompt: "Hãy đối chiếu toàn bộ các chương, danh sách nhân vật, dấu chân địa điểm và bối cảnh thế giới để chỉ ra các lỗ hổng mạch lạc (plot holes), chi tiết tiền hậu bất nhất, hoặc mâu thuẫn tính cách/thực lực." },
-        { label: "🎭 Tạo nút thắt hợp logic", prompt: "Dựa trên các chi tiết đã cài cắm trong cốt truyện và tính cách nhân vật hiện tại, hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng logic để đẩy kịch tính lên cao trào." },
-        { label: "⚔️ Đồng bộ tâm lý & lời thoại", prompt: "Rà soát diễn biến tâm lý và thoại của các nhân vật ở chương đang chọn xem có bị OOC (lệch tính cách) hay thiếu động cơ không, và đề xuất cách chỉnh sửa." },
-        { label: "✨ Tối ưu Dàn ý tổng thể", prompt: "Dựa trên tiến trình hiện tại của truyện, hãy đề xuất dàn ý phát triển mạch lạc cho các chương tiếp theo trong khối [PROPOSAL_PLANNING: ...]." }
-    ];
-
     return (
         <div className="fixed inset-0 z-[140] flex items-center justify-center sm:p-4 bg-black/95 backdrop-blur-md animate-fadeIn" onClick={onClose}>
             <div className="bg-gray-900 border border-gray-850 sm:border-gray-800 rounded-none sm:rounded-3xl w-full max-w-6xl h-full sm:h-[90vh] pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] sm:pt-0 sm:pb-0 flex flex-col shadow-2xl overflow-hidden animate-fadeIn border-t sm:border-t-2 border-t-emerald-500/80" onClick={e => e.stopPropagation()}>
@@ -847,6 +853,16 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                 </>
                             )}
                         </button>
+                        {activeAnalyzeJob && (
+                            <button
+                                type="button"
+                                onClick={() => cancelServerJob(activeAnalyzeJob.id)}
+                                className="flex items-center gap-1 px-2 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-[9px] sm:text-[11px] font-bold shadow transition-all shrink-0 cursor-pointer"
+                                title="Hủy lệnh phân tích mạch truyện"
+                            >
+                                ⏹️ Hủy
+                            </button>
+                        )}
 
                         <div className="flex bg-gray-950 rounded-lg p-0.5 border border-gray-800 shrink-0">
                             <button 
@@ -1006,6 +1022,24 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                     >
                                         {isScanningStory ? '⏳ Đang quét nhân vật...' : '🔍 Quét nhân vật & Lore'}
                                     </button>
+                                    {activeScanJob && (
+                                        <button
+                                            type="button"
+                                            onClick={() => cancelServerJob(activeScanJob.id)}
+                                            className="flex items-center justify-center gap-1.5 px-4 py-3 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-lg transition-all active:scale-95 w-full sm:w-auto shrink-0 cursor-pointer"
+                                        >
+                                            ⏹️ Hủy quét
+                                        </button>
+                                    )}
+                                    {activeSummarizeSeqJob && (
+                                        <button
+                                            type="button"
+                                            onClick={() => cancelServerJob(activeSummarizeSeqJob.id)}
+                                            className="flex items-center justify-center gap-1.5 px-4 py-3 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-lg transition-all active:scale-95 w-full sm:w-auto shrink-0 cursor-pointer"
+                                        >
+                                            ⏹️ Hủy tóm tắt
+                                        </button>
+                                    )}
 
                                     <div className="flex bg-gray-950 rounded-xl p-1 border border-gray-800 w-full sm:w-auto shrink-0">
                                         <button 
@@ -1595,13 +1629,22 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                 <div className="w-8 h-8 rounded-xl shrink-0 border flex items-center justify-center text-xs font-bold bg-purple-500/10 border-purple-500/20 text-purple-400 animate-pulse">
                                                     AI
                                                 </div>
-                                                <div className="flex items-center gap-2 p-3.5 sm:p-4 bg-gray-800/40 border border-gray-750 rounded-2xl rounded-tl-none">
+                                                <div className="flex flex-wrap items-center gap-2.5 p-3.5 sm:p-4 bg-gray-800/40 border border-gray-750 rounded-2xl rounded-tl-none">
                                                     <span className="text-[13px] sm:text-sm text-purple-400 font-bold animate-pulse">AI đang phân tích...</span>
                                                     <div className="flex gap-1">
                                                         <div className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-bounce"></div>
                                                         <div className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                                                         <div className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
                                                     </div>
+                                                    {activePlotChatJob && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => cancelServerJob(activePlotChatJob.id)}
+                                                            className="ml-1 px-2.5 py-1 bg-rose-600/90 hover:bg-rose-500 text-white text-[11px] font-bold rounded-lg shadow transition-all active:scale-95 cursor-pointer"
+                                                        >
+                                                            ⏹️ Hủy lệnh
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                         )}
@@ -1611,36 +1654,8 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
 
 
                                     {/* Chat Input bar */}
-                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 min-w-0 space-y-2">
-                                        {/* Quick Presets Bar */}
-                                        {!isPlotPlanning && (
-                                            <div className="flex flex-wrap items-center gap-1.5 pb-0.5 text-[11px]">
-                                                {promptPresets.map((preset, idx) => (
-                                                    <button
-                                                        key={idx}
-                                                        type="button"
-                                                        onClick={() => handleSendChat(preset.prompt)}
-                                                        className="px-2.5 py-1 rounded-lg bg-gray-800/90 hover:bg-purple-900/50 text-gray-200 border border-gray-700 hover:border-purple-500/40 max-w-full truncate transition-all cursor-pointer font-semibold"
-                                                    >
-                                                        {preset.label}
-                                                    </button>
-                                                ))}
-                                                {activeProposals.length > 0 && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            const latestProp = activeProposals[activeProposals.length - 1];
-                                                            handleContinueWritingProposal(latestProp);
-                                                        }}
-                                                        className="px-2.5 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/30 shrink-0 flex items-center gap-1 transition-all cursor-pointer"
-                                                    >
-                                                        ⚡ Viết tiếp phần còn lại
-                                                    </button>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        <div className="relative flex items-end min-w-0 bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5">
+                                    <div className="p-3 sm:p-4 bg-gray-900/60 border-t border-gray-800 shrink-0 min-w-0">
+                                        <div className="relative flex items-end min-w-0 bg-black/40 border border-gray-700 hover:border-gray-600 focus-within:border-rose-500 rounded-xl transition-all pl-1 pr-1.5 py-1 sm:py-1.5 gap-1.5">
                                             <textarea 
                                                 rows={2}
                                                 value={coEditInput}
@@ -1655,13 +1670,24 @@ và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
                                                 className="flex-1 min-w-0 bg-transparent px-3 py-1.5 text-base sm:text-sm text-white outline-none placeholder:text-gray-600 resize-none max-h-36 custom-scrollbar"
                                                 placeholder="Nhập chỉ đạo viết hoặc sửa chương trong Co-Edit (Enter để gửi, Shift+Enter xuống dòng)..."
                                             />
-                                            <button 
-                                                onClick={() => handleSendChat()}
-                                                disabled={!coEditInput.trim() || isPlotPlanning}
-                                                className="px-3.5 py-2 mb-0.5 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-[10.5px] sm:text-xs uppercase tracking-wider transition-all disabled:opacity-40 active:scale-95 shrink-0 flex items-center gap-1 shadow-md"
-                                            >
-                                                ⚡ Gửi
-                                            </button>
+                                            {isPlotPlanning && activePlotChatJob ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => cancelServerJob(activePlotChatJob.id)}
+                                                    className="px-3.5 py-2 mb-0.5 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-[10.5px] sm:text-xs uppercase tracking-wider transition-all active:scale-95 shrink-0 flex items-center gap-1 shadow-md cursor-pointer"
+                                                >
+                                                    ⏹️ Hủy
+                                                </button>
+                                            ) : (
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => handleSendChat()}
+                                                    disabled={!coEditInput.trim() || isPlotPlanning}
+                                                    className="px-3.5 py-2 mb-0.5 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-lg text-[10.5px] sm:text-xs uppercase tracking-wider transition-all disabled:opacity-40 active:scale-95 shrink-0 flex items-center gap-1 shadow-md"
+                                                >
+                                                    ⚡ Gửi
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
