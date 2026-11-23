@@ -1157,21 +1157,22 @@ BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
     const cleaned = (text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/gi, '').trim();
     if (!cleaned) return '';
     if (role !== 'model' && role !== 'assistant') {
-      return cleaned.length > 3000 ? `${cleaned.slice(0, 3000)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
+      return cleaned.length > 4000 ? `${cleaned.slice(0, 4000)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
     }
     // Replace huge old [PROPOSAL_*] chapter walls with compact markers so stale drafts never override current live chapters/settings!
     const compacted = cleaned.replace(
-      /\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)([^\]:\n]+)[:\]\s]*([\s\S]*?)(?=(?:\[PROPOSAL_|$))/gi,
+      /\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_|LEDGER_CHAPTER_|LEDGER)([^\]:\n]*)[:\]\s]*([\s\S]*?)(?=(?:\[PROPOSAL_|$))/gi,
       (_m, kind, idPart, body) => {
         const cleanBody = String(body || '').trim();
-        if (cleanBody.length <= 500) {
-          return `[PROPOSAL_${kind}${idPart}: ${cleanBody}]`;
+        const suffix = idPart ? String(idPart) : '';
+        if (cleanBody.length <= 600) {
+          return `[PROPOSAL_${kind}${suffix}: ${cleanBody}]`;
         }
-        return `[PROPOSAL_${kind}${idPart}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 220)}...\nCuối đoạn: ...${cleanBody.slice(-180)}]`;
+        return `[PROPOSAL_${kind}${suffix}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 240)}...\nCuối đoạn: ...${cleanBody.slice(-200)}]`;
       }
     );
-    return compacted.length > 3200
-      ? `${compacted.slice(0, 2000)}\n... [Đã rút gọn lịch sử AI cũ để tiết kiệm token & giữ ngữ cảnh hiện hành sắc nét]\n${compacted.slice(-1000)}`
+    return compacted.length > 4200
+      ? `${compacted.slice(0, 2800)}\n... [Đã rút gọn lịch sử AI cũ để tiết kiệm token & giữ ngữ cảnh hiện hành sắc nét]\n${compacted.slice(-1200)}`
       : compacted;
   },
 
@@ -1211,9 +1212,15 @@ ${shortAnchors ? `${shortAnchors}\n(Hồ sơ World Bible đầy đủ, Nhân v�
      [PROPOSAL_OUTLINE_CHAPTER_<chapterId>: <nội dung đề cương mới>]
    - Cập nhật Tóm tắt một chương:
      [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: <tóm tắt sự kiện + địa điểm nhân vật đã đi qua + vật phẩm/bí mật/thương tích mới>]
+   - Cập nhật Sổ cái dấu chân & sự kiện cho một chương (mỗi ý 1 gạch đầu dòng):
+     [PROPOSAL_LEDGER_CHAPTER_<chapterId>:
+     - Nhân vật đã đến / đi qua địa danh cụ thể nào
+     - Vật phẩm thu/mất, bí mật phát hiện, lời hứa hoặc thương tích/cảnh giới mới]
+   - Cập nhật ghi chú chung toàn truyện vào Sổ cái:
+     [PROPOSAL_LEDGER: - <ghi chú bất biến toàn truyện>]
    - Viết mới / Sửa chữa toàn văn Bản thảo chương (PHẢI viết đầy đủ 100% từ đầu đến cuối, KHÔNG viết "[... giữ nguyên phần còn lại ...]"):
      [PROPOSAL_CONTENT_CHAPTER_<chapterId>: <toàn bộ nội dung bản thảo hoàn chỉnh>]
-   * KHUYẾN NGHỊ TỰ ĐỘNG CẬP NHẬT TRÍ NHỚ: Mỗi khi xuất [PROPOSAL_CONTENT_CHAPTER_<chapterId>: ...], hãy kèm thêm 1 khối ngắn [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: ...] ngay phía dưới (3-5 dòng ghi rõ sự kiện chính, địa danh nhân vật đã đến/đi qua, vật phẩm & thay đổi trạng thái) để giao diện tự động đồng bộ vào trí nhớ dài hạn khi tác giả bấm Áp dụng!
+   * KHUYẾN NGHỊ TỰ ĐỘNG CẬP NHẬT TRÍ NHỚ & SỔ CÁI: Mỗi khi xuất [PROPOSAL_CONTENT_CHAPTER_<chapterId>: ...], hãy kèm thêm 1 khối ngắn [PROPOSAL_SUMMARY_CHAPTER_<chapterId>: ...] (3-5 dòng) VÀ 1 khối [PROPOSAL_LEDGER_CHAPTER_<chapterId>: ...] liệt kê gạch đầu dòng các địa danh đã đến, nhân vật gặp gỡ, vật phẩm, bí mật & thay đổi trạng thái trong chương đó để hệ thống tự động cập nhật Sổ cái khi tác giả bấm Áp dụng! Nếu tác giả chỉ yêu cầu sửa hoặc bổ sung Sổ cái, hãy xuất trực tiếp [PROPOSAL_LEDGER_CHAPTER_<chapterId>: ...] hoặc [PROPOSAL_LEDGER: ...].
 
 Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứng và tôn trọng tuyệt đối bản sắc & thiết lập tác phẩm.`;
   },
@@ -1239,20 +1246,20 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
       sortedChapters[0];
 
     const chaptersContext = formatSmartChapterContext(sortedChapters, {
-      maxTotalChars: options.maxChapterChars ?? 85000,
+      maxTotalChars: options.maxChapterChars ?? 160000,
       focusChapterId: focusedChapter?.id,
       targetChapterMention: message,
       boostChapterIds: options.boostChapterIds,
-      recentPrevWindow: 3
+      recentPrevWindow: 5
     });
 
     const fullWorldBlock = buildCompleteWorldBibleBlock(story, options.retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: options.maxKnowledgeChars ?? 22000,
-      maxLogEntries: 60
+      maxKnowledgeChars: options.maxKnowledgeChars ?? 30000,
+      maxLogEntries: 80
     });
 
-    const rosterText = formatCharacterRosterForPrompt(story.characters || [], 50);
+    const rosterText = formatCharacterRosterForPrompt(story.characters || [], 80);
 
     const analysisInsights: string[] = [];
     if (options.plotArcAnalysis) {

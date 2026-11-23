@@ -16,7 +16,7 @@ interface Props {
 }
 
 interface Proposal {
-    type: 'planning' | 'outline' | 'summary' | 'content';
+    type: 'planning' | 'outline' | 'summary' | 'content' | 'ledger';
     chapterId?: string;
     chapterTitle?: string;
     content: string;
@@ -155,18 +155,32 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
         try {
             if (editingField === 'summary') {
                 await updateChapterSummary(editingChapterId, editingValue);
+                setToast("🎉 Đã cập nhật tóm tắt & đồng bộ Sổ cái thành công!");
             } else if (editingField === 'outline') {
                 await updateChapterOutline(editingChapterId, editingValue);
+                setToast("🎉 Đã cập nhật đề cương thành công!");
             } else if (editingField === 'content') {
                 await updateChapterContent(editingChapterId, editingValue);
+                if (story) {
+                    const nextStorySnapshot = {
+                        ...story,
+                        chapters: (story.chapters || []).map(c =>
+                            c.id === editingChapterId ? { ...c, content: editingValue, lastUpdated: Date.now() } : c
+                        )
+                    };
+                    const nextLedger = ragService.upsertChapterContinuityLedger(nextStorySnapshot, editingChapterId, {
+                        mode: 'refresh_auto'
+                    });
+                    await updateStorySettings({ continuityLedger: nextLedger });
+                }
                 bumpEditorSyncToken();
+                setToast("🎉 Đã cập nhật bản thảo & đồng bộ Sổ cái thành công!");
             }
-            setToast("🎉 Đã cập nhật nội dung thành công!");
             setEditingChapterId(null);
         } catch (e) {
             setToast("❌ Lỗi khi cập nhật nội dung.");
         }
-    }, [editingChapterId, editingField, editingValue, updateChapterSummary, updateChapterOutline, updateChapterContent]);
+    }, [editingChapterId, editingField, editingValue, story, updateChapterSummary, updateChapterOutline, updateChapterContent, updateStorySettings, bumpEditorSyncToken]);
 
     const handleSummarize = useCallback(async (id: string) => {
         await summarizeChapter(id);
@@ -317,7 +331,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
         while (index < raw.length) {
             // Match the beginning of any proposal tag
-            const match = raw.slice(index).match(/\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)/i);
+            const match = raw.slice(index).match(/\[PROPOSAL_(PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_|LEDGER_CHAPTER_|LEDGER\b)/i);
             if (!match || match.index === undefined) {
                 cleanText += raw.substring(index);
                 break;
@@ -337,7 +351,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
             // 3. A closing bracket at the very end of the raw text: \]\s*$
             // 4. Or the end of the text (preserving streaming and unclosed outputs completely)
             const remainingFromTag = raw.slice(afterPrefixStart);
-            const nextTagMatch = remainingFromTag.match(/\[PROPOSAL_(?:PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_)/i);
+            const nextTagMatch = remainingFromTag.match(/\[PROPOSAL_(?:PLANNING|OUTLINE_CHAPTER_|SUMMARY_CHAPTER_|CONTENT_CHAPTER_|LEDGER_CHAPTER_|LEDGER\b)/i);
             
             let proposalEndIdx = -1;
             let nextIndex = raw.length;
@@ -362,6 +376,12 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
             const rawTagBody = raw.substring(afterPrefixStart, proposalEndIdx);
 
+            const formatExistingLedger = (scopeId: string) =>
+                (story?.continuityLedger || [])
+                    .filter(e => (e.chapterId || 'global') === scopeId)
+                    .map(e => `- ${e.content}`)
+                    .join('\n');
+
             if (tagTypeRaw === 'PLANNING') {
                 const cleanBody = rawTagBody
                     .replace(/^[:\]\s]+/, '')
@@ -374,10 +394,25 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                         originalContent: story?.planning || ""
                     });
                 }
+            } else if (tagTypeRaw === 'LEDGER') {
+                const cleanBody = rawTagBody
+                    .replace(/^[:\]\s]+/, '')
+                    .replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '')
+                    .trim();
+                if (cleanBody) {
+                    proposals.push({
+                        type: 'ledger',
+                        chapterId: 'global',
+                        chapterTitle: 'Ghi chú chung toàn truyện',
+                        content: cleanBody,
+                        originalContent: formatExistingLedger('global')
+                    });
+                }
             } else {
-                const type: 'outline' | 'summary' | 'content' = 
+                const type: Proposal['type'] = 
                     tagTypeRaw.startsWith('OUTLINE') ? 'outline' :
-                    tagTypeRaw.startsWith('SUMMARY') ? 'summary' : 'content';
+                    tagTypeRaw.startsWith('SUMMARY') ? 'summary' :
+                    tagTypeRaw.startsWith('LEDGER') ? 'ledger' : 'content';
 
                 // Look for delimiter separating chapter ID from content: e.g. "2: ...", "2]: ...", "2]\n...", "2\n..."
                 const headerMatch = rawTagBody.match(/^([^:\n\]]+)(?:\]\s*:?|:\s*|\n\s*)([\s\S]*)$/);
@@ -394,20 +429,39 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
                 bodyContent = bodyContent.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim();
 
-                const resolvedCh = resolveChapter(rawId);
-                const fallbackCh = resolvedCh || (activeChapterId ? chapters?.find(c => c.id === activeChapterId) : undefined) || (chapters && chapters[0]);
-                
-                const chapterId = fallbackCh?.id || rawId || 'ch_target';
-                const chapterTitle = fallbackCh?.title || (rawId ? `Chương ${rawId}` : 'Chương được chọn');
+                if (type === 'ledger' && rawId.toLowerCase() === 'global') {
+                    if (bodyContent) {
+                        proposals.push({
+                            type: 'ledger',
+                            chapterId: 'global',
+                            chapterTitle: 'Ghi chú chung toàn truyện',
+                            content: bodyContent,
+                            originalContent: formatExistingLedger('global')
+                        });
+                    }
+                } else {
+                    const resolvedCh = resolveChapter(rawId);
+                    const fallbackCh = resolvedCh || (activeChapterId ? chapters?.find(c => c.id === activeChapterId) : undefined) || (chapters && chapters[0]);
+                    
+                    const chapterId = fallbackCh?.id || rawId || 'ch_target';
+                    const chapterTitle = fallbackCh?.title || (rawId ? `Chương ${rawId}` : 'Chương được chọn');
 
-                if (bodyContent) {
-                    proposals.push({
-                        type,
-                        chapterId,
-                        chapterTitle,
-                        content: bodyContent,
-                        originalContent: type === 'content' ? (fallbackCh?.content || "") : type === 'outline' ? (fallbackCh?.outline || "") : (fallbackCh?.summary || "")
-                    });
+                    if (bodyContent) {
+                        proposals.push({
+                            type,
+                            chapterId,
+                            chapterTitle,
+                            content: bodyContent,
+                            originalContent:
+                                type === 'content'
+                                    ? (fallbackCh?.content || "")
+                                    : type === 'outline'
+                                        ? (fallbackCh?.outline || "")
+                                        : type === 'ledger'
+                                            ? formatExistingLedger(chapterId)
+                                            : (fallbackCh?.summary || "")
+                        });
+                    }
                 }
             }
 
@@ -418,7 +472,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
             cleanText: cleanText.replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/i, '').trim(),
             proposals
         };
-    }, [story?.planning, resolveChapter, activeChapterId, chapters]);
+    }, [story?.planning, story?.continuityLedger, resolveChapter, activeChapterId, chapters]);
 
     // Helper to extract active proposals from chat logs
     const parseProposals = useCallback((messages: ChatMessage[]): Proposal[] => {
@@ -434,12 +488,14 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
 
         const latestMap: { [key: string]: Proposal } = {};
         proposals.forEach(p => {
-            const key = p.type === 'planning' ? 'planning' : `${p.type}_${p.chapterId}`;
+            const key = p.type === 'planning' ? 'planning' : `${p.type}_${p.chapterId || 'global'}`;
             latestMap[key] = p;
         });
 
         return Object.values(latestMap);
     }, [parseMessageData]);
+
+    const activeProposals = useMemo(() => parseProposals(story?.plotChatHistory || []), [story?.plotChatHistory, parseProposals]);
 
     const applyProposal = async (proposal: Proposal, mode: 'replace' | 'append' = 'replace') => {
         try {
@@ -449,6 +505,24 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                     : proposal.content;
                 await updateStorySettings({ planning: newPlanning });
                 setToast("🎉 Đã áp dụng đề xuất Dàn ý tổng thể mới thành công!");
+            } else if (proposal.type === 'ledger') {
+                if (!story) return;
+                const targetId = proposal.chapterId || 'global';
+                const facts = ragService.parseLedgerLines(proposal.content);
+                if (facts.length === 0) {
+                    setToast("⚠️ Không tách được dòng ghi chú hợp lệ trong đề xuất Sổ cái.");
+                    return;
+                }
+                const nextLedger = ragService.upsertChapterContinuityLedger(story, targetId, {
+                    explicitFacts: facts,
+                    mode: mode === 'append' ? 'append' : 'refresh_auto'
+                });
+                await updateStorySettings({ continuityLedger: nextLedger });
+                setToast(
+                    mode === 'append'
+                        ? `📒 Đã thêm ${facts.length} mục mới vào Sổ cái (${proposal.chapterTitle || 'Toàn truyện'})!`
+                        : `📒 Đã cập nhật ${facts.length} mục Sổ cái cho "${proposal.chapterTitle || 'Toàn truyện'}" (vẫn giữ nguyên các mục [Tác giả chốt])!`
+                );
             } else if (proposal.type === 'outline' && proposal.chapterId) {
                 const currentCh = chapters?.find(c => c.id === proposal.chapterId);
                 const newOutline = mode === 'append' && currentCh?.outline 
@@ -462,7 +536,7 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                     ? `${currentCh.summary}\n\n${proposal.content}` 
                     : proposal.content;
                 await updateChapterSummary(proposal.chapterId, newSummary);
-                setToast(`🎉 Đã áp dụng đề xuất Tóm tắt mới cho "${proposal.chapterTitle}"!`);
+                setToast(`🎉 Đã áp dụng tóm tắt & tự động cập nhật Sổ cái cho "${proposal.chapterTitle}"!`);
             } else if (proposal.type === 'content' && proposal.chapterId) {
                 const currentCh = chapters?.find(c => c.id === proposal.chapterId);
                 const newContent = mode === 'append' && currentCh?.content 
@@ -470,20 +544,50 @@ export const PlotArcModal: React.FC<Props> = ({ isOpen, onClose, chapters, story
                     : proposal.content;
                 await updateChapterContent(proposal.chapterId, newContent);
 
-                // If AI also emitted a paired summary proposal for this chapter, auto-sync it to keep long-term memory accurate
+                // If AI also emitted a paired summary / ledger proposal for this chapter, auto-sync them to keep long-term memory & Sổ cái accurate
                 const pairedSummary = activeProposals.find(
                     p => p.type === 'summary' && p.chapterId === proposal.chapterId && p.content?.trim()
                 );
+                const pairedLedger = activeProposals.find(
+                    p => p.type === 'ledger' && p.chapterId === proposal.chapterId && p.content?.trim()
+                );
+                const appliedSummary = pairedSummary && mode === 'replace' ? pairedSummary.content : currentCh?.summary;
+
                 if (pairedSummary && mode === 'replace') {
                     await updateChapterSummary(proposal.chapterId, pairedSummary.content);
                 }
 
+                if (story) {
+                    const nextStorySnapshot = {
+                        ...story,
+                        chapters: (story.chapters || []).map(c =>
+                            c.id === proposal.chapterId
+                                ? {
+                                      ...c,
+                                      content: newContent,
+                                      ...(appliedSummary !== undefined ? { summary: appliedSummary } : {}),
+                                      lastUpdated: Date.now()
+                                  }
+                                : c
+                        )
+                    };
+                    const explicitFacts =
+                        pairedLedger && mode === 'replace'
+                            ? ragService.parseLedgerLines(pairedLedger.content)
+                            : undefined;
+                    const nextLedger = ragService.upsertChapterContinuityLedger(nextStorySnapshot, proposal.chapterId, {
+                        explicitFacts: explicitFacts && explicitFacts.length > 0 ? explicitFacts : undefined,
+                        mode: 'refresh_auto'
+                    });
+                    await updateStorySettings({ continuityLedger: nextLedger });
+                }
+
                 bumpEditorSyncToken();
                 setToast(mode === 'append' 
-                    ? `🎉 Đã ghép nối tiếp nội dung vào Bản thảo "${proposal.chapterTitle}"!` 
-                    : pairedSummary
-                        ? `🎉 Đã đồng bộ bản thảo & cập nhật tóm tắt trí nhớ cho "${proposal.chapterTitle}"!`
-                        : `🎉 Đã đồng bộ đề xuất nội dung vào Bản thảo chương "${proposal.chapterTitle}"!`);
+                    ? `🎉 Đã ghép nối tiếp nội dung & tự động cập nhật Sổ cái "${proposal.chapterTitle}"!` 
+                    : pairedSummary || pairedLedger
+                        ? `🎉 Đã đồng bộ bản thảo, tóm tắt & tự động cập nhật Sổ cái cho "${proposal.chapterTitle}"!`
+                        : `🎉 Đã áp dụng bản thảo & tự động cập nhật Sổ cái cho "${proposal.chapterTitle}"!`);
             }
         } catch (e) {
             setToast("❌ Lỗi khi áp dụng đề xuất.");
@@ -499,8 +603,6 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
 [PROPOSAL_CONTENT_CHAPTER_${prop.chapterId}: <nội dung viết tiếp hoàn chỉnh>]`;
         handleSendChat(prompt);
     }, [handleSendChat]);
-
-    const activeProposals = useMemo(() => parseProposals(story?.plotChatHistory || []), [story?.plotChatHistory, chapters, parseProposals]);
 
     const activeChapter = (chapters || []).find(c => c.id === activeChapterId);
     const focusedChapter = (chapters || []).find(c => c.id === focusedCoEditChapterId) || activeChapter || sortedChapters[0];
@@ -520,7 +622,9 @@ Yêu cầu tối thượng: Viết toàn văn 100%, không tóm tắt, giữ tr�
 - Vấn đề phát hiện: ${issue.issue}
 ${issue.fixSuggestion ? `- Hướng xử lý tham khảo: ${issue.fixSuggestion}\n` : ''}
 Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và các chương liền kề để viết lại bản thảo hoàn chỉnh cho chương "${target.title}" khắc phục triệt để lỗi này nhưng vẫn giữ 100% văn phong và các tình tiết đúng đắn khác. Bọc toàn bộ bản thảo mới trong thẻ:
-[PROPOSAL_CONTENT_CHAPTER_${target.id}: <nội dung bản thảo chương đã sửa>]`;
+[PROPOSAL_CONTENT_CHAPTER_${target.id}: <nội dung bản thảo chương đã sửa>]
+và kèm cập nhật Sổ cái dấu chân mới cho chương này trong thẻ:
+[PROPOSAL_LEDGER_CHAPTER_${target.id}: <các gạch đầu dòng sự kiện, địa danh đã đến & trạng thái mới>]`;
         await handleSendChat(prompt, target.id);
     }, [sortedChapters, resolveChapter, focusedChapter, handleSendChat]);
 
@@ -675,10 +779,13 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
     const promptPresets = [
         ...(focusedChapter ? [{
             label: `✍️ Viết/Nối tiếp: ${focusedChapter.title}`,
-            prompt: `Hãy kiểm tra toàn bộ World Bible, Hồ sơ nhân vật (vị trí, vết thương, tri thức, dấu chân đã đi qua), Sổ cái sự kiện và các chương trước/sau để VIẾT ĐẦY ĐỦ / VIẾT TIẾP chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho liền mạch tuyệt đối, KHÔNG quên thiết lập cũ và KHÔNG lặp lại chương trước. Bọc bản thảo trong:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <toàn bộ nội dung bản thảo>]\nvà kèm tóm tắt trí nhớ ngắn gọn trong:\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <sự kiện chính, địa điểm đã đến, vật phẩm & trạng thái nhân vật>]`
+            prompt: `Hãy kiểm tra toàn bộ World Bible, Hồ sơ nhân vật (vị trí, vết thương, tri thức, dấu chân đã đi qua), Sổ cái sự kiện và các chương trước/sau để VIẾT ĐẦY ĐỦ / VIẾT TIẾP chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho liền mạch tuyệt đối, KHÔNG quên thiết lập cũ và KHÔNG lặp lại chương trước. Bọc bản thảo trong:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <toàn bộ nội dung bản thảo>]\nkèm tóm tắt trong:\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt ngắn>]\nvà cập nhật Sổ cái dấu chân trong:\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: - <địa điểm đã đến/đi qua, vật phẩm, nhân vật gặp & trạng thái mới>]`
         }, {
             label: `🔧 Sửa mạch lạc: ${focusedChapter.title}`,
-            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới, Sổ cái dấu chân và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt sự kiện, địa điểm đã đi qua & thay đổi trạng thái>]`
+            prompt: `Dựa trên hồ sơ nhân vật, bối cảnh thế giới, Sổ cái dấu chân và các chương trước/sau, hãy kiểm tra và viết lại toàn văn bản thảo chương "${focusedChapter.title}" (ID: ${focusedChapter.id}) cho mạch lạc hơn, khắc phục sạn logic nếu có nhưng giữ nguyên 100% văn phong và chi tiết đắt giá của nguyên tác. Bọc toàn bộ kết quả trong thẻ:\n[PROPOSAL_CONTENT_CHAPTER_${focusedChapter.id}: <nội dung bản thảo mới đã sửa>]\n[PROPOSAL_SUMMARY_CHAPTER_${focusedChapter.id}: <tóm tắt sự kiện, địa điểm đã đi qua & thay đổi trạng thái>]\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: - <các gạch đầu dòng Sổ cái đã cập nhật>]`
+        }, {
+            label: `📒 Cập nhật Sổ cái: ${focusedChapter.title}`,
+            prompt: `Hãy đọc kỹ toàn văn bản thảo & tóm tắt chương "${focusedChapter.title}" (ID: ${focusedChapter.id}), đối chiếu với Sổ cái hiện tại, rồi trích xuất/cập nhật đầy đủ mọi chi tiết dấu chân quan trọng (địa điểm đã đến hoặc đi qua ở đầu/giữa/cuối chương, nhân vật gặp gỡ, vật phẩm thu/mất, bí mật, lời hứa, thương tích/cảnh giới) theo từng gạch đầu dòng ngắn gọn trong thẻ:\n[PROPOSAL_LEDGER_CHAPTER_${focusedChapter.id}: <danh sách gạch đầu dòng sự kiện & dấu chân của chương>]`
         }] : []),
         { label: "🔍 Quét lỗ hổng toàn truyện", prompt: "Hãy đối chiếu toàn bộ các chương, danh sách nhân vật, dấu chân địa điểm và bối cảnh thế giới để chỉ ra các lỗ hổng mạch lạc (plot holes), chi tiết tiền hậu bất nhất, hoặc mâu thuẫn tính cách/thực lực." },
         { label: "🎭 Tạo nút thắt hợp logic", prompt: "Dựa trên các chi tiết đã cài cắm trong cốt truyện và tính cách nhân vật hiện tại, hãy đề xuất một nút thắt (plot twist) bất ngờ nhưng logic để đẩy kịch tính lên cao trào." },
@@ -1371,9 +1478,23 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                                 <div key={pIdx} className={`${parsed.cleanText ? 'mt-3 pt-3 border-t border-purple-500/20' : ''} font-sans not-italic text-left space-y-2.5`}>
                                                                     <div className="flex items-center justify-between gap-2 flex-wrap">
                                                                         <div className="flex items-center gap-1.5 flex-wrap">
-                                                                            <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300 font-bold text-xs flex items-center gap-1.5 border border-purple-500/30">
-                                                                                <span>📝</span>
-                                                                                <span>{prop.type === 'content' ? `Bản Thảo: ${prop.chapterTitle}` : prop.type === 'outline' ? `Đề Cương: ${prop.chapterTitle}` : prop.type === 'summary' ? `Tóm Tắt: ${prop.chapterTitle}` : 'Dàn Ý Truyện'}</span>
+                                                                            <span className={`px-2 py-0.5 rounded font-bold text-xs flex items-center gap-1.5 border ${
+                                                                                prop.type === 'ledger'
+                                                                                    ? 'bg-amber-900/50 text-amber-300 border-amber-500/40'
+                                                                                    : 'bg-purple-900/60 text-purple-300 border-purple-500/30'
+                                                                            }`}>
+                                                                                <span>{prop.type === 'ledger' ? '📒' : '📝'}</span>
+                                                                                <span>
+                                                                                    {prop.type === 'content'
+                                                                                        ? `Bản Thảo: ${prop.chapterTitle}`
+                                                                                        : prop.type === 'outline'
+                                                                                            ? `Đề Cương: ${prop.chapterTitle}`
+                                                                                            : prop.type === 'summary'
+                                                                                                ? `Tóm Tắt: ${prop.chapterTitle}`
+                                                                                                : prop.type === 'ledger'
+                                                                                                    ? `Sổ cái: ${prop.chapterTitle}`
+                                                                                                    : 'Dàn Ý Truyện'}
+                                                                                </span>
                                                                             </span>
                                                                             <span className="px-2 py-0.5 rounded bg-gray-900 text-gray-300 text-[11px] font-mono border border-gray-750">
                                                                                 ~{wordCount.toLocaleString()} từ
@@ -1385,11 +1506,21 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                                                 type="button"
                                                                                 onClick={() => applyProposal(prop, 'replace')}
                                                                                 className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
-                                                                                title="Đồng bộ ngay vào bản thảo (ghi đè)"
+                                                                                title={prop.type === 'ledger' ? 'Cập nhật lại các mục Sổ cái tự động của chương này (vẫn giữ mục [Tác giả chốt])' : 'Đồng bộ ngay vào bản thảo (ghi đè)'}
                                                                             >
                                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
                                                                                 Áp dụng
                                                                             </button>
+                                                                            {prop.type === 'ledger' && (
+                                                                                <button 
+                                                                                    type="button"
+                                                                                    onClick={() => applyProposal(prop, 'append')}
+                                                                                    className="px-2.5 py-1 rounded-lg bg-amber-700 hover:bg-amber-600 text-amber-100 font-bold text-xs shadow transition-all flex items-center gap-1 active:scale-95 cursor-pointer"
+                                                                                    title="Thêm các dòng này vào Sổ cái hiện tại mà không xóa các mục cũ"
+                                                                                >
+                                                                                    ➕ Thêm vào Sổ cái
+                                                                                </button>
+                                                                            )}
                                                                             {/* Xem Diff trước khi áp dụng */}
                                                                             {prop.type === 'content' && prop.chapterId && (
                                                                                 <button
@@ -1565,13 +1696,16 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                 const isPlanning = proposal.type === 'planning';
                                                 const isOutline = proposal.type === 'outline';
                                                 const isContent = proposal.type === 'content';
+                                                const isLedger = proposal.type === 'ledger';
                                                 const label = isPlanning 
                                                     ? "Dàn ý tổng thể truyện" 
                                                     : isOutline 
                                                         ? `Đề cương: ${proposal.chapterTitle}` 
                                                         : isContent
                                                             ? `Bản thảo: ${proposal.chapterTitle}`
-                                                            : `Tóm tắt: ${proposal.chapterTitle}`;
+                                                            : isLedger
+                                                                ? `📒 Sổ cái: ${proposal.chapterTitle}`
+                                                                : `Tóm tắt: ${proposal.chapterTitle}`;
                                                 
                                                 const borderClass = isPlanning 
                                                     ? "border-cyan-500/20 hover:border-cyan-500/40 bg-cyan-950/10" 
@@ -1579,7 +1713,9 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                         ? "border-purple-500/20 hover:border-purple-500/40 bg-purple-950/10" 
                                                         : isContent
                                                             ? "border-rose-500/20 hover:border-rose-500/40 bg-rose-950/10"
-                                                            : "border-orange-500/20 hover:border-orange-500/40 bg-orange-950/10";
+                                                            : isLedger
+                                                                ? "border-amber-500/30 hover:border-amber-500/50 bg-amber-950/15"
+                                                                : "border-orange-500/20 hover:border-orange-500/40 bg-orange-950/10";
                                                 
                                                 const badgeColor = isPlanning 
                                                     ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20" 
@@ -1587,7 +1723,9 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                         ? "bg-purple-500/10 text-purple-400 border-purple-500/20" 
                                                         : isContent
                                                             ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
-                                                            : "bg-orange-500/10 text-orange-400 border-orange-500/20";
+                                                            : isLedger
+                                                                ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                                                                : "bg-orange-500/10 text-orange-400 border-orange-500/20";
 
                                                  const wordCount = proposal.content.trim().split(/\s+/).filter(Boolean).length;
                                                  return (
@@ -1606,10 +1744,20 @@ Hãy đối chiếu với bối cảnh thế giới, hồ sơ nhân vật và c�
                                                                     type="button"
                                                                     onClick={() => applyProposal(proposal, 'replace')}
                                                                     className="text-[9px] bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase px-2 py-1 rounded-lg transition-all active:scale-95 shadow-md shrink-0 cursor-pointer"
-                                                                    title="Ghi đè bản thảo"
+                                                                    title={isLedger ? "Cập nhật mục tự động trong Sổ cái" : "Ghi đè bản thảo"}
                                                                 >
                                                                     Áp dụng
                                                                 </button>
+                                                                {isLedger && (
+                                                                    <button 
+                                                                        type="button"
+                                                                        onClick={() => applyProposal(proposal, 'append')}
+                                                                        className="text-[9px] bg-amber-700 hover:bg-amber-600 text-amber-100 font-bold px-1.5 py-1 rounded-lg transition-all active:scale-95 shadow-md shrink-0 cursor-pointer"
+                                                                        title="Thêm vào Sổ cái hiện tại (giữ mục cũ)"
+                                                                    >
+                                                                        ➕ Thêm
+                                                                    </button>
+                                                                )}
                                                                 {isContent && proposal.chapterId && (
                                                                     <button
                                                                         type="button"

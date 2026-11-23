@@ -935,11 +935,18 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
   const updateChapterSummary = useCallback((id: string, summary: string) => {
     setStory(prev => {
       if (!prev) return null;
-      const newState = {
+      const storyWithSummary: Story = {
         ...prev,
         chapters: prev.chapters.map(c => (c.id === id ? { ...c, summary, lastUpdated: Date.now() } : c))
       };
-      void storageService.saveStory(newState);
+      const nextLedger = ragService.upsertChapterContinuityLedger(storyWithSummary, id, {
+        mode: 'refresh_auto'
+      });
+      const newState: Story = {
+        ...storyWithSummary,
+        continuityLedger: nextLedger
+      };
+      void storageService.saveStory(newState, true);
       return newState;
     });
   }, []);
@@ -1745,7 +1752,13 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
       updatedChapters.push(newChapter);
       updatedChapters.sort((a, b) => a.order - b.order);
 
-      const updatedStory = { ...currentStory, chapters: updatedChapters };
+      const storyWithNewChapter: Story = { ...currentStory, chapters: updatedChapters };
+      const updatedStory: Story = {
+        ...storyWithNewChapter,
+        continuityLedger: ragService.upsertChapterContinuityLedger(storyWithNewChapter, newChapterId, {
+          mode: 'refresh_auto'
+        })
+      };
       setStory(updatedStory);
       storyRef.current = updatedStory;
       void storageService.saveStory(updatedStory, true);
@@ -1765,7 +1778,13 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
         }
         return c;
       });
-      const updatedStory = { ...currentStory, chapters: updatedChapters };
+      const storyWithEdit: Story = { ...currentStory, chapters: updatedChapters };
+      const updatedStory: Story = {
+        ...storyWithEdit,
+        continuityLedger: ragService.upsertChapterContinuityLedger(storyWithEdit, chapterId, {
+          mode: 'refresh_auto'
+        })
+      };
       setStory(updatedStory);
       storyRef.current = updatedStory;
       void storageService.saveStory(updatedStory, true);

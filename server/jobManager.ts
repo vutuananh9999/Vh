@@ -422,7 +422,7 @@ class ServerJobManager {
             dedupedContinuation;
 
           const latestStory = loadStoryOrThrow();
-          const updatedStory: Story = {
+          const storyWithDraft: Story = {
             ...latestStory,
             chapters: latestStory.chapters.map(c => {
               if (c.id !== chapterId) return c;
@@ -438,6 +438,12 @@ class ServerJobManager {
                 content: finalDraft,
                 lastUpdated: Date.now()
               };
+            })
+          };
+          const updatedStory: Story = {
+            ...storyWithDraft,
+            continuityLedger: ragService.upsertChapterContinuityLedger(storyWithDraft, chapterId, {
+              mode: 'refresh_auto'
             })
           };
           serverVault.saveStory(updatedStory);
@@ -690,7 +696,7 @@ class ServerJobManager {
           if (result?.text) {
             finalText = cleanAndDeduplicateContinuation(result.text, '');
             const latest = loadStoryOrThrow();
-            const updated: Story = {
+            const storyWithDraft: Story = {
               ...latest,
               chapters: latest.chapters.map(c =>
                 c.id === chapterId
@@ -702,6 +708,12 @@ class ServerJobManager {
                     }
                   : c
               )
+            };
+            const updated: Story = {
+              ...storyWithDraft,
+              continuityLedger: ragService.upsertChapterContinuityLedger(storyWithDraft, chapterId, {
+                mode: 'refresh_auto'
+              })
             };
             serverVault.saveStory(updated);
           }
@@ -756,11 +768,17 @@ class ServerJobManager {
 
           if (result?.text) {
             const latest = loadStoryOrThrow();
-            const updated: Story = {
+            const storyWithSummary: Story = {
               ...latest,
               chapters: latest.chapters.map(c =>
                 c.id === chapterId ? { ...c, summary: result.text, lastUpdated: Date.now() } : c
               )
+            };
+            const updated: Story = {
+              ...storyWithSummary,
+              continuityLedger: ragService.upsertChapterContinuityLedger(storyWithSummary, chapterId, {
+                mode: 'refresh_auto'
+              })
             };
             serverVault.saveStory(updated);
           }
@@ -845,12 +863,20 @@ class ServerJobManager {
               checkAborted();
               if (result?.text) {
                 const reloaded = loadStoryOrThrow();
-                const updated: Story = {
+                const storyWithSummary: Story = {
                   ...reloaded,
                   chapters: reloaded.chapters.map(c =>
                     c.id === latestChapter.id
                       ? { ...c, summary: result.text, lastUpdated: Date.now() }
                       : c
+                  )
+                };
+                const updated: Story = {
+                  ...storyWithSummary,
+                  continuityLedger: ragService.upsertChapterContinuityLedger(
+                    storyWithSummary,
+                    latestChapter.id,
+                    { mode: 'refresh_auto' }
                   )
                 };
                 serverVault.saveStory(updated);
@@ -1476,12 +1502,12 @@ class ServerJobManager {
             ragQuery,
             currentStory,
             focusChapterId ? [focusChapterId] : [],
-            6,
-            800
+            7,
+            900
           );
           const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
             upToChapterId: focusChapterId,
-            maxChars: 14000
+            maxChars: 18000
           });
           checkAborted();
 

@@ -3203,25 +3203,25 @@ ${safeBody}`;
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
     const retrievedKnowledge = ragService
-      .searchLexicalKnowledge(message, story, { topK: 10 })
+      .searchLexicalKnowledge(message, story, { topK: 12 })
       .map(h => h.text)
       .join('\n\n');
     const continuityLedger = ragService.buildStoryContinuityLedger(story, {
-      maxChars: 14000
+      maxChars: 18000
     });
     const fullWorldBlock = promptBuilderService.buildCompleteWorldBibleBlock(story, retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: 20000,
-      maxLogEntries: 60
+      maxKnowledgeChars: 28000,
+      maxLogEntries: 80
     });
     const chaptersOverview = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 75000,
+      maxTotalChars: 135000,
       targetChapterMention: message,
-      recentPrevWindow: 3
+      recentPrevWindow: 4
     });
     const characterRoster = (story.characters || []).length > 0
       ? story.characters
-          .slice(0, 50)
+          .slice(0, 75)
           .map(
             c =>
               `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}${c.status ? `, trạng thái: ${c.status}` : ''}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.knowledge ? `, tri thức/dấu chân: ${c.knowledge}` : ''}): ${c.description || ''}`
@@ -3316,15 +3316,15 @@ ${message}`;
     const retrievedKnowledge =
       extraContext?.retrievedKnowledge?.trim() ||
       ragService
-        .searchLexicalKnowledge(ragQuery, story, { topK: 12 })
+        .searchLexicalKnowledge(ragQuery, story, { topK: 14 })
         .map(h => h.text)
         .join('\n\n');
 
     const lexicalChapterHits = !extraContext?.retrievedChapters
       ? ragService.searchLexicalChapters(ragQuery, story, {
           excludeChapterIds: focusedChapter ? [focusedChapter.id] : [],
-          topK: 6,
-          maxCharsPerHit: 800
+          topK: 7,
+          maxCharsPerHit: 900
         })
       : [];
 
@@ -3336,7 +3336,7 @@ ${message}`;
       extraContext?.continuityLedger?.trim() ||
       ragService.buildStoryContinuityLedger(story, {
         upToChapterId: focusedChapter?.id,
-        maxChars: 14000
+        maxChars: 18000
       });
 
     const boostChapterIds =
