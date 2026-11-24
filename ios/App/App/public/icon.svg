@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#030712" />
+      <stop offset="55%" stop-color="#0b132b" />
+      <stop offset="100%" stop-color="#1e1b4b" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+    <radialGradient id="nebula" cx="50%" cy="46%" r="48%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.28" />
+      <stop offset="60%" stop-color="#6366f1" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#030712" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <circle cx="256" cy="240" r="220" fill="url(#nebula)" />
+  <circle cx="256" cy="256" r="158" fill="none" stroke="url(#accentGrad)" stroke-width="14" stroke-opacity="0.45" />
+  <circle cx="256" cy="256" r="118" fill="none" stroke="#38bdf8" stroke-width="4" stroke-opacity="0.25" stroke-dasharray="14 10" />
+  <path d="M256 108 L302 222 L404 256 L302 290 L256 404 L210 290 L108 256 L210 222 Z" fill="url(#accentGrad)" />
+  <circle cx="256" cy="256" r="28" fill="#f8fafc" />
+</svg>
