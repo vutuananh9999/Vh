@@ -18,6 +18,12 @@ import {
   raceWithAbort,
   throwIfAborted
 } from "./jobAbortContext.ts";
+import {
+  clampGeminiPayloadToTokenLimit,
+  enforceCharsBudgetKeepingEnds,
+  GEMINI_MAX_INPUT_TOKENS,
+  getContextBudget
+} from "./contextBudgetService.ts";
 
 let lastKeyIndex = 0;
 let lastLoggedKey = "";
@@ -867,16 +873,25 @@ class DynamicAI {
             }
           }
 
+          const geminiGuard = clampGeminiPayloadToTokenLimit(params, GEMINI_MAX_INPUT_TOKENS);
+          const geminiParams = geminiGuard.params;
+          if (geminiGuard.wasTrimmed) {
+            plotDebugLogger.updateAttempt(logId, {
+              model: requestedModel,
+              phase: `Giới hạn Gemini 35k token: tự nén ngữ cảnh ~${geminiGuard.estimatedTokensBefore.toLocaleString()} -> ~${geminiGuard.estimatedTokensAfter.toLocaleString()} tokens...`
+            });
+          }
+
           for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
             throwIfAborted(effectiveSignal);
             const currentModelId = modelCascade[mIdx];
             const isFirstModel = mIdx === 0;
-            const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+            const cleanedConfig = cleanConfigForModel(geminiParams.config, currentModelId) || {};
             if (effectiveSignal && !cleanedConfig.abortSignal) {
               cleanedConfig.abortSignal = effectiveSignal;
             }
             let currentParams = {
-              ...params,
+              ...geminiParams,
               model: currentModelId,
               config: cleanedConfig
             };
@@ -1158,16 +1173,25 @@ class DynamicAI {
             }
           }
 
+          const geminiGuard = clampGeminiPayloadToTokenLimit(params, GEMINI_MAX_INPUT_TOKENS);
+          const geminiParams = geminiGuard.params;
+          if (geminiGuard.wasTrimmed) {
+            plotDebugLogger.updateAttempt(logId, {
+              model: requestedModel,
+              phase: `Giới hạn Gemini 35k token: tự nén stream ~${geminiGuard.estimatedTokensBefore.toLocaleString()} -> ~${geminiGuard.estimatedTokensAfter.toLocaleString()} tokens...`
+            });
+          }
+
           for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
             throwIfAborted(effectiveSignal);
             const currentModelId = modelCascade[mIdx];
             const isFirstModel = mIdx === 0;
-            const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+            const cleanedConfig = cleanConfigForModel(geminiParams.config, currentModelId) || {};
             if (effectiveSignal && !cleanedConfig.abortSignal) {
               cleanedConfig.abortSignal = effectiveSignal;
             }
             let currentParams = {
-              ...params,
+              ...geminiParams,
               model: currentModelId,
               config: cleanedConfig
             };
@@ -1617,16 +1641,26 @@ class DynamicAI {
               }
             }
 
+            const geminiGuard = clampGeminiPayloadToTokenLimit(params, GEMINI_MAX_INPUT_TOKENS, sendParams);
+            const geminiParams = geminiGuard.params;
+            const geminiSendParams = geminiGuard.sendParams;
+            if (geminiGuard.wasTrimmed) {
+              plotDebugLogger.updateAttempt(logId, {
+                model: requestedModel,
+                phase: `Giới hạn Gemini 35k token: tự nén chat ~${geminiGuard.estimatedTokensBefore.toLocaleString()} -> ~${geminiGuard.estimatedTokensAfter.toLocaleString()} tokens...`
+              });
+            }
+
             for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
               throwIfAborted(effectiveSignal);
               const currentModelId = modelCascade[mIdx];
               const isFirstModel = mIdx === 0;
-              const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+              const cleanedConfig = cleanConfigForModel(geminiParams.config, currentModelId) || {};
               if (effectiveSignal && !cleanedConfig.abortSignal) {
                 cleanedConfig.abortSignal = effectiveSignal;
               }
               const currentParams = {
-                ...params,
+                ...geminiParams,
                 model: currentModelId,
                 config: cleanedConfig
               };
@@ -1672,16 +1706,16 @@ class DynamicAI {
                 });
 
                 const rawChats = createGenAI(key).chats;
-                const currentHistory = params.history || [];
+                const currentHistory = geminiParams.history || [];
                 const session = rawChats.create({
                   ...currentParams,
                   history: currentHistory
                 });
                 const effectiveSendParams = effectiveSignal
-                  ? (typeof sendParams === 'string'
-                      ? { message: sendParams, config: { abortSignal: effectiveSignal } }
-                      : { ...(sendParams || {}), config: { ...((sendParams && sendParams.config) || {}), abortSignal: effectiveSignal } })
-                  : sendParams;
+                  ? (typeof geminiSendParams === 'string'
+                      ? { message: geminiSendParams, config: { abortSignal: effectiveSignal } }
+                      : { ...(geminiSendParams || {}), config: { ...((geminiSendParams && geminiSendParams.config) || {}), abortSignal: effectiveSignal } })
+                  : geminiSendParams;
 
                 const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                 try {
@@ -1747,7 +1781,7 @@ class DynamicAI {
                     continue;
                   }
 
-                  const gemmaChatAdapted = adaptGemmaChatParamsOn400(currentParams, sendParams, msg);
+                  const gemmaChatAdapted = adaptGemmaChatParamsOn400(currentParams, geminiSendParams, msg);
                   if (gemmaChatAdapted) {
                     plotDebugLogger.updateAttempt(logId, {
                       phase: `Điều chỉnh tham số tương thích Gemma cho chat ${currentModelId} và thử lại...`
@@ -1874,16 +1908,26 @@ class DynamicAI {
                 }
               }
 
+              const geminiGuard = clampGeminiPayloadToTokenLimit(params, GEMINI_MAX_INPUT_TOKENS, sendParams);
+              const geminiParams = geminiGuard.params;
+              const geminiSendParams = geminiGuard.sendParams;
+              if (geminiGuard.wasTrimmed) {
+                plotDebugLogger.updateAttempt(logId, {
+                  model: requestedModel,
+                  phase: `Giới hạn Gemini 35k token: tự nén chat stream ~${geminiGuard.estimatedTokensBefore.toLocaleString()} -> ~${geminiGuard.estimatedTokensAfter.toLocaleString()} tokens...`
+                });
+              }
+
               for (let mIdx = 0; mIdx < modelCascade.length; mIdx++) {
                 throwIfAborted(effectiveSignal);
                 const currentModelId = modelCascade[mIdx];
                 const isFirstModel = mIdx === 0;
-                const cleanedConfig = cleanConfigForModel(params.config, currentModelId) || {};
+                const cleanedConfig = cleanConfigForModel(geminiParams.config, currentModelId) || {};
                 if (effectiveSignal && !cleanedConfig.abortSignal) {
                   cleanedConfig.abortSignal = effectiveSignal;
                 }
                 const currentParams = {
-                  ...params,
+                  ...geminiParams,
                   model: currentModelId,
                   config: cleanedConfig
                 };
@@ -1929,16 +1973,16 @@ class DynamicAI {
                   });
 
                   const rawChats = createGenAI(key).chats;
-                  const currentHistory = params.history || [];
+                  const currentHistory = geminiParams.history || [];
                   const session = rawChats.create({
                     ...currentParams,
                     history: currentHistory
                   });
                   const effectiveSendParams = effectiveSignal
-                    ? (typeof sendParams === 'string'
-                        ? { message: sendParams, config: { abortSignal: effectiveSignal } }
-                        : { ...(sendParams || {}), config: { ...((sendParams && sendParams.config) || {}), abortSignal: effectiveSignal } })
-                    : sendParams;
+                    ? (typeof geminiSendParams === 'string'
+                        ? { message: geminiSendParams, config: { abortSignal: effectiveSignal } }
+                        : { ...(geminiSendParams || {}), config: { ...((geminiSendParams && geminiSendParams.config) || {}), abortSignal: effectiveSignal } })
+                    : geminiSendParams;
 
                   const reqId = tokenTracker.recordRequestStart(currentModelId, 1000, key);
                   try {
@@ -2835,7 +2879,8 @@ export const geminiService = {
 
   async generateChapterSummary(title: string, content: string): Promise<any> {
     return requestThrottleService.enqueuePromise(async () => {
-      const safeBody = sampleManuscript(content, 28000);
+      const budget = getContextBudget('flash');
+      const safeBody = sampleManuscript(content, budget.summarySourceChars);
       const prompt = `Hãy tóm tắt đầy đủ và có cấu trúc sự kiện của chương "${title}" (khoảng 180-280 từ bằng tiếng Việt) để làm trí nhớ dài hạn giúp AI ở các chương rất xa sau này (Vd: chương 30) KHÔNG BAO GIỜ QUÊN các chi tiết quan trọng trong chương này.
 BẮT BUỘC ghi rõ:
 1. Diễn biến cốt lõi từ đầu đến giữa và kết chương.
@@ -3101,7 +3146,8 @@ ${safeBody}`;
       return { response, parsed };
     };
 
-    const primaryLimit = options.maxTextChars || 20000;
+    const budget = getContextBudget('flash');
+    const primaryLimit = options.maxTextChars || budget.extractKnowledgeChars;
     let { response, parsed } = await runExtractionPass(primaryLimit);
 
     if ((!parsed || typeof parsed !== 'object') && text.length > 9000) {
@@ -3165,15 +3211,17 @@ ${safeBody}`;
       throw new Error("Truyện hiện chưa có nội dung chương đủ dài để quét nhân vật và bối cảnh.");
     }
 
-    // Group chapters into compact ~12,000 char batches to prevent JSON output truncation, capped at 6 evenly spaced batches
+    const budget = getContextBudget('flash');
+    const batchLimit = budget.scanBatchChars;
+    // Group chapters into compact batches sized for active provider budget to prevent token spikes & JSON truncation
     const allBatches: { label: string; text: string }[] = [];
     let currentTitles: string[] = [];
     let currentTexts: string[] = [];
     let currentLen = 0;
 
     for (const ch of sortedChapters) {
-      const chBlock = `=== ${ch.title} ===\n${ch.text.length > 10000 ? sampleManuscript(ch.text, 10000) : ch.text}`;
-      if (currentLen + chBlock.length > 12000 && currentTexts.length > 0) {
+      const chBlock = `=== ${ch.title} ===\n${ch.text.length > batchLimit - 1500 ? sampleManuscript(ch.text, batchLimit - 1500) : ch.text}`;
+      if (currentLen + chBlock.length > batchLimit && currentTexts.length > 0) {
         allBatches.push({
           label: currentTitles.length > 1 ? `${currentTitles[0]} → ${currentTitles[currentTitles.length - 1]}` : currentTitles[0],
           text: currentTexts.join('\n\n')
@@ -3250,7 +3298,7 @@ ${safeBody}`;
         const res = await this.extractKnowledge(batch.text, story, ['characters', 'world', 'mechanics'], {
           isFullStoryScan: true,
           extraKnownCharacters: knownList,
-          maxTextChars: 13000
+          maxTextChars: batchLimit + 1000
         });
 
         successCount++;
@@ -3401,26 +3449,27 @@ ${safeBody}`;
   },
 
   async *chatPlanningStream(history: ChatMessage[], message: string, story: Story) {
+    const budget = getContextBudget('flash');
     const retrievedKnowledge = ragService
-      .searchLexicalKnowledge(message, story, { topK: 12 })
+      .searchLexicalKnowledge(message, story, { topK: 10 })
       .map(h => h.text)
       .join('\n\n');
     const continuityLedger = ragService.buildStoryContinuityLedger(story, {
-      maxChars: 18000
+      maxChars: budget.ledgerChars
     });
     const fullWorldBlock = promptBuilderService.buildCompleteWorldBibleBlock(story, retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: 28000,
-      maxLogEntries: 80
+      maxKnowledgeChars: budget.knowledgeChars,
+      maxLogEntries: budget.logEntries
     });
     const chaptersOverview = formatSmartChapterContext(story.chapters, {
-      maxTotalChars: 135000,
+      maxTotalChars: budget.coEditChapterChars,
       targetChapterMention: message,
-      recentPrevWindow: 4
+      recentPrevWindow: budget.recentPrevWindow
     });
     const characterRoster = (story.characters || []).length > 0
       ? story.characters
-          .slice(0, 75)
+          .slice(0, budget.rosterCount)
           .map(
             c =>
               `- ${c.name} (${c.role || 'Phụ'}, ${c.species || 'Nhân'}${c.status ? `, trạng thái: ${c.status}` : ''}${c.currentLocation ? `, tại: ${c.currentLocation}` : ''}${c.powerLevel ? `, thực lực: ${c.powerLevel}` : ''}${c.knowledge ? `, tri thức/dấu chân: ${c.knowledge}` : ''}): ${c.description || ''}`
@@ -3430,7 +3479,7 @@ ${safeBody}`;
 
     const systemInstruction = `Bạn là Kiến trúc sư Cốt truyện kỳ cựu cho tác phẩm "${story.title}" (${story.genre}). Hãy thảo luận, phân tích và đồng hành phát triển cốt truyện cùng tác giả một cách sâu sắc, logic và nhất quán tuyệt đối với toàn bộ thiết lập & bản thảo đã viết.\n\n[NEO THIẾT LẬP TÁC PHẨM]:\n- Ngôi kể: ${story.pov || 'Ngôi thứ ba'} | Xưng hô: ${story.pronounStyle || 'Nhất quán theo bối cảnh'}`;
 
-    const groundedMessage = `[NGỮ CẢNH TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRƯỚC KHI TRẢ LỜI]
+    const rawGroundedMessage = `[NGỮ CẢNH TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRƯỚC KHI TRẢ LỜI]
 [HỒ SƠ WORLD BIBLE & THIẾT LẬP ĐẦY ĐỦ]:
 ${fullWorldBlock}
 
@@ -3444,13 +3493,18 @@ ${chaptersOverview}
 [CÂU HỎI / Ý TƯỞNG CỦA TÁC GIẢ]:
 ${message}`;
 
+    const groundedMessage = enforceCharsBudgetKeepingEnds(
+      rawGroundedMessage,
+      Math.max(22_000, budget.maxTotalRequestChars - 12_000)
+    );
+
     const sanitizedHistory = (history || [])
-      .slice(-6)
+      .slice(-budget.historyTurnLimit)
       .map(h => ({
         role: h.role,
         parts: (h.parts || [])
           .map(p => ({
-            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role)
+            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role, budget.historyTurnMaxChars)
           }))
           .filter(p => p.text)
       }))
@@ -3514,6 +3568,7 @@ ${message}`;
       boostChapterIds?: string[];
     }
   ) {
+    const budget = getContextBudget('flash');
     const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const focusedChapter = focusChapterId ? sortedChapters.find(c => c.id === focusChapterId) : undefined;
     const ragQuery = [
@@ -3528,15 +3583,15 @@ ${message}`;
     const retrievedKnowledge =
       extraContext?.retrievedKnowledge?.trim() ||
       ragService
-        .searchLexicalKnowledge(ragQuery, story, { topK: 14 })
+        .searchLexicalKnowledge(ragQuery, story, { topK: budget.backend === 'external' ? 14 : 10 })
         .map(h => h.text)
         .join('\n\n');
 
     const lexicalChapterHits = !extraContext?.retrievedChapters
       ? ragService.searchLexicalChapters(ragQuery, story, {
           excludeChapterIds: focusedChapter ? [focusedChapter.id] : [],
-          topK: 7,
-          maxCharsPerHit: 900
+          topK: budget.retrievedChapterTopK,
+          maxCharsPerHit: budget.retrievedChapterCharsPerHit
         })
       : [];
 
@@ -3548,7 +3603,7 @@ ${message}`;
       extraContext?.continuityLedger?.trim() ||
       ragService.buildStoryContinuityLedger(story, {
         upToChapterId: focusedChapter?.id,
-        maxChars: 18000
+        maxChars: budget.ledgerChars
       });
 
     const boostChapterIds =
@@ -3569,11 +3624,11 @@ ${message}`;
 
     // Compact previous turns (especially huge old [PROPOSAL_CONTENT_CHAPTER_*] walls) so live World Bible & current chapters stay dominant
     const sanitizedHistory = (history || [])
-      .slice(-6)
+      .slice(-budget.historyTurnLimit)
       .map(h => {
         const parts = (h.parts || [])
           .map(p => ({
-            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role)
+            text: promptBuilderService.compactCoEditHistoryTurn(sanitizeModelText(p.text), h.role, budget.historyTurnMaxChars)
           }))
           .filter(p => p.text);
         return { role: h.role, parts };
@@ -3649,12 +3704,12 @@ ${message}`;
 
         const compactRetryMessage = promptBuilderService.buildCoEditGroundedMessage(story, message, {
           focusChapterId,
-          retrievedKnowledge: retrievedKnowledge.slice(0, 5000),
-          retrievedChapters: retrievedChapters.slice(0, 3000),
-          continuityLedger: continuityLedger.slice(0, 9000),
+          retrievedKnowledge: retrievedKnowledge.slice(0, 2800),
+          retrievedChapters: retrievedChapters.slice(0, 2200),
+          continuityLedger: continuityLedger.slice(0, Math.min(5000, budget.ledgerChars)),
           boostChapterIds,
-          maxChapterChars: 36000,
-          maxKnowledgeChars: 12000
+          maxChapterChars: Math.min(24000, Math.floor(budget.coEditChapterChars * 0.65)),
+          maxKnowledgeChars: Math.min(7500, Math.floor(budget.knowledgeChars * 0.72))
         });
 
         throwIfAborted(activeCtx.signal);

@@ -1,6 +1,7 @@
 import { redactSecrets } from './secureCredentialStorage.ts';
 import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 import { getActiveJobAbortContext, isAbortError } from './jobAbortContext.ts';
+import { estimateTokens, estimateTokensFromChars } from './tokenEstimator.ts';
 
 export interface PlotDebugLogItem {
   id: string;
@@ -239,7 +240,10 @@ class PlotDebugLoggerService {
     const sysChars = params.systemInstruction?.length || 0;
     const msgChars = params.message?.length || 0;
     const totalChars = sysChars + msgChars + (params.chaptersContextChars || 0);
-    const estimatedTokens = Math.round(totalChars / 3.8);
+    const estimatedTokens =
+      estimateTokens(params.systemInstruction) +
+      estimateTokens(params.message) +
+      estimateTokensFromChars(params.chaptersContextChars || 0, true);
 
     const logItem: PlotDebugLogItem = {
       id,

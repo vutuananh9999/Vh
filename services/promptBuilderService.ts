@@ -1,6 +1,7 @@
 
 import { Character, Chapter, Story, ExtractionCategory, WritingDNA } from '../types.ts';
 import { NSFW_INSTRUCTION } from './nsfwPrompt.ts';
+import { enforceCharsBudgetKeepingEnds, getContextBudget } from './contextBudgetService.ts';
 
 const isAsoiafUniverse = (...fields: (string | undefined)[]): boolean => {
   const combined = fields.filter(Boolean).join(' ').toLowerCase();
@@ -109,11 +110,12 @@ export function formatSmartChapterContext(
 ): string {
   if (!rawChapters || rawChapters.length === 0) return "(Chưa có chương truyện nào)";
 
+  const budget = getContextBudget('flash');
   const chapters = [...rawChapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const maxTotalChars = options.maxTotalChars || 95000;
+  const maxTotalChars = options.maxTotalChars || budget.coEditChapterChars;
   const numChapters = chapters.length;
   const focusId = options.focusChapterId;
-  const recentPrevWindow = options.recentPrevWindow ?? 3;
+  const recentPrevWindow = options.recentPrevWindow ?? budget.recentPrevWindow;
   const boostSet = new Set(options.boostChapterIds || []);
   const mentionText = (options.targetChapterMention || "").trim().toLowerCase();
 
@@ -182,16 +184,16 @@ ${text.trim().length > 0 ? text : "(Chương này chưa có bản thảo chi ti�
   targetIndices.forEach(idx => neighborIndices.delete(idx));
 
   // Reserve guaranteed space for chronological timeline across ALL chapters, while ensuring renderedChapters (especially focused/latest chapter) are NEVER tail-sliced off!
-  const timelineReserve = Math.min(28000, Math.max(4500, numChapters * 340));
-  const workingBudget = Math.max(14000, maxTotalChars - timelineReserve);
-  const targetCharsAllocated = Math.min(54000, Math.floor(workingBudget * 0.52));
+  const timelineReserve = Math.min(Math.floor(maxTotalChars * 0.25), Math.max(2500, numChapters * 220));
+  const workingBudget = Math.max(8000, maxTotalChars - timelineReserve);
+  const targetCharsAllocated = Math.min(Math.floor(maxTotalChars * 0.50), Math.floor(workingBudget * 0.56));
   const perTargetBudget = Math.floor(targetCharsAllocated / Math.max(1, targetIndices.size));
 
-  const remainingBudget = Math.max(8000, workingBudget - targetCharsAllocated);
+  const remainingBudget = Math.max(4000, workingBudget - targetCharsAllocated);
   const sampleCandidateCount = Math.max(1, neighborIndices.size);
-  const perSampleBudget = Math.min(6000, Math.max(1100, Math.floor(remainingBudget / sampleCandidateCount)));
+  const perSampleBudget = Math.min(7000, Math.max(900, Math.floor(remainingBudget / sampleCandidateCount)));
 
-  const perChapterTimelineCap = Math.max(160, Math.min(480, Math.floor((timelineReserve - 400) / Math.max(1, numChapters)) - 45));
+  const perChapterTimelineCap = Math.max(120, Math.min(420, Math.floor((timelineReserve - 300) / Math.max(1, numChapters)) - 35));
 
   const renderedChapters: string[] = [];
   const chronologicalTimeline: string[] = [];
@@ -321,9 +323,10 @@ export function buildCompleteWorldBibleBlock(
   retrievedKnowledge?: string,
   options: { includePlanning?: boolean; maxKnowledgeChars?: number; maxLogEntries?: number } = {}
 ): string {
+  const budget = getContextBudget('flash');
   const includePlanning = options.includePlanning !== false;
-  const maxKnowledgeChars = options.maxKnowledgeChars ?? 22000;
-  const maxLogEntries = options.maxLogEntries ?? 60;
+  const maxKnowledgeChars = options.maxKnowledgeChars ?? budget.knowledgeChars;
+  const maxLogEntries = options.maxLogEntries ?? budget.logEntries;
 
   // High-priority anchor sections that must NEVER be truncated off by a large setting/log section
   const criticalAnchors: string[] = [];
@@ -377,7 +380,8 @@ export function buildCompleteWorldBibleBlock(
 
   const retrievedNorm = (retrievedKnowledge || '').trim();
   if (retrievedNorm) {
-    secondarySections.push(`\n[TRI THỨC LIÊN QUAN TRUY XUẤT THEO NGỮ CẢNH]:\n${retrievedNorm.slice(0, 6500)}`);
+    const retrievedCap = Math.min(budget.retrievedKnowledgeChars, Math.max(1800, Math.floor(maxKnowledgeChars * 0.35)));
+    secondarySections.push(`\n[TRI THỨC LIÊN QUAN TRUY XUẤT THEO NGỮ CẢNH]:\n${retrievedNorm.slice(0, retrievedCap)}`);
   }
 
   const allActiveLogs = (story.knowledgeLogs || []).filter(k => k.isActive);
@@ -393,22 +397,26 @@ export function buildCompleteWorldBibleBlock(
     .map(k => `- [${k.category.toUpperCase()}] ${k.title}: ${k.content}`)
     .join('\n');
   if (activeLogLines) {
-    const logCharLimit = Math.min(28000, Math.max(12000, Math.floor(maxKnowledgeChars * 0.45)));
+    const logCharLimit = Math.min(20000, Math.max(2500, Math.floor(maxKnowledgeChars * 0.45)));
     secondarySections.push(`\n[TRI THỨC THẾ GIỚI & LUẬT LỆ ĐÃ KHÓA]:\n${activeLogLines.slice(0, logCharLimit)}`);
   }
 
   if (!story.isFanfiction && story.referenceDocs?.length) {
     const refExcerpts = story.referenceDocs
-      .slice(0, 5)
-      .map(d => `- [${d.name}]: ${sampleManuscript(d.content || d.analysis?.summary || '', 1400)}`)
+      .slice(0, 4)
+      .map(d => `- [${d.name}]: ${sampleManuscript(d.content || d.analysis?.summary || '', 1100)}`)
       .join('\n');
     if (refExcerpts) {
       secondarySections.push(`\n[TƯ LIỆU THAM KHẢO ĐÍNH KÈM]:\n${refExcerpts}`);
     }
   }
 
-  const criticalText = criticalAnchors.join('\n');
-  const remainingForCoreAndSecondary = Math.max(2000, maxKnowledgeChars - criticalText.length - 80);
+  let criticalText = criticalAnchors.join('\n');
+  const maxCriticalCap = Math.floor(maxKnowledgeChars * 0.48);
+  if (criticalText.length > maxCriticalCap) {
+    criticalText = enforceCharsBudgetKeepingEnds(criticalText, maxCriticalCap, '\n[... Đã rút gọn bớt thiết lập phụ ...]\n');
+  }
+  const remainingForCoreAndSecondary = Math.max(1500, maxKnowledgeChars - criticalText.length - 80);
   const coreText = coreWorld.join('\n');
   const secText = secondarySections.join('\n');
 
@@ -569,6 +577,7 @@ ${contentRating}`;
       currentChapterTitle?: string;
     }
   ): string => {
+    const budget = getContextBudget('flash');
     const trimmedContext = (immediateContext || '').trim();
     const hasExistingContent = trimmedContext.length > 10;
     const isAsoiaf = isAsoiafUniverse(genre, worldBible, mechanics, fandomName);
@@ -579,19 +588,20 @@ ${contentRating}`;
         : "";
 
     const charMemoryBlock = characters.length > 0
-      ? formatCharacterRosterForPrompt(characters, 40)
+      ? formatCharacterRosterForPrompt(characters, budget.rosterCount)
       : "(Chưa có hồ sơ nhân vật cụ thể — hãy dựa vào ngữ cảnh bản thảo)";
 
     const historicalBlock = historicalContext 
         ? `[DỮ LIỆU LỊCH SỬ THỰC TẾ (HISTORICAL GROUNDING)]:
 Mốc thời gian "${currentTimeline}":
-${historicalContext}` 
+${historicalContext.slice(0, 4000)}` 
         : "";
 
-    const canonBlock = canonContext
+    const safeCanonContext = canonContext ? canonContext.slice(0, budget.canonContextMaxChars) : "";
+    const canonBlock = safeCanonContext
         ? `[TUÂN THỦ NGUYÊN TÁC (CANON COMPLIANCE PROTOCOL)]:
 Giữ đúng thiết lập thế giới, tính cách nhân vật và quy luật vũ trụ gốc:
-${canonContext}`
+${safeCanonContext}`
         : "";
 
     let contextSection = "- Trạng thái: KHỞI TẠO PHÂN CẢNH MỞ ĐẦU CHƯƠNG MỚI";
@@ -606,23 +616,23 @@ ${canonContext}`
     }
 
     const effectiveWorldBlock = extraContext?.completeWorldBlock?.trim()
-      ? extraContext.completeWorldBlock
-      : (worldBible ? worldBible.slice(0, 22000) : "(Theo ngữ cảnh chương trước)");
+      ? extraContext.completeWorldBlock.slice(0, budget.knowledgeChars)
+      : (worldBible ? worldBible.slice(0, budget.knowledgeChars) : "(Theo ngữ cảnh chương trước)");
 
-    return `[NHIỆM VỤ: VIẾT TIẾP / KIẾN TẠO MẠCH TRUYỆN NHẤT QUÁN${extraContext?.currentChapterTitle ? ` — ${extraContext.currentChapterTitle}` : ''}]
+    const rawForgePrompt = `[NHIỆM VỤ: VIẾT TIẾP / KIẾN TẠO MẠCH TRUYỆN NHẤT QUÁN${extraContext?.currentChapterTitle ? ` — ${extraContext.currentChapterTitle}` : ''}]
 
 [TÓM TẮT ĐỊNH HƯỚNG TỔNG THỂ (MASTER BLUEPRINT)]:
-${planning ? planning.slice(0, 4500) : "(Chưa có dàn ý tổng thể)"}
+${planning ? planning.slice(0, 4000) : "(Chưa có dàn ý tổng thể)"}
 
 [HỒ SƠ THẾ GIỚI, LUẬT LỆ & TRI THỨC ĐẦY ĐỦ]:
 ${effectiveWorldBlock}
 ${!extraContext?.completeWorldBlock && mechanics ? `\n- Quy tắc / Hệ thống sức mạnh: ${mechanics}` : ""}
 ${!extraContext?.completeWorldBlock && (interactionRules || pronounStyle) ? `\n- Quy tắc tương tác & Xưng hô (${pronounStyle}): ${interactionRules || pronounStyle}` : ""}
 ${!extraContext?.completeWorldBlock && persistentDirectives ? `\n- Chỉ thị bền vững: ${persistentDirectives}` : ""}
-${extraContext?.allEarlierTimeline ? `\n[DÒNG SỰ KIỆN TỪ ĐẦU TRUYỆN ĐẾN NAY (KHÔNG ĐƯỢC QUÊN)]:\n${extraContext.allEarlierTimeline}` : ""}
-${extraContext?.continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM & SỰ KIỆN ĐÃ QUA]:\n${extraContext.continuityLedger}` : ""}
-${extraContext?.earlierChapterSummary ? `\n[TÓM TẮT CHI TIẾT CÁC CHƯƠNG GẦN NHẤT (ĐÃ XẢY RA — CẤM LẶP LẠI)]:\n${extraContext.earlierChapterSummary}` : ""}
-${extraContext?.retrievedChapters ? `\n[CẢNH/SỰ KIỆN LIÊN QUAN TỪ CÁC CHƯƠNG TRƯỚC (TRUY XUẤT THEO NGỮ CẢNH)]:\n${extraContext.retrievedChapters}` : ""}
+${extraContext?.allEarlierTimeline ? `\n[DÒNG SỰ KIỆN TỪ ĐẦU TRUYỆN ĐẾN NAY (KHÔNG ĐƯỢC QUÊN)]:\n${extraContext.allEarlierTimeline.slice(0, Math.floor(budget.ledgerChars * 0.9))}` : ""}
+${extraContext?.continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM & SỰ KIỆN ĐÃ QUA]:\n${extraContext.continuityLedger.slice(0, budget.ledgerChars)}` : ""}
+${extraContext?.earlierChapterSummary ? `\n[TÓM TẮT CHI TIẾT CÁC CHƯƠNG GẦN NHẤT (ĐÃ XẢY RA — CẤM LẶP LẠI)]:\n${extraContext.earlierChapterSummary.slice(0, 7500)}` : ""}
+${extraContext?.retrievedChapters ? `\n[CẢNH/SỰ KIỆN LIÊN QUAN TỪ CÁC CHƯƠNG TRƯỚC (TRUY XUẤT THEO NGỮ CẢNH)]:\n${extraContext.retrievedChapters.slice(0, 5000)}` : ""}
 ${verificationReport ? `\n[GHI CHÚ KIỂM TRA / ĐỐI CHIẾU]:\n${verificationReport}` : ""}
 
 [NGỮ CẢNH CHƯƠNG ĐANG VIẾT]:
@@ -652,6 +662,8 @@ ${charMemoryBlock}
 ${isAsoiaf ? "5. **Hương vị Westeros/ASOIAF:** Giữ đúng bầu không khí chính trị thực tế, gia tộc và ngôn ngữ đặc trưng." : `5. **Độ dài & Nhịp điệu:** Viết khoảng ~${targetWordCount} từ với nhịp điệu chặt chẽ, phù hợp thể loại ${genre || 'của truyện'}.`}
 
 BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN (Chỉ xuất phần văn bản mới nối tiếp, không lặp lại đoạn kết cũ và không thêm lời bình luận):`;
+
+    return enforceCharsBudgetKeepingEnds(rawForgePrompt, Math.max(20000, budget.maxTotalRequestChars - 10_000));
   },
 
   buildChapterPlotWriteOrFixPrompt: (
@@ -659,6 +671,7 @@ BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN (Chỉ xuất phần văn bản m
     story: Story,
     options: { repairInstruction?: string; continuityNotes?: string; retrievedKnowledge?: string; retrievedChapters?: string; continuityLedger?: string } = {}
   ): string => {
+    const budget = getContextBudget('flash');
     const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const idx = sortedChapters.findIndex(c => c.id === chapter.id);
     const prevChapter = idx > 0 ? sortedChapters[idx - 1] : undefined;
@@ -668,21 +681,24 @@ BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN (Chỉ xuất phần văn bản m
     const hasOriginalDraft = currentDraft.trim().length > 30;
     const prevDraft = prevChapter ? (prevChapter.content?.trim() ? prevChapter.content : (prevChapter.translatedContent || '')) : '';
 
-    const earlierTimeline = idx > 5
+    const earlierTimelineRaw = idx > 5
       ? sortedChapters
           .slice(0, idx - 5)
-          .map((c, ci) => `• Chương ${ci + 1} (${c.title}): ${(c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 260)).replace(/\s+/g, ' ').slice(0, 280)}`)
+          .map((c, ci) => `• Chương ${ci + 1} (${c.title}): ${(c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 200)).replace(/\s+/g, ' ').slice(0, 220)}`)
           .join('\n')
+      : '';
+    const earlierTimeline = earlierTimelineRaw
+      ? earlierTimelineRaw.slice(0, Math.floor(budget.ledgerChars * 0.8))
       : '';
 
     const earlierChaptersSummary = sortedChapters
-      .slice(Math.max(0, idx - 5), Math.max(0, idx))
-      .map(c => `- ${c.title}: ${c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 450)}`)
+      .slice(Math.max(0, idx - 4), Math.max(0, idx))
+      .map(c => `- ${c.title}: ${c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 380)}`)
       .join('\n');
 
     const worldBlock = buildCompleteWorldBibleBlock(story, options.retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: 20000
+      maxKnowledgeChars: budget.knowledgeChars
     });
 
     const dnaBlock = story.writingDNA
@@ -691,12 +707,14 @@ BẮT ĐẦU VIẾT TIẾP NỘI DUNG TRUYỆN (Chỉ xuất phần văn bản m
 
     const canonBlock = story.isFanfiction && story.referenceDocs?.length
       ? `\n[TUÂN THỦ NGUYÊN TÁC (${story.fandomName || 'Fanfiction'})]:\n${story.referenceDocs
-          .slice(0, 4)
-          .map(d => `- ${d.name}: ${sampleManuscript(d.content || '', 2000)}`)
+          .slice(0, 3)
+          .map(d => `- ${d.name}: ${sampleManuscript(d.content || '', 1500)}`)
           .join('\n')}`
       : '';
 
-    return `[NHIỆM VỤ: ${hasOriginalDraft ? 'SỬA CHỮA & HOÀN THIỆN BẢN THẢO CHƯƠNG THEO MẠCH LẠC TOÀN TRUYỆN' : 'SOẠN THẢO BẢN THẢO CHƯƠNG MỚI THEO CỐT TRUYỆN'}]
+    const safeDraft = hasOriginalDraft ? sampleManuscript(currentDraft, budget.chapterLogicAuditChars) : '';
+
+    const rawPrompt = `[NHIỆM VỤ: ${hasOriginalDraft ? 'SỬA CHỮA & HOÀN THIỆN BẢN THẢO CHƯƠNG THEO MẠCH LẠC TOÀN TRUYỆN' : 'SOẠN THẢO BẢN THẢO CHƯƠNG MỚI THEO CỐT TRUYỆN'}]
 Bạn là Đại biên tập và Nhà văn chủ bút của bộ truyện "${story.title}".
 
 [HỒ SƠ THẾ GIỚI & QUY TẮC CỐT LÕI ĐẦY ĐỦ]:
@@ -706,16 +724,16 @@ ${dnaBlock}
 ${canonBlock}
 
 [DANH SÁCH NHÂN VẬT & TRẠNG THÁI (${(story.characters || []).length} nhân vật)]:
-${formatCharacterRosterForPrompt(story.characters || [], 40)}
+${formatCharacterRosterForPrompt(story.characters || [], budget.rosterCount)}
 
 ${earlierTimeline ? `[DÒNG SỰ KIỆN TỪ ĐẦU TRUYỆN (CÁC CHƯƠNG XA HƠN)]:\n${earlierTimeline}\n` : ''}
-${options.continuityLedger ? `[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM & SỰ KIỆN TỪ CÁC CHƯƠNG TRƯỚC]:\n${options.continuityLedger}\n` : ''}
+${options.continuityLedger ? `[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM & SỰ KIỆN TỪ CÁC CHƯƠNG TRƯỚC]:\n${options.continuityLedger.slice(0, budget.ledgerChars)}\n` : ''}
 [CHUỖI DIỄN BIẾN CÁC CHƯƠNG GẦN NHẤT (ĐÃ XẢY RA — CẤM VIẾT LẠI)]:
 ${earlierChaptersSummary || '(Đây là chương đầu tiên)'}
-${options.retrievedChapters ? `\n[TRÍCH ĐOẠN LIÊN QUAN TỪ CÁC CHƯƠNG TRƯỚC]:\n${options.retrievedChapters}` : ''}
+${options.retrievedChapters ? `\n[TRÍCH ĐOẠN LIÊN QUAN TỪ CÁC CHƯƠNG TRƯỚC]:\n${options.retrievedChapters.slice(0, 4500)}` : ''}
 
 [ĐIỂM NỐI LIỀN KỀ & RANH GIỚI KHÔNG CHỒNG CHÉO]:
-- Chương liền trước: ${prevChapter ? `"${prevChapter.title}"\n  * Tóm tắt: ${prevChapter.summary || prevChapter.outline || '(Chưa có)'}\n  * Đoạn kết chương trước (ĐIỂM BẮT ĐẦU NỐI TIẾP — KHÔNG VIẾT LẠI CÁC SỰ KIỆN TRONG ĐOẠN NÀY):\n"""\n${prevDraft.slice(-2400) || '(Trống)'}\n"""` : '(Đây là chương đầu tiên)'}
+- Chương liền trước: ${prevChapter ? `"${prevChapter.title}"\n  * Tóm tắt: ${prevChapter.summary || prevChapter.outline || '(Chưa có)'}\n  * Đoạn kết chương trước (ĐIỂM BẮT ĐẦU NỐI TIẾP — KHÔNG VIẾT LẠI CÁC SỰ KIỆN TRONG ĐOẠN NÀY):\n"""\n${prevDraft.slice(-2000) || '(Trống)'}\n"""` : '(Đây là chương đầu tiên)'}
 - Ranh giới Chương kế tiếp (KHÔNG VIẾT LẤN SANG): ${nextChapter ? `"${nextChapter.title}" — ${nextChapter.outline || nextChapter.summary || '(Chưa có tóm tắt/đề cương)'}` : '(Chưa có chương kế tiếp)'}
 
 [CHƯƠNG MỤC TIÊU: "${chapter.title}"]
@@ -726,7 +744,7 @@ ${options.continuityNotes ? `- Vấn đề mạch lạc / logic cần vá:\n${op
 ${options.repairInstruction ? `- Yêu cầu sửa chữa cụ thể từ tác giả:\n${options.repairInstruction}` : ''}
 
 [BẢN THẢO HIỆN TẠI CỦA CHƯƠNG "${chapter.title}"]:
-${hasOriginalDraft ? currentDraft : '(Trống — Hãy viết mới hoàn toàn dựa trên đề cương và mạch truyện)'}
+${hasOriginalDraft ? safeDraft : '(Trống — Hãy viết mới hoàn toàn dựa trên đề cương và mạch truyện)'}
 
 ${hasOriginalDraft ? ORIGINAL_FIDELITY_PROTOCOL : ''}
 
@@ -737,6 +755,8 @@ ${hasOriginalDraft ? ORIGINAL_FIDELITY_PROTOCOL : ''}
 2. **Chống chồng chéo:** Khớp nối mượt mà từ đoạn kết chương trước mà KHÔNG lặp lại tình tiết chương trước; dừng đúng ranh giới để mở đường sang chương kế tiếp mà KHÔNG viết trước sự kiện của chương kế tiếp.
 3. **Chống quên thiết lập:** Kiểm tra kỹ vị trí, thương tích, cảnh giới, vật phẩm và quy tắc thế giới xuyên suốt toàn chương.
 4. Tuyệt đối KHÔNG tóm tắt, KHÔNG rút gọn, KHÔNG viết chú thích của AI ở đầu hoặc cuối. Chỉ trả về toàn văn chương truyện hoàn chỉnh.`;
+
+    return enforceCharsBudgetKeepingEnds(rawPrompt, Math.max(20000, budget.maxTotalRequestChars - 10_000));
   },
 
   buildAdvancedOutlinePrompt: (chapter: Chapter, story: Story, userInstruction: string, longTermMemory: string, shortTermMemory: string): string => {
@@ -818,6 +838,7 @@ DỮ LIỆU RA JSON:
   },
 
   buildPlotArcAnalysisPrompt: (storyOrChapters: Story | Chapter[], storyTitle?: string): string => {
+    const budget = getContextBudget('flash');
     let chapters: Chapter[] = [];
     let title = storyTitle || "Tác phẩm";
     let genre = "Tiểu thuyết";
@@ -839,13 +860,17 @@ DỮ LIỆU RA JSON:
       timeline = story.currentTimeline || "";
       fullWorldBlock = buildCompleteWorldBibleBlock(story, '', {
         includePlanning: true,
-        maxKnowledgeChars: 16000
+        maxKnowledgeChars: budget.knowledgeChars,
+        maxLogEntries: budget.logEntries
       });
     }
 
-    const chapterSections = formatSmartChapterContext(chapters, { maxTotalChars: 95000 });
+    const chapterSections = formatSmartChapterContext(chapters, {
+      maxTotalChars: budget.analysisChapterChars,
+      recentPrevWindow: budget.recentPrevWindow
+    });
 
-    return `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN & PHÁT HIỆN VẤN ĐỀ CẦN SỬA CHỮA]
+    const rawPrompt = `[NHIỆM VỤ TỐI THƯỢNG: PHÂN TÍCH MẠCH TRUYỆN & PHÁT HIỆN VẤN ĐỀ CẦN SỬA CHỮA]
 Bạn là Chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên tập Cốt truyện (Principal Literary Plot & Continuity Architect).
 
 [THÔNG TIN & WORLD BIBLE ĐẦY ĐỦ CỦA TÁC PHẨM]:
@@ -856,7 +881,7 @@ Bạn là Chuyên gia Phân tích Cấu trúc Tiểu thuyết & Cố vấn Biên
 ${fullWorldBlock}
 
 [HỒ SƠ NHÂN VẬT (${characters.length} nhân vật)]:
-${formatCharacterRosterForPrompt(characters, 40)}
+${formatCharacterRosterForPrompt(characters, budget.rosterCount)}
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
 
@@ -888,6 +913,8 @@ TRẢ VỀ ĐÚNG 1 JSON OBJECT HỢP LỆ (KHÔNG KÈM TEXT NGOÀI JSON):
   ],
   "characterArcSummary": "Đánh giá tổng quan sự nhất quán và tiến hóa tâm lý của các nhân vật chính/phụ trong bản thảo."
 }`;
+
+    return enforceCharsBudgetKeepingEnds(rawPrompt, Math.max(20000, budget.maxTotalRequestChars - 2500));
   },
 
   buildKnowledgeExtractionPrompt: (
@@ -1116,8 +1143,10 @@ Quy tắc rút ra (1-2 câu tiếng Việt):`;
     styleReference: string,
     continuityContext: string = ''
   ): string => {
+    const budget = getContextBudget('flash');
     const contentRating = nsfw ? NSFW_INSTRUCTION : "";
-    return `[NHIỆM VỤ: TINH CHỈNH & ĐẠI TU VĂN BẢN CHUYÊN NGHIỆP]
+    const safeBody = sampleManuscript(content, budget.chapterLogicAuditChars);
+    const rawPrompt = `[NHIỆM VỤ: TINH CHỈNH & ĐẠI TU VĂN BẢN CHUYÊN NGHIỆP]
 Bạn là một Đại biên tập viên và Nhà văn chủ bút. Nhiệm vụ của bạn là chỉnh sửa, nâng cấp và vá lỗi mạch lạc/logic cho bản thảo dưới đây theo yêu cầu của tác giả.
 
 ${ORIGINAL_FIDELITY_PROTOCOL}
@@ -1125,19 +1154,19 @@ ${ORIGINAL_FIDELITY_PROTOCOL}
 [DỮ LIỆU NỀN & THIẾT LẬP]:
 - Thể loại: ${genre || 'Tiểu thuyết'} | Ngôi kể: ${pov || 'Ngôi thứ ba'} | Văn phong: ${writingStyle || 'Tự nhiên, sâu sắc'}
 - Xưng hô & Quy tắc: ${pronounStyle || '(Theo ngữ cảnh)'} ${interactionRules ? `| ${interactionRules}` : ''}
-- Bối cảnh & Tri thức liên quan: ${worldBible ? worldBible.slice(0, 18000) : '(Theo bản thảo)'}
+- Bối cảnh & Tri thức liên quan: ${worldBible ? worldBible.slice(0, budget.knowledgeChars) : '(Theo bản thảo)'}
 - Quy tắc thế giới (Mechanics): ${mechanics || '(Không có)'}
 - Chỉ thị bền vững: ${persistentDirectives || '(Không có)'}
 - Cấm (Negative Prompt): ${negativePrompt || '(Không có)'}
 ${styleReference ? `- Phong cách tham chiếu: ${styleReference}` : ''}
-${continuityContext ? `\n[MẠCH LIÊN TỤC VỚI CÁC CHƯƠNG TRƯỚC & SAU]:\n${continuityContext}` : ''}
+${continuityContext ? `\n[MẠCH LIÊN TỤC VỚI CÁC CHƯƠNG TRƯỚC & SAU]:\n${continuityContext.slice(0, budget.ledgerChars + 6000)}` : ''}
 
 ${UNIVERSAL_RATIONALITY_PROTOCOL}
 ${TRUTH_KEEPER_PROTOCOL}
 
 [VĂN BẢN NGUYÊN MẪU CẦN CHỈNH SỬA]:
 """
-${content}
+${safeBody}
 """
 
 [CHỈ THỊ SỬA ĐỔI CỦA TÁC GIẢ]:
@@ -1151,13 +1180,17 @@ ${content}
 ${contentRating}
 
 BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
+
+    return enforceCharsBudgetKeepingEnds(rawPrompt, Math.max(20000, budget.maxTotalRequestChars - 5000));
   },
 
-  compactCoEditHistoryTurn: (text: string, role: string): string => {
+  compactCoEditHistoryTurn: (text: string, role: string, maxTurnChars?: number): string => {
+    const budget = getContextBudget('flash');
+    const turnLimit = maxTurnChars ?? budget.historyTurnMaxChars;
     const cleaned = (text || '').replace(/(?:\s*\[?(?:undefined|null)\]?\s*)+$/gi, '').trim();
     if (!cleaned) return '';
     if (role !== 'model' && role !== 'assistant') {
-      return cleaned.length > 4000 ? `${cleaned.slice(0, 4000)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
+      return cleaned.length > turnLimit ? `${cleaned.slice(0, turnLimit)}\n... [Đã rút gọn bớt phần trích cũ]` : cleaned;
     }
     // Replace huge old [PROPOSAL_*] chapter walls with compact markers so stale drafts never override current live chapters/settings!
     const compacted = cleaned.replace(
@@ -1165,15 +1198,16 @@ BẮT ĐẦU VĂN BẢN ĐÃ CHỈNH SỬA HOÀN THIỆN:`;
       (_m, kind, idPart, body) => {
         const cleanBody = String(body || '').trim();
         const suffix = idPart ? String(idPart) : '';
-        if (cleanBody.length <= 600) {
+        if (cleanBody.length <= 500) {
           return `[PROPOSAL_${kind}${suffix}: ${cleanBody}]`;
         }
-        return `[PROPOSAL_${kind}${suffix}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 240)}...\nCuối đoạn: ...${cleanBody.slice(-200)}]`;
+        return `[PROPOSAL_${kind}${suffix}: (${cleanBody.length.toLocaleString()} ký tự — đã tóm gọn trong lịch sử hội thoại để ưu tiên BẢN THẢO HIỆN HÀNH bên dưới)\nĐầu đoạn: ${cleanBody.slice(0, 200)}...\nCuối đoạn: ...${cleanBody.slice(-180)}]`;
       }
     );
-    return compacted.length > 4200
-      ? `${compacted.slice(0, 2800)}\n... [Đã rút gọn lịch sử AI cũ để tiết kiệm token & giữ ngữ cảnh hiện hành sắc nét]\n${compacted.slice(-1200)}`
-      : compacted;
+    if (compacted.length <= turnLimit) return compacted;
+    const headKeep = Math.floor(turnLimit * 0.65);
+    const tailKeep = Math.max(300, turnLimit - headKeep - 90);
+    return `${compacted.slice(0, headKeep)}\n... [Đã rút gọn lịch sử AI cũ để giữ đúng ngưỡng token] ...\n${compacted.slice(-tailKeep)}`;
   },
 
   buildCoEditSystemInstruction: (story: Story): string => {
@@ -1240,47 +1274,48 @@ Hãy phản hồi bằng tiếng Việt sắc bén, cụ thể, có dẫn chứn
       maxKnowledgeChars?: number;
     } = {}
   ): string => {
+    const budget = getContextBudget('flash');
     const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const focusedChapter =
       (options.focusChapterId ? sortedChapters.find(c => c.id === options.focusChapterId) : undefined) ||
       sortedChapters[0];
 
     const chaptersContext = formatSmartChapterContext(sortedChapters, {
-      maxTotalChars: options.maxChapterChars ?? 160000,
+      maxTotalChars: options.maxChapterChars ?? budget.coEditChapterChars,
       focusChapterId: focusedChapter?.id,
       targetChapterMention: message,
       boostChapterIds: options.boostChapterIds,
-      recentPrevWindow: 5
+      recentPrevWindow: budget.recentPrevWindow
     });
 
     const fullWorldBlock = buildCompleteWorldBibleBlock(story, options.retrievedKnowledge, {
       includePlanning: true,
-      maxKnowledgeChars: options.maxKnowledgeChars ?? 30000,
-      maxLogEntries: 80
+      maxKnowledgeChars: options.maxKnowledgeChars ?? budget.knowledgeChars,
+      maxLogEntries: budget.logEntries
     });
 
-    const rosterText = formatCharacterRosterForPrompt(story.characters || [], 80);
+    const rosterText = formatCharacterRosterForPrompt(story.characters || [], budget.rosterCount);
 
     const analysisInsights: string[] = [];
     if (options.plotArcAnalysis) {
       const pa = options.plotArcAnalysis;
-      if (pa.unresolvedHooks?.length) analysisInsights.push(`• Nút thắt chưa giải quyết: ${pa.unresolvedHooks.join(' | ')}`);
+      if (pa.unresolvedHooks?.length) analysisInsights.push(`• Nút thắt chưa giải quyết: ${pa.unresolvedHooks.slice(0, 12).join(' | ')}`);
       if (pa.chapterIssues?.length) {
         analysisInsights.push(
           `• Lỗi mạch lạc từng chương đã phát hiện:\n` +
-            pa.chapterIssues.map((ci: any) => `  - ${ci.chapterTitle}: ${ci.issue} (Gợi ý sửa: ${ci.fixSuggestion})`).join('\n')
+            pa.chapterIssues.slice(0, 12).map((ci: any) => `  - ${ci.chapterTitle}: ${ci.issue} (Gợi ý sửa: ${ci.fixSuggestion})`).join('\n')
         );
       }
     }
     if (options.auditReport?.plotCoherence?.plotHoles?.length) {
-      analysisInsights.push(`• Lỗ hổng từ Kiểm toán toàn truyện: ${options.auditReport.plotCoherence.plotHoles.join(' | ')}`);
+      analysisInsights.push(`• Lỗ hổng từ Kiểm toán toàn truyện: ${options.auditReport.plotCoherence.plotHoles.slice(0, 10).join(' | ')}`);
     }
 
     const focusMeta = focusedChapter
       ? `- Chương trọng tâm đang chọn: "${focusedChapter.title}" (ID: ${focusedChapter.id}, Thứ tự: ${sortedChapters.findIndex(c => c.id === focusedChapter.id) + 1}/${sortedChapters.length})`
       : '';
 
-    return `[DỮ LIỆU TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRỰC TIẾP TRƯỚC KHI TRẢ LỜI]
+    const rawGrounded = `[DỮ LIỆU TÁC PHẨM HIỆN HÀNH — ĐỐI CHIẾU TRỰC TIẾP TRƯỚC KHI TRẢ LỜI]
 ${focusMeta}
 
 [HỒ SƠ WORLD BIBLE, PINNED MEMORY & TRI THỨC ĐẦY ĐỦ]:
@@ -1289,8 +1324,8 @@ ${fullWorldBlock}
 [HỒ SƠ NHÂN VẬT (${(story.characters || []).length} nhân vật)]:
 ${rosterText}
 ${analysisInsights.length > 0 ? `\n[KẾT QUẢ PHÂN TÍCH MẠCH TRUYỆN & LỖI LOGIC HIỆN CÓ]:\n${analysisInsights.join('\n')}` : ''}
-${options.continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM ĐÃ ĐẾN & SỰ KIỆN XUYÊN SUỐT CÁC CHƯƠNG (CHÂN LÝ TÁC GIẢ ĐÃ DUYỆT)]:\n${options.continuityLedger}` : ''}
-${options.retrievedChapters ? `\n[TRÍCH ĐOẠN CHƯƠNG LIÊN QUAN ĐẾN CÂU HỎI]:\n${options.retrievedChapters}` : ''}
+${options.continuityLedger ? `\n[SỔ CÁI DẤU CHÂN, ĐỊA ĐIỂM ĐÃ ĐẾN & SỰ KIỆN XUYÊN SUỐT CÁC CHƯƠNG (CHÂN LÝ TÁC GIẢ ĐÃ DUYỆT)]:\n${options.continuityLedger.slice(0, budget.ledgerChars)}` : ''}
+${options.retrievedChapters ? `\n[TRÍCH ĐOẠN CHƯƠNG LIÊN QUAN ĐẾN CÂU HỎI]:\n${options.retrievedChapters.slice(0, budget.retrievedChapterTopK * budget.retrievedChapterCharsPerHit)}` : ''}
 
 [DỮ LIỆU CÁC CHƯƠNG THỰC TẾ (ĐÃ SẮP XẾP THEO THỨ TỰ)]:
 ${chaptersContext}
@@ -1298,6 +1333,11 @@ ${chaptersContext}
 ----------------------------------------
 [YÊU CẦU HIỆN TẠI CỦA TÁC GIẢ]:
 ${message}`;
+
+    const maxGroundedChars = options.maxChapterChars
+      ? Math.max(24_000, Math.min(budget.maxTotalRequestChars - 12_000, options.maxChapterChars + budget.knowledgeChars + 18_000))
+      : Math.max(24_000, budget.maxTotalRequestChars - 12_000);
+    return enforceCharsBudgetKeepingEnds(rawGrounded, maxGroundedChars);
   },
 
   buildNextChapterSuggestionPrompt: (story: Story): string => {
@@ -1441,6 +1481,7 @@ BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH (Chỉ xu�
   },
 
   buildStoryAuditPrompt: (story: Story, focusChapterId?: string): string => {
+    const budget = getContextBudget('flash');
     const sortedChapters = [...(story.chapters || [])]
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       .map(ch => ({
@@ -1449,17 +1490,22 @@ BẮT ĐẦU VĂN BẢN ĐÃ VIỆT HÓA & BIÊN TẬP HOÀN CHỈNH (Chỉ xu�
       }));
 
     const chapterContext = sortedChapters.length > 0
-      ? formatSmartChapterContext(sortedChapters, { maxTotalChars: 160000, focusChapterId })
+      ? formatSmartChapterContext(sortedChapters, {
+          maxTotalChars: budget.analysisChapterChars,
+          focusChapterId,
+          recentPrevWindow: budget.recentPrevWindow
+        })
       : '(Chưa có chương truyện nào được viết)';
 
     const worldBibleBlock = buildCompleteWorldBibleBlock(story, '', {
       includePlanning: true,
-      maxKnowledgeChars: 22000
+      maxKnowledgeChars: budget.knowledgeChars,
+      maxLogEntries: budget.logEntries
     });
 
-    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], 45);
+    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], budget.rosterCount);
 
-    return `[NHIỆM VỤ TỐI THƯỢNG: KIỂM TOÁN TÍNH NHẤT QUÁN TOÀN BỘ TÁC PHẨM (DEEP CONSISTENCY AUDIT)]
+    const rawAuditPrompt = `[NHIỆM VỤ TỐI THƯỢNG: KIỂM TOÁN TÍNH NHẤT QUÁN TOÀN BỘ TÁC PHẨM (DEEP CONSISTENCY AUDIT)]
 Bạn là Tổng Biên Tập & Chuyên gia Kiểm toán Logic Văn học (Principal Story Continuity Auditor).
 Hãy đọc kỹ TẤT CẢ dữ liệu World Bible, Hồ sơ nhân vật, Blueprint cốt truyện và Nội dung các chương dưới đây để thực hiện cuộc kiểm toán thực chất, khách quan và chính xác tuyệt đối.
 
@@ -1508,9 +1554,11 @@ Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG k�
     "blueprintAlignment": "Đánh giá chi tiết mức độ bám sát Dàn ý tổng thể (Blueprint) và các điểm đã chệch hướng (nếu có)."
   }
 }`;
+    return enforceCharsBudgetKeepingEnds(rawAuditPrompt, Math.max(20000, budget.maxTotalRequestChars - 2500));
   },
 
   buildChapterLogicAuditPrompt: (content: string, title: string, story: Story, chapterId?: string): string => {
+    const budget = getContextBudget('flash');
     const sortedChapters = [...(story.chapters || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const currentIdx = chapterId
       ? sortedChapters.findIndex(c => c.id === chapterId)
@@ -1539,10 +1587,10 @@ Trả về duy nhất 1 JSON object hợp lệ (bằng tiếng Việt, KHÔNG k�
       .map(k => `- [${k.category}] ${k.title}: ${k.content}`)
       .join('\n') || '(Không có)';
 
-    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], 30);
+    const charactersProfile = formatCharacterRosterForPrompt(story.characters || [], Math.min(30, budget.rosterCount));
 
-    const safeContent = content.length > 40000
-      ? sampleManuscript(content, 40000)
+    const safeContent = content.length > budget.chapterLogicAuditChars
+      ? sampleManuscript(content, budget.chapterLogicAuditChars)
       : content;
 
     return `[NHIỆM VỤ: KIỂM TOÁN LOGIC & VĂN PHONG CHUYÊN SÂU CHO CHƯƠNG TRUYỆN]

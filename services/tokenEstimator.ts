@@ -89,27 +89,28 @@ export const MODEL_CONTEXT_LIMITS: Record<string, ModelContextDef> = {
 export const DEFAULT_MODEL_DEF = MODEL_CONTEXT_LIMITS['gemini-4-hydrogen'];
 
 /**
- * Estimates token count for a string with accurate weights for Vietnamese, English, and punctuation.
+ * Calibrated Vietnamese + English token estimator.
+ * Matches Google's empirical Vietnamese prose rate (~2.32 chars/token; e.g., 450k chars ≈ 190k tokens)
+ * while still handling pure ASCII/JSON (~3.5 chars/token) accurately.
  */
 export function estimateTokens(text: string | null | undefined): number {
   if (!text) return 0;
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return 0;
+  const len = text.length;
+  if (len === 0) return 0;
 
-  // Count non-ASCII characters (Vietnamese accented vowels, diacritics, CJK)
-  const nonAsciiCount = (trimmed.match(/[^\x00-\x7F]/g) || []).length;
-  // Count words
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
+  let nonAsciiCount = 0;
+  for (let i = 0; i < len; i++) {
+    if (text.charCodeAt(i) > 127) {
+      nonAsciiCount++;
+    }
+  }
+  const asciiCount = len - nonAsciiCount;
+  return Math.max(1, Math.ceil(asciiCount / 3.5 + nonAsciiCount * 1.05));
+}
 
-  // Tokenizer heuristic:
-  // English words ~ 1.25 tokens / word, ~ 4.0 chars / token
-  // Vietnamese accented text ~ 1.35 tokens / word, ~ 2.8 - 3.4 chars / token
-  const charRatio = nonAsciiCount > 0 ? 3.2 : 3.8;
-  const charBased = Math.ceil(trimmed.length / charRatio) + Math.ceil(nonAsciiCount * 0.1);
-  const wordBased = Math.ceil(wordCount * (nonAsciiCount > 0 ? 1.35 : 1.25));
-
-  return Math.max(1, Math.round((charBased * 0.6) + (wordBased * 0.4)));
+export function estimateTokensFromChars(chars: number, isLikelyVietnamese = true): number {
+  if (!chars || chars <= 0) return 0;
+  return Math.max(1, Math.ceil(chars / (isLikelyVietnamese ? 2.32 : 3.5)));
 }
 
 export interface PromptBreakdownItem {

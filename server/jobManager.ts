@@ -21,6 +21,7 @@ import {
   buildCompleteWorldBibleBlock,
   sampleManuscript
 } from '../services/promptBuilderService.ts';
+import { getContextBudget } from '../services/contextBudgetService.ts';
 import type { ServerJobState, ServerJobType } from '../services/runtimeAdapter.ts';
 import type { Chapter, ChatMessage, EvolutionLog, ExtractionCategory, Story } from '../types.ts';
 
@@ -379,11 +380,13 @@ class ServerJobManager {
             ? `Chương kế tiếp: "${nextChapter.title}" — ${nextChapter.outline || nextChapter.summary || '(Chưa có đề cương)'}`
             : '';
 
+          const budget = getContextBudget('flash');
           let canonContext = '';
           if (currentStory.isFanfiction && currentStory.referenceDocs?.length) {
             canonContext = currentStory.referenceDocs
               .map(doc => `[DỮ LIỆU TỪ LORE TẬP TIN ${doc.name}]:\n${doc.content}`)
-              .join('\n\n');
+              .join('\n\n')
+              .slice(0, budget.canonContextMaxChars);
           }
 
           this.updateJob(jobId, {
@@ -397,16 +400,17 @@ class ServerJobManager {
             entitySearchContext,
             currentStory,
             [chapterId, ...(previousChapter ? [previousChapter.id] : [])],
-            6,
-            950
+            budget.retrievedChapterTopK,
+            budget.retrievedChapterCharsPerHit
           );
           const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
             upToChapterId: previousChapter?.id || chapterId,
-            maxChars: 14000
+            maxChars: budget.ledgerChars
           });
           const completeWorldBlock = buildCompleteWorldBibleBlock(currentStory, retrievedSnippets, {
             includePlanning: false,
-            maxKnowledgeChars: 22000
+            maxKnowledgeChars: budget.knowledgeChars,
+            maxLogEntries: budget.logEntries
           });
 
           this.updateJob(jobId, {
@@ -542,11 +546,13 @@ class ServerJobManager {
             progress: 20,
             statusText: 'Đang truy xuất tri thức & mạch nối liên chương để tinh chỉnh...'
           });
+          const budget = getContextBudget('flash');
           const ragQuery = `${chapter.title} ${chapter.outline || ''} ${sourceText.slice(0, 1500)}`.trim();
           const retrievedSnippets = await getRelevantKnowledge(ragQuery, currentStory);
           const dynamicWorldBible = buildCompleteWorldBibleBlock(currentStory, retrievedSnippets, {
             includePlanning: true,
-            maxKnowledgeChars: 18000
+            maxKnowledgeChars: budget.knowledgeChars,
+            maxLogEntries: budget.logEntries
           });
 
           const sortedChapters = [...currentStory.chapters].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -554,23 +560,24 @@ class ServerJobManager {
           const prevCh = chIdx > 0 ? sortedChapters[chIdx - 1] : undefined;
           const nextCh = chIdx >= 0 && chIdx < sortedChapters.length - 1 ? sortedChapters[chIdx + 1] : undefined;
           const prevText = prevCh ? (prevCh.content?.trim() ? prevCh.content : prevCh.translatedContent || '') : '';
-          const earlierTimeline = chIdx > 0
+          const earlierTimelineRaw = chIdx > 0
             ? sortedChapters
                 .slice(0, chIdx)
-                .map((c, ci) => `• Chương ${ci + 1} (${c.title}): ${(c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 220)).replace(/\s+/g, ' ').slice(0, 240)}`)
+                .map((c, ci) => `• Chương ${ci + 1} (${c.title}): ${(c.summary || c.outline || sampleManuscript(c.content || c.translatedContent || '', 200)).replace(/\s+/g, ' ').slice(0, 220)}`)
                 .join('\n')
             : '';
+          const earlierTimeline = earlierTimelineRaw.slice(0, Math.floor(budget.ledgerChars * 0.75));
           const { retrievedChapters } = getRelevantChapterMemory(
             ragQuery,
             currentStory,
             [chapterId, ...(prevCh ? [prevCh.id] : [])],
-            4,
-            800
+            Math.max(3, budget.retrievedChapterTopK - 1),
+            budget.retrievedChapterCharsPerHit
           );
           const continuityLedger = prevCh
             ? ragService.buildStoryContinuityLedger(currentStory, {
                 upToChapterId: prevCh.id,
-                maxChars: 12000
+                maxChars: budget.ledgerChars
               })
             : '';
           const continuityContext = [
@@ -726,11 +733,18 @@ class ServerJobManager {
           ]
             .filter(Boolean)
             .join(' ');
+          const budget = getContextBudget('flash');
           const retrievedKnowledge = await getRelevantKnowledge(searchQuery, currentStory);
-          const { retrievedChapters } = getRelevantChapterMemory(searchQuery, currentStory, [chapterId], 6, 950);
+          const { retrievedChapters } = getRelevantChapterMemory(
+            searchQuery,
+            currentStory,
+            [chapterId],
+            budget.retrievedChapterTopK,
+            budget.retrievedChapterCharsPerHit
+          );
           const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
             upToChapterId: chapterId,
-            maxChars: 14000
+            maxChars: budget.ledgerChars
           });
           checkAborted();
 
@@ -1556,17 +1570,18 @@ class ServerJobManager {
           ]
             .filter(Boolean)
             .join(' ');
+          const budget = getContextBudget('flash');
           const retrievedKnowledge = await getRelevantKnowledge(ragQuery, currentStory);
           const { retrievedChapters, boostChapterIds } = getRelevantChapterMemory(
             ragQuery,
             currentStory,
             focusChapterId ? [focusChapterId] : [],
-            7,
-            900
+            budget.retrievedChapterTopK,
+            budget.retrievedChapterCharsPerHit
           );
           const continuityLedger = ragService.buildStoryContinuityLedger(currentStory, {
             upToChapterId: focusChapterId,
-            maxChars: 18000
+            maxChars: budget.ledgerChars
           });
           checkAborted();
 

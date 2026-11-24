@@ -8,6 +8,7 @@ import { providerClientService } from '../../services/providerClientService.ts';
 import { ExternalProviderProfile, ProviderRoutingConfig } from '../../services/providerTypes.ts';
 import { SearchableModelSelect } from '../providers/SearchableModelSelect.tsx';
 import { runtimeKV, serverSyncClient } from '../../services/runtimeAdapter.ts';
+import { estimateTokens, estimateTokensFromChars } from '../../services/tokenEstimator.ts';
 
 interface Props {
   onSwitchToChat?: () => void;
@@ -1617,7 +1618,11 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
                   <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs text-slate-400 font-mono tabular-nums">
-                        {selectedLog.payloadMetrics.systemInstructionChars.toLocaleString()} ký tự (~{Math.round(selectedLog.payloadMetrics.systemInstructionChars / 3.8)} tokens)
+                        {selectedLog.payloadMetrics.systemInstructionChars.toLocaleString()} ký tự (~
+                        {(selectedLog.requestPayload.fullSystemInstruction
+                          ? estimateTokens(selectedLog.requestPayload.fullSystemInstruction)
+                          : estimateTokensFromChars(selectedLog.payloadMetrics.systemInstructionChars, true)
+                        ).toLocaleString()} tokens)
                       </span>
                       <button
                         onClick={() => handleCopyText(selectedLog.requestPayload.fullSystemInstruction, 'System Instruction')}
