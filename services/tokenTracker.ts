@@ -1,4 +1,4 @@
-import { isServerRuntime, runtimeKV } from './runtimeAdapter.ts';
+import { isServerRuntime, isStandaloneMode, runtimeKV } from './runtimeAdapter.ts';
 
 export interface RequestLogItem {
   id: string;
@@ -109,7 +109,7 @@ class TokenTrackerService {
   private saveLog() {
     try {
       this.cleanOldEntries();
-      if (isServerRuntime()) {
+      if (isServerRuntime() || isStandaloneMode()) {
         runtimeKV.setItem(STORAGE_KEY, JSON.stringify(this.log));
       }
       this.emitUpdate();

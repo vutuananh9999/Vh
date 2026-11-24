@@ -5,9 +5,13 @@ import { CreateWizard } from './components/CreateWizard.tsx';
 import { StoryLibrary } from './components/StoryLibrary.tsx';
 import { Watermarks } from './components/Watermarks.tsx';
 import {
+  isStandaloneMode,
   ServerJobState,
-  serverSyncClient
+  serverSyncClient,
+  setStandaloneMode
 } from './services/runtimeAdapter.ts';
+import { initCapacitorNativeShell } from './services/iosNativeBridge.ts';
+import { registerStandaloneRuntime } from './services/localJobRunner.ts';
 import { providerManagerService } from './services/providerManagerService.ts';
 import { plotDebugLogger } from './services/plotDebugLogger.ts';
 import { requestThrottleService } from './services/requestThrottleService.ts';
@@ -78,7 +82,9 @@ const AppContent: React.FC = () => {
           }}
         ></div>
         <div className="text-primary-500 text-sm font-medium tracking-wide animate-pulse">
-          Đang đồng bộ dữ liệu từ máy chủ...
+          {isStandaloneMode()
+            ? 'Đang khởi tạo kho truyện trên thiết bị...'
+            : 'Đang đồng bộ dữ liệu từ máy chủ...'}
         </div>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
@@ -127,6 +133,7 @@ interface ServerMetaInfo {
   dataDir?: string;
   passwordEnabled: boolean;
   envForcedPassword: boolean;
+  standaloneMode?: boolean;
 }
 
 const App: React.FC = () => {
@@ -138,20 +145,43 @@ const App: React.FC = () => {
   const [initialJobs, setInitialJobs] = useState<ServerJobState[]>([]);
   const [serverMeta, setServerMeta] = useState<ServerMetaInfo>({
     passwordEnabled: false,
-    envForcedPassword: false
+    envForcedPassword: false,
+    standaloneMode: isStandaloneMode()
   });
 
   const hydrateFromBootstrap = useCallback(async () => {
     try {
       setBootError('');
-      const auth = await serverSyncClient.getAuthStatus();
-      if (auth.passwordEnabled && !auth.authenticated) {
-        setServerMeta({
-          passwordEnabled: auth.passwordEnabled,
-          envForcedPassword: auth.envForcedPassword
-        });
-        setBootState('locked');
-        return;
+      void initCapacitorNativeShell();
+
+      if (isStandaloneMode()) {
+        registerStandaloneRuntime();
+      } else {
+        try {
+          const auth = await serverSyncClient.getAuthStatus();
+          if (auth.passwordEnabled && !auth.authenticated) {
+            setServerMeta({
+              passwordEnabled: auth.passwordEnabled,
+              envForcedPassword: auth.envForcedPassword,
+              standaloneMode: false
+            });
+            setBootState('locked');
+            return;
+          }
+        } catch (authErr: any) {
+          const msg = String(authErr?.message || '');
+          const isStaticMissingBackend =
+            msg.includes('404') ||
+            msg.includes('Cannot GET') ||
+            msg.includes('<!DOCTYPE') ||
+            msg.includes('Unexpected token');
+          if (isStaticMissingBackend) {
+            setStandaloneMode(true);
+            registerStandaloneRuntime();
+          } else {
+            throw authErr;
+          }
+        }
       }
 
       const data = await serverSyncClient.bootstrap();
@@ -165,19 +195,22 @@ const App: React.FC = () => {
       setServerMeta({
         dataDir: data.dataDir,
         passwordEnabled: data.passwordEnabled,
-        envForcedPassword: data.envForcedPassword
+        envForcedPassword: data.envForcedPassword,
+        standaloneMode: Boolean(data.standaloneMode || isStandaloneMode())
       });
 
-      serverSyncClient.connectWebSocket(() => {
-        void serverSyncClient.bootstrap().then(fresh => {
-          providerManagerService.hydrateFromServer(fresh.providers, fresh.providerRouting);
-          plotDebugLogger.hydrateFromServer(fresh.debugLogs);
-          requestThrottleService.hydrateFromServer(fresh.throttleState);
-          tokenTracker.hydrateFromServer(fresh.tokenUsage);
-          geminiService.hydrateCooldownsFromServer(fresh.coolingGeminiKeys);
-          externalProviderService.hydrateCooldownsFromServer(fresh.coolingProviderIds);
-        }).catch(() => {});
-      });
+      if (!isStandaloneMode()) {
+        serverSyncClient.connectWebSocket(() => {
+          void serverSyncClient.bootstrap().then(fresh => {
+            providerManagerService.hydrateFromServer(fresh.providers, fresh.providerRouting);
+            plotDebugLogger.hydrateFromServer(fresh.debugLogs);
+            requestThrottleService.hydrateFromServer(fresh.throttleState);
+            tokenTracker.hydrateFromServer(fresh.tokenUsage);
+            geminiService.hydrateCooldownsFromServer(fresh.coolingGeminiKeys);
+            externalProviderService.hydrateCooldownsFromServer(fresh.coolingProviderIds);
+          }).catch(() => {});
+        });
+      }
 
       setBootState('ready');
     } catch (err: any) {
@@ -261,7 +294,9 @@ const App: React.FC = () => {
           }}
         />
         <div className="text-sky-400 text-sm font-medium animate-pulse">
-          Đang kết nối máy chủ điều khiển từ xa...
+          {isStandaloneMode()
+            ? 'Đang khởi tạo ứng dụng Aetheria...'
+            : 'Đang kết nối máy chủ điều khiển từ xa...'}
         </div>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
@@ -274,15 +309,28 @@ const App: React.FC = () => {
         <div className="max-w-md w-full bg-gray-900 border border-red-500/30 rounded-2xl p-6 space-y-4 shadow-2xl">
           <div className="text-red-400 text-lg font-bold">Mất kết nối máy chủ Aetheria</div>
           <p className="text-xs text-gray-400 leading-relaxed">{bootError}</p>
-          <button
-            onClick={() => {
-              setBootState('checking');
-              void hydrateFromBootstrap();
-            }}
-            className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-xl transition-colors"
-          >
-            Thử kết nối lại
-          </button>
+          <div className="space-y-2.5 pt-1">
+            <button
+              onClick={() => {
+                setBootState('checking');
+                void hydrateFromBootstrap();
+              }}
+              className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white text-sm font-bold rounded-xl transition-colors"
+            >
+              Thử kết nối lại
+            </button>
+            <button
+              onClick={() => {
+                setStandaloneMode(true);
+                registerStandaloneRuntime();
+                setBootState('checking');
+                void hydrateFromBootstrap();
+              }}
+              className="w-full py-2.5 px-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 text-xs font-semibold rounded-xl transition-colors"
+            >
+              Dùng Chế Độ Độc Lập Trên Thiết Bị (Offline)
+            </button>
+          </div>
         </div>
       </div>
     );

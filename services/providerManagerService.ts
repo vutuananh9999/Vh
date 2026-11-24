@@ -13,7 +13,7 @@ import {
   normalizeBaseUrl
 } from './modelDiscoveryService.ts';
 import { secureCredentialStorage } from './secureCredentialStorage.ts';
-import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, isServerRuntime, isStandaloneMode, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 
 export const PROVIDER_METADATA_STORAGE_KEY = 'aetheria_provider_metadata_v2';
 export const LEGACY_EXTERNAL_PROVIDERS_STORAGE_KEY = 'aetheria_external_providers_v1';
@@ -145,6 +145,16 @@ function readMetadataSync(): ProviderMetadataRecord[] {
   if (serverVaultBackend && isServerRuntime()) {
     return serverVaultBackend.getProviderMetadataList().map((item, idx) => normalizeMetadataRecord(item, idx));
   }
+  if (isStandaloneMode()) {
+    try {
+      const raw = runtimeKV.getItem(PROVIDER_METADATA_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map((item, idx) => normalizeMetadataRecord(item, idx)) : [];
+    } catch {
+      return [];
+    }
+  }
   return clientProvidersMirror.map((p, idx) => normalizeMetadataRecord(p, idx));
 }
 
@@ -166,7 +176,9 @@ function writeMetadataSync(records: ProviderMetadataRecord[]): void {
     priority: typeof rec.priority === 'number' ? rec.priority : idx,
     hasStoredApiKey: Boolean(
       rec.hasStoredApiKey ||
-        (serverVaultBackend ? serverVaultBackend.hasProviderSecret(rec.id) : secureCredentialStorage.hasSecretRecord(rec.id))
+        (serverVaultBackend && isServerRuntime()
+          ? serverVaultBackend.hasProviderSecret(rec.id)
+          : secureCredentialStorage.hasSecretRecord(rec.id))
     ),
     createdAt: rec.createdAt || Date.now(),
     updatedAt: Date.now(),
@@ -177,6 +189,10 @@ function writeMetadataSync(records: ProviderMetadataRecord[]): void {
 
   if (serverVaultBackend && isServerRuntime()) {
     serverVaultBackend.setProviderMetadataList(sanitized);
+    return;
+  }
+  if (isStandaloneMode()) {
+    runtimeKV.setItem(PROVIDER_METADATA_STORAGE_KEY, JSON.stringify(sanitized));
   }
 }
 
@@ -184,12 +200,18 @@ function getSecretSync(id: string): string {
   if (serverVaultBackend && isServerRuntime()) {
     return serverVaultBackend.getProviderSecret(id);
   }
+  if (isStandaloneMode()) {
+    return secureCredentialStorage.getSecretSync(id);
+  }
   return clientProvidersMirror.find(p => p.id === id)?.apiKey || '';
 }
 
 function hasSecretSync(id: string): boolean {
   if (serverVaultBackend && isServerRuntime()) {
     return serverVaultBackend.hasProviderSecret(id);
+  }
+  if (isStandaloneMode()) {
+    return secureCredentialStorage.hasSecretRecord(id);
   }
   const found = clientProvidersMirror.find(p => p.id === id);
   return Boolean(found?.apiKey || found?.hasStoredApiKey);
@@ -221,7 +243,7 @@ function hydrateProfileSync(meta: ProviderMetadataRecord): ExternalProviderProfi
 }
 
 function isRemoteClient(): boolean {
-  return !isServerRuntime() && typeof window !== 'undefined';
+  return isRemoteServerClient();
 }
 
 export const providerManagerService = {
@@ -260,6 +282,9 @@ export const providerManagerService = {
         }
       }
       return;
+    }
+    if (isStandaloneMode()) {
+      await secureCredentialStorage.hydrate();
     }
     initialized = true;
   },

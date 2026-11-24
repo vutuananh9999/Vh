@@ -1,0 +1,44 @@
+{
+	"appId": "com.vhok.aetheria",
+	"appName": "Aetheria",
+	"webDir": "dist",
+	"backgroundColor": "#030712",
+	"server": {
+		"iosScheme": "capacitor",
+		"androidScheme": "https"
+	},
+	"ios": {
+		"contentInset": "never",
+		"allowsLinkPreview": false,
+		"scrollEnabled": true,
+		"backgroundColor": "#030712",
+		"preferredContentMode": "mobile"
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchShowDuration": 600,
+			"launchAutoHide": true,
+			"backgroundColor": "#030712",
+			"showSpinner": false
+		},
+		"StatusBar": {
+			"style": "DARK",
+			"backgroundColor": "#030712",
+			"overlaysWebView": true
+		},
+		"Keyboard": {
+			"resize": "native",
+			"style": "DARK",
+			"resizeOnFullScreen": true
+		}
+	},
+	"packageClassList": [
+		"AppPlugin",
+		"FilesystemPlugin",
+		"KeyboardPlugin",
+		"PreferencesPlugin",
+		"SharePlugin",
+		"SplashScreenPlugin",
+		"StatusBarPlugin"
+	]
+}

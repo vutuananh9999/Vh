@@ -4,6 +4,7 @@ import { useStory } from '../context/StoryContext.tsx';
 import { GlobalSettingsModal } from './GlobalSettingsModal.tsx';
 import { SteamOSInstallModal } from './SteamOSInstallModal.tsx';
 import { GoogleDriveSyncModal } from './GoogleDriveSyncModal.tsx';
+import { shareOrDownloadFile } from '../services/iosNativeBridge.ts';
 
 export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNew }) => {
     const { storiesList, openStory, deleteStory, exportStory, exportStoryEpub, exportAllStories, importStory, importStoryFromTxt, importStoryFromEpub } = useStory();
@@ -82,17 +83,8 @@ export const StoryLibrary: React.FC<{ onCreateNew: () => void }> = ({ onCreateNe
             content += `====================================\n\n`;
         });
 
-        const blob = new Blob([content], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        // Sanitize filename
-        const safeTitle = story.title.replace(/[^a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF ]/g, '_').trim(); 
-        link.download = `${safeTitle}.txt`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        const safeTitle = story.title.replace(/[^a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF ]/g, '_').trim();
+        void shareOrDownloadFile(`${safeTitle}.txt`, content, 'text/plain;charset=utf-8');
     };
 
     return (

@@ -1,25 +1,30 @@
 /**
  * Service Worker Registration Helper
+ * Skips registration inside Capacitor native iOS/Android shell where assets load locally.
  */
+import { isCapacitorNative } from './iosNativeBridge.ts';
 
 export function registerServiceWorker() {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return;
   }
 
+  if (isCapacitorNative()) {
+    return;
+  }
+
   // Register only when page is loaded
   window.addEventListener('load', () => {
-    // Avoid registering in restrictive iframe sandboxes if serviceWorker is blocked
     try {
       navigator.serviceWorker
-        .register('/sw.js')
+        .register('./sw.js')
         .then((registration) => {
           console.log('[Service Worker] Registered successfully with scope:', registration.scope);
         })
         .catch((error) => {
-          console.info('[Service Worker] Registration skipped or failed (benign in some iframe sandboxes):', error?.message || error);
+          console.info('[Service Worker] Registration skipped or failed:', error?.message || error);
         });
-    } catch (e) {
+    } catch {
       console.info('[Service Worker] Registration not supported in current environment.');
     }
   });

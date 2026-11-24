@@ -2,7 +2,7 @@
  * Request Throttling & Server-Aware Sequential/Parallel Queuing Middleware
  */
 
-import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, isServerRuntime, isStandaloneMode, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 import {
   abortableSleep,
   createAbortError,
@@ -122,7 +122,7 @@ class RequestThrottleService {
       return;
     }
 
-    this.hostname = window.location.hostname || '';
+    this.hostname = window.location.hostname || (isStandaloneMode() ? 'ios-standalone' : '');
     this.environment = 'server';
     this.isPreview = false;
     this.isNetlify = false;
@@ -155,7 +155,7 @@ class RequestThrottleService {
 
   public setMode(mode: QueueMode) {
     this.userModePref = mode;
-    if (isServerRuntime()) {
+    if (isServerRuntime() || isStandaloneMode()) {
       runtimeKV.setItem(STORAGE_MODE_KEY, mode);
       this.notifyState();
       void this.processQueue();
@@ -176,7 +176,7 @@ class RequestThrottleService {
   public setInterRequestDelay(ms: number) {
     const cleanMs = Math.max(0, Math.min(5000, ms));
     this.interRequestDelayMs = cleanMs;
-    if (isServerRuntime()) {
+    if (isServerRuntime() || isStandaloneMode()) {
       runtimeKV.setItem(STORAGE_DELAY_KEY, String(cleanMs));
       this.notifyState();
       return;
@@ -571,7 +571,7 @@ class RequestThrottleService {
   }
 
   public getState(): ThrottleState {
-    if (!isServerRuntime() && this.remoteMirroredState) {
+    if (isRemoteServerClient() && this.remoteMirroredState) {
       return this.remoteMirroredState;
     }
     return {

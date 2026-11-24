@@ -8,7 +8,7 @@ import {
 } from "../services/externalProviderService.ts";
 import { providerManagerService } from "../services/providerManagerService.ts";
 import { ProviderManagementPanel } from "./providers/ProviderManagementPanel.tsx";
-import { runtimeKV, serverSyncClient } from "../services/runtimeAdapter.ts";
+import { isStandaloneMode, runtimeKV, serverSyncClient } from "../services/runtimeAdapter.ts";
 
 interface Props {
     isOpen: boolean;
@@ -1016,6 +1016,16 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                             </div>
 
                             {/* Optional Server Password Security Card */}
+                            {isStandaloneMode() ? (
+                                <div className="p-4 bg-gray-950 border border-emerald-500/20 rounded-2xl space-y-1.5">
+                                    <div className="text-xs font-bold text-emerald-300 flex items-center gap-2">
+                                        <span>📱 Chế độ Ứng dụng Độc lập (iOS / Offline-Ready)</span>
+                                    </div>
+                                    <p className="text-[11px] text-gray-400 leading-relaxed">
+                                        Toàn bộ truyện, World Bible, Vector RAG và cấu hình AI đang được lưu trực tiếp trong bộ nhớ an toàn trên thiết bị của bạn (IndexedDB + Mã hóa khóa AES-GCM), hoạt động hoàn toàn độc lập không cần máy chủ ngoài.
+                                    </p>
+                                </div>
+                            ) : (
                             <div className="p-4 bg-gray-950 border border-gray-800 rounded-2xl space-y-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <div>
@@ -1089,6 +1099,7 @@ export const GlobalSettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                                     </div>
                                 )}
                             </div>
+                            )}
                         </div>
                     )}
                 </div>

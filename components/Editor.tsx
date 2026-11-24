@@ -395,6 +395,25 @@ export const Editor: React.FC<EditorProps> = ({ onOpenSidebar, onOpenPlotArc, on
     performSave(localContentRef.current, localTitleRef.current);
   }, [performSave]);
 
+  useEffect(() => {
+    const flushIfHidden = () => {
+      if (document.visibilityState === 'hidden' && saveTimeoutRef.current) {
+        flushSave();
+      }
+    };
+    const flushOnPageHide = () => {
+      if (saveTimeoutRef.current) {
+        flushSave();
+      }
+    };
+    document.addEventListener('visibilitychange', flushIfHidden);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', flushIfHidden);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  }, [flushSave]);
+
   const PULL_THRESHOLD = 70; // px threshold to trigger chapter switch on swipe
 
   const goToNextChapter = useCallback(() => {

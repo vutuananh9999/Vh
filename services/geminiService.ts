@@ -9,7 +9,7 @@ import { externalProviderService } from "./externalProviderService.ts";
 import { providerManagerService } from "./providerManagerService.ts";
 import { ragService } from "./ragService.ts";
 import { redactSecrets } from "./secureCredentialStorage.ts";
-import { isServerRuntime, runtimeKV, serverSyncClient } from "./runtimeAdapter.ts";
+import { isRemoteServerClient, runtimeKV, serverSyncClient } from "./runtimeAdapter.ts";
 import {
   abortableSleep,
   createAbortError,
@@ -103,7 +103,7 @@ function clearKeyCooldown(key: string) {
 function clearAllCooldowns() {
   keyCooldowns.clear();
   notifyCooldownChanged();
-  if (typeof window !== 'undefined' && !isServerRuntime()) {
+  if (isRemoteServerClient()) {
     void serverSyncClient.resetAllCooldowns().catch(() => {});
   }
 }
@@ -2591,7 +2591,7 @@ export const geminiService = {
     if (!key || !key.trim()) {
       return { success: false, message: "Vui lòng nhập API Key để kiểm tra." };
     }
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       return serverSyncClient.testGeminiKey({
         apiKey: key.trim(),
         mode: 'simple'
@@ -4275,9 +4275,9 @@ TRẢ VỀ JSON:
       onPhase?: (phase: string, model: string) => void;
     }
   ): Promise<{ text: string; usageMetadata?: any; modelUsed: string; latencyMs: number }> {
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       const primaryModel = modelToTest || getFlash();
-      options?.onPhase?.(`Đang nhờ máy chủ Steam Deck ping ${primaryModel}...`, primaryModel);
+      options?.onPhase?.(`Đang nhờ máy chủ ping ${primaryModel}...`, primaryModel);
       return serverSyncClient.testGeminiKey({
         apiKey,
         model: primaryModel,

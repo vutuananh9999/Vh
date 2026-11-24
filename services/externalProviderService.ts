@@ -17,7 +17,7 @@ import {
   providerManagerService
 } from './providerManagerService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
-import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, serverSyncClient } from './runtimeAdapter.ts';
 import { getActiveJobAbortContext, isAbortError, throwIfAborted } from './jobAbortContext.ts';
 
 export type {
@@ -75,7 +75,7 @@ export const externalProviderService = {
 
   clearAllCooldowns(): void {
     externalCooldowns.clear();
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       void serverSyncClient.resetAllCooldowns().catch(() => {});
     }
   },

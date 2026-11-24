@@ -10,8 +10,10 @@ import {
   validateBaseUrl
 } from './modelDiscoveryService.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
-import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, serverSyncClient } from './runtimeAdapter.ts';
 import { getActiveJobAbortContext } from './jobAbortContext.ts';
+import { nativeAwareFetch } from './nativeHttpFetch.ts';
+import { isCapacitorNative } from './iosNativeBridge.ts';
 
 export class ProviderClientError extends Error {
   public readonly status?: number;
@@ -373,7 +375,7 @@ export const providerClientService = {
           if (!omitTemp && typeof temperature === 'number') {
             body.temperature = temperature;
           }
-          return fetch(endpoint, {
+          return nativeAwareFetch(endpoint, {
             method: 'POST',
             signal: effectiveSignal,
             headers,
@@ -435,7 +437,7 @@ export const providerClientService = {
             ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {})
           };
 
-          return fetch(endpoint, {
+          return nativeAwareFetch(endpoint, {
             method: 'POST',
             signal: effectiveSignal,
             headers,
@@ -513,7 +515,7 @@ export const providerClientService = {
           payload.response_format = { type: 'json_object' };
         }
 
-        return fetch(endpoint, {
+        return nativeAwareFetch(endpoint, {
           method: 'POST',
           signal: effectiveSignal,
           headers,
@@ -633,114 +635,131 @@ export const providerClientService = {
     const maxTokens = resolveEffectiveMaxTokens(profile, params);
 
     let res: Response;
-    if (format === 'anthropic') {
-      const anthropicMsgs = mergeConsecutiveMessagesForAnthropic(messages);
-      const endpoint = buildEndpointUrl(baseUrl, '/messages');
-      const body: Record<string, any> = {
-        model: profile.model.trim(),
-        max_tokens: maxTokens || 4096,
-        stream: true,
-        ...(typeof temperature === 'number' ? { temperature } : {}),
-        ...(system ? { system } : {}),
-        messages: anthropicMsgs
-      };
-      res = await fetch(endpoint, {
-        method: 'POST',
-        signal: effectiveSignal,
-        headers,
-        body: JSON.stringify(body)
-      });
-    } else if (format === 'gemini') {
-      const cleanModel = profile.model.trim().replace(/^models\//, '');
-      const endpoint = buildEndpointUrl(
-        baseUrl,
-        `/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse`
-      );
-      const contents = messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }]
-      }));
-      const generationConfig: Record<string, any> = {};
-      if (typeof temperature === 'number') generationConfig.temperature = temperature;
-      if (typeof maxTokens === 'number') generationConfig.maxOutputTokens = maxTokens;
-      if (wantsJson) generationConfig.responseMimeType = 'application/json';
-
-      res = await fetch(endpoint, {
-        method: 'POST',
-        signal: effectiveSignal,
-        headers,
-        body: JSON.stringify({
-          contents,
-          ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-          ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {})
-        })
-      });
-    } else {
-      const openAiMessages = [
-        ...(system ? [{ role: 'system', content: system }] : []),
-        ...messages
-      ];
-      const endpoint = buildEndpointUrl(baseUrl, '/chat/completions');
-
-      const sendStreamOpenAI = async (opts: {
-        omitResponseFormat: boolean;
-        omitTemperature: boolean;
-        omitMaxTokens: boolean;
-        useMaxCompletionTokens: boolean;
-      }) => {
-        const payload: Record<string, any> = {
+    try {
+      if (format === 'anthropic') {
+        const anthropicMsgs = mergeConsecutiveMessagesForAnthropic(messages);
+        const endpoint = buildEndpointUrl(baseUrl, '/messages');
+        const body: Record<string, any> = {
           model: profile.model.trim(),
-          messages: openAiMessages,
-          stream: true
+          max_tokens: maxTokens || 4096,
+          stream: true,
+          ...(typeof temperature === 'number' ? { temperature } : {}),
+          ...(system ? { system } : {}),
+          messages: anthropicMsgs
         };
-        if (!opts.omitTemperature && typeof temperature === 'number') {
-          payload.temperature = temperature;
-        }
-        if (!opts.omitMaxTokens && typeof maxTokens === 'number') {
-          if (opts.useMaxCompletionTokens) {
-            payload.max_completion_tokens = maxTokens;
-          } else {
-            payload.max_tokens = maxTokens;
-          }
-        }
-        if (
-          !opts.omitResponseFormat &&
-          wantsJson &&
-          profile.providerType !== 'openai_compatible' &&
-          profile.providerType !== 'custom'
-        ) {
-          payload.response_format = { type: 'json_object' };
-        }
-        return fetch(endpoint, {
+        res = await fetch(endpoint, {
           method: 'POST',
           signal: effectiveSignal,
           headers,
-          body: JSON.stringify(payload)
+          body: JSON.stringify(body)
         });
-      };
+      } else if (format === 'gemini') {
+        const cleanModel = profile.model.trim().replace(/^models\//, '');
+        const endpoint = buildEndpointUrl(
+          baseUrl,
+          `/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse`
+        );
+        const contents = messages.map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }]
+        }));
+        const generationConfig: Record<string, any> = {};
+        if (typeof temperature === 'number') generationConfig.temperature = temperature;
+        if (typeof maxTokens === 'number') generationConfig.maxOutputTokens = maxTokens;
+        if (wantsJson) generationConfig.responseMimeType = 'application/json';
 
-      res = await sendStreamOpenAI({
-        omitResponseFormat: false,
-        omitTemperature: false,
-        omitMaxTokens: false,
-        useMaxCompletionTokens: false
-      });
+        res = await fetch(endpoint, {
+          method: 'POST',
+          signal: effectiveSignal,
+          headers,
+          body: JSON.stringify({
+            contents,
+            ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+            ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {})
+          })
+        });
+      } else {
+        const openAiMessages = [
+          ...(system ? [{ role: 'system', content: system }] : []),
+          ...messages
+        ];
+        const endpoint = buildEndpointUrl(baseUrl, '/chat/completions');
 
-      if (res.status === 400 || res.status === 422) {
-        const preview = await res.clone().text().catch(() => '');
-        const unsupported = detectUnsupportedParamsFromError(preview);
-        const wantsMaxCompletion = preview.toLowerCase().includes('max_completion_tokens');
-        if (unsupported.length > 0 || wantsMaxCompletion) {
-          res = await sendStreamOpenAI({
-            omitResponseFormat: unsupported.includes('response_format'),
-            omitTemperature: unsupported.includes('temperature'),
-            omitMaxTokens:
-              unsupported.includes('max_completion_tokens') ||
-              (unsupported.includes('max_tokens') && !wantsMaxCompletion),
-            useMaxCompletionTokens: wantsMaxCompletion && !unsupported.includes('max_completion_tokens')
+        const sendStreamOpenAI = async (opts: {
+          omitResponseFormat: boolean;
+          omitTemperature: boolean;
+          omitMaxTokens: boolean;
+          useMaxCompletionTokens: boolean;
+        }) => {
+          const payload: Record<string, any> = {
+            model: profile.model.trim(),
+            messages: openAiMessages,
+            stream: true
+          };
+          if (!opts.omitTemperature && typeof temperature === 'number') {
+            payload.temperature = temperature;
+          }
+          if (!opts.omitMaxTokens && typeof maxTokens === 'number') {
+            if (opts.useMaxCompletionTokens) {
+              payload.max_completion_tokens = maxTokens;
+            } else {
+              payload.max_tokens = maxTokens;
+            }
+          }
+          if (
+            !opts.omitResponseFormat &&
+            wantsJson &&
+            profile.providerType !== 'openai_compatible' &&
+            profile.providerType !== 'custom'
+          ) {
+            payload.response_format = { type: 'json_object' };
+          }
+          return fetch(endpoint, {
+            method: 'POST',
+            signal: effectiveSignal,
+            headers,
+            body: JSON.stringify(payload)
           });
+        };
+
+        res = await sendStreamOpenAI({
+          omitResponseFormat: false,
+          omitTemperature: false,
+          omitMaxTokens: false,
+          useMaxCompletionTokens: false
+        });
+
+        if (res.status === 400 || res.status === 422) {
+          const preview = await res.clone().text().catch(() => '');
+          const unsupported = detectUnsupportedParamsFromError(preview);
+          const wantsMaxCompletion = preview.toLowerCase().includes('max_completion_tokens');
+          if (unsupported.length > 0 || wantsMaxCompletion) {
+            res = await sendStreamOpenAI({
+              omitResponseFormat: unsupported.includes('response_format'),
+              omitTemperature: unsupported.includes('temperature'),
+              omitMaxTokens:
+                unsupported.includes('max_completion_tokens') ||
+                (unsupported.includes('max_tokens') && !wantsMaxCompletion),
+              useMaxCompletionTokens: wantsMaxCompletion && !unsupported.includes('max_completion_tokens')
+            });
+          }
         }
       }
+    } catch (streamNetErr: any) {
+      if (effectiveSignal?.aborted || streamNetErr?.name === 'AbortError') {
+        throw new ProviderClientError(`[${profile.name}] Yêu cầu stream đã bị hủy bởi người dùng.`, {
+          errorCode: 'CANCELLED'
+        });
+      }
+      if (isCapacitorNative()) {
+        // Fallback to native CapacitorHttp non-streaming generate when WKWebView CORS blocks streaming
+        const singleRes = await this.invokeGenerate(profile, params, sendParams, effectiveSignal);
+        const text = String(singleRes?.text || '');
+        if (text) onChunk?.(text);
+        yield singleRes;
+        return;
+      }
+      throw streamNetErr;
     }
 
     if (!res.ok) {
@@ -875,7 +894,7 @@ export const providerClientService = {
       };
     }
 
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       return serverSyncClient.testCustomProvider(profile, timeoutMs);
     }
 

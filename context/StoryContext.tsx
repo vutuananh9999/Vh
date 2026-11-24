@@ -21,6 +21,7 @@ import {
 } from '../services/runtimeAdapter.ts';
 import { fastWordCount } from '../utils/wordCount.ts';
 import { parseEpubFile, downloadEpubFile } from '../utils/epubHelper.ts';
+import { shareOrDownloadFile } from '../services/iosNativeBridge.ts';
 
 const generateId = () => {
   try {
@@ -66,6 +67,7 @@ export interface ServerMetaInfo {
   dataDir?: string;
   passwordEnabled: boolean;
   envForcedPassword: boolean;
+  standaloneMode?: boolean;
 }
 
 interface StoryContextType {
@@ -1544,13 +1546,8 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
       fullText += `${ch.translatedContent}\n\n\n`;
     });
 
-    const blob = new Blob([fullText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const filename = `${currentStory.title.replace(/\s+/g, '_')}_Ban_Viet_Hoa.txt`;
+    void shareOrDownloadFile(filename, fullText, 'text/plain;charset=utf-8');
   };
 
   const exportAllTranslationsEpub = async () => {
@@ -2305,15 +2302,8 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
     storageService.getStory(targetId).then(s => {
       if (!s) return;
       const backup: BackupData = { version: 1, story: s, vectors: [], exportedAt: Date.now() };
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `Aetheria_Backup_${s.title.replace(/\s+/g, '_')}_${Date.now()}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      const filename = `Aetheria_Backup_${s.title.replace(/\s+/g, '_')}_${Date.now()}.json`;
+      void shareOrDownloadFile(filename, JSON.stringify(backup, null, 2), 'application/json');
     });
   };
 
@@ -2343,15 +2333,8 @@ export const StoryProvider: React.FC<StoryProviderProps> = ({
       return;
     }
     const backup = { version: 1, stories: allStories, exportedAt: Date.now() };
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Aetheria_Full_Backup_${Date.now()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const filename = `Aetheria_Full_Backup_${Date.now()}.json`;
+    await shareOrDownloadFile(filename, JSON.stringify(backup, null, 2), 'application/json');
   };
 
   const importStory = async (file: File) => {

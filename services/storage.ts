@@ -1,5 +1,6 @@
 import { Story, VectorData } from '../types.ts';
-import { apiFetch, isServerRuntime } from './runtimeAdapter.ts';
+import { apiFetch, isServerRuntime, isStandaloneMode } from './runtimeAdapter.ts';
+import { localIndexedDbVault } from './localIndexedDbVault.ts';
 
 export interface ServerStorageBackend {
   getAllStorySummaries(): Story[];
@@ -26,7 +27,7 @@ export function registerServerStorageBackend(backend: ServerStorageBackend): voi
   serverBackend = backend;
 }
 
-// Client debounce queue so rapid editor changes batch cleanly onto the server
+// Client debounce queue so rapid editor changes batch cleanly onto backend/IndexedDB
 let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedStoryToSave: Story | null = null;
 let isSavingInProgress = false;
@@ -35,6 +36,10 @@ let pendingSaveResolvers: Array<() => void> = [];
 async function executeDirectSave(story: Story): Promise<void> {
   if (serverBackend && isServerRuntime()) {
     serverBackend.saveStory(story);
+    return;
+  }
+  if (isStandaloneMode()) {
+    await localIndexedDbVault.saveStory(story);
     return;
   }
   await apiFetch(`/api/stories/${encodeURIComponent(story.id)}`, {
@@ -82,6 +87,10 @@ export const storageService = {
   ): Promise<void> {
     if (serverBackend && isServerRuntime()) {
       serverBackend.saveChapterDelta(storyId, chapterId, content, title, translatedContent);
+      return;
+    }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.saveChapterDelta(storyId, chapterId, content, title, translatedContent);
       return;
     }
     await apiFetch(
@@ -136,6 +145,10 @@ export const storageService = {
     if (serverBackend && isServerRuntime()) {
       return serverBackend.getStory(id);
     }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.hydrate();
+      return localIndexedDbVault.getStory(id);
+    }
     try {
       const res = await apiFetch<{ story?: Story }>(`/api/stories/${encodeURIComponent(id)}`);
       return res?.story;
@@ -148,6 +161,10 @@ export const storageService = {
     if (serverBackend && isServerRuntime()) {
       return serverBackend.getAllStories();
     }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.hydrate();
+      return localIndexedDbVault.getAllStories();
+    }
     const res = await apiFetch<{ stories: Story[] }>('/api/stories?full=1');
     return res?.stories || [];
   },
@@ -155,6 +172,10 @@ export const storageService = {
   async getAllStorySummaries(): Promise<Story[]> {
     if (serverBackend && isServerRuntime()) {
       return serverBackend.getAllStorySummaries();
+    }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.hydrate();
+      return localIndexedDbVault.getAllStorySummaries();
     }
     const res = await apiFetch<{ stories: Story[] }>('/api/stories');
     return res?.stories || [];
@@ -165,6 +186,10 @@ export const storageService = {
       serverBackend.deleteStory(id);
       return;
     }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.deleteStory(id);
+      return;
+    }
     await apiFetch(`/api/stories/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
@@ -172,6 +197,10 @@ export const storageService = {
     if (!vectors || vectors.length === 0) return;
     if (serverBackend && isServerRuntime()) {
       serverBackend.saveVectors(vectors);
+      return;
+    }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.saveVectors(vectors);
       return;
     }
     await apiFetch('/api/vectors', {
@@ -184,6 +213,9 @@ export const storageService = {
     if (serverBackend && isServerRuntime()) {
       return serverBackend.getVectorsByStory(storyId);
     }
+    if (isStandaloneMode()) {
+      return localIndexedDbVault.getVectorsByStory(storyId);
+    }
     const res = await apiFetch<{ vectors: VectorData[] }>(
       `/api/vectors/${encodeURIComponent(storyId)}`
     );
@@ -195,12 +227,19 @@ export const storageService = {
       serverBackend.deleteVectorsByStory(storyId);
       return;
     }
+    if (isStandaloneMode()) {
+      await localIndexedDbVault.deleteVectorsByStory(storyId);
+      return;
+    }
     await apiFetch(`/api/vectors/${encodeURIComponent(storyId)}`, { method: 'DELETE' });
   },
 
   async getStorageEstimate(): Promise<{ usedMB: number; quotaMB: number; percent: number }> {
     if (serverBackend?.getStorageEstimate && isServerRuntime()) {
       return serverBackend.getStorageEstimate();
+    }
+    if (isStandaloneMode()) {
+      return localIndexedDbVault.getStorageEstimate();
     }
     try {
       return await apiFetch<{ usedMB: number; quotaMB: number; percent: number }>(

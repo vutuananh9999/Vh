@@ -7,7 +7,8 @@ import {
   ProviderProtocolFormat
 } from './providerTypes.ts';
 import { redactSecrets } from './secureCredentialStorage.ts';
-import { isServerRuntime, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, serverSyncClient } from './runtimeAdapter.ts';
+import { nativeAwareFetch } from './nativeHttpFetch.ts';
 
 export const PROVIDER_PRESETS: Record<AIProviderType, ProviderPreset> = {
   openai_compatible: {
@@ -482,7 +483,7 @@ export const modelDiscoveryService = {
       };
     }
 
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       return serverSyncClient.discoverModels({
         providerType: params.providerType,
         baseUrl: params.baseUrl,
@@ -544,7 +545,7 @@ export const modelDiscoveryService = {
           const url = candidateUrls[idx];
           endpointUsed = url;
 
-          const res = await fetch(url, {
+          const res = await nativeAwareFetch(url, {
             method: 'GET',
             headers,
             signal: controller.signal

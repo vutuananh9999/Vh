@@ -9,6 +9,7 @@ import {
 import { getPresetForProviderType } from '../../services/modelDiscoveryService.ts';
 import { providerClientService } from '../../services/providerClientService.ts';
 import { providerManagerService } from '../../services/providerManagerService.ts';
+import { shareOrDownloadFile } from '../../services/iosNativeBridge.ts';
 import { externalProviderService } from '../../services/externalProviderService.ts';
 import { maskSecret, secureCredentialStorage } from '../../services/secureCredentialStorage.ts';
 import { ProviderEditorForm } from './ProviderEditorForm.tsx';
@@ -121,15 +122,8 @@ export const ProviderManagementPanel: React.FC<ProviderManagementPanelProps> = (
     // Section 7 & 8: Strictly exclude API keys from exported configuration files by default
     const bundle = providerManagerService.exportProvidersBundle({ includeApiKeys: false });
     const json = JSON.stringify(bundle, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `aetheria-ai-providers-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const filename = `aetheria-ai-providers-${new Date().toISOString().slice(0, 10)}.json`;
+    void shareOrDownloadFile(filename, json, 'application/json');
     setBannerMessage({
       type: 'success',
       text: `Đã xuất ${bundle.providers.length} cấu hình provider (không bao gồm API Key để bảo mật).`

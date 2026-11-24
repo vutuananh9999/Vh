@@ -6,6 +6,7 @@ export interface JobAbortContext {
 type JobContextProvider = () => JobAbortContext | undefined;
 
 let serverJobContextProvider: JobContextProvider | null = null;
+let browserJobContextProvider: JobContextProvider | null = null;
 
 /**
  * Allows server-side job manager (Node AsyncLocalStorage) to expose the active
@@ -15,10 +16,18 @@ export function registerServerJobContextProvider(provider: JobContextProvider | 
   serverJobContextProvider = provider;
 }
 
+/**
+ * Allows standalone client job runner (iOS / browser) to expose the active
+ * jobId & AbortSignal synchronously at call entry points.
+ */
+export function registerBrowserJobContextProvider(provider: JobContextProvider | null): void {
+  browserJobContextProvider = provider;
+}
+
 export function getActiveJobAbortContext(explicitSignal?: AbortSignal): JobAbortContext {
   let ctx: JobAbortContext | undefined;
   try {
-    ctx = serverJobContextProvider?.();
+    ctx = serverJobContextProvider?.() ?? browserJobContextProvider?.();
   } catch {
     ctx = undefined;
   }

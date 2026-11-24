@@ -1,10 +1,11 @@
 /**
- * Runtime Adapter (Isomorphic KV + Client-Server WebSocket/REST Sync Bridge)
+ * Runtime Adapter (Isomorphic KV + Dual-Mode Sync Bridge)
  *
- * - On Node.js Server (`server.ts`): binds directly to `serverVault` for zero-latency
- *   disk-backed persistence of settings, encrypted credentials, and real-time broadcasts.
- * - On Browser (`Remote Control UI`): holds an in-memory hydrated mirror from `/api/bootstrap`
- *   and synchronizes mutations & live server events over REST + WebSocket (`/ws`).
+ * Supports 3 execution modes cleanly:
+ * 1. Node.js Server (`server.ts`): binds directly to `serverVault` for disk-backed persistence.
+ * 2. Browser Remote Control UI (`http(s)://...`): communicates with Express `server.ts` over REST + WebSocket (`/ws`).
+ * 3. Standalone On-Device Mode (iOS `.ipa` / Capacitor / Offline SPA): executes all AI & storage directly in-process
+ *    backed by IndexedDB + Web Crypto AES-GCM + Capacitor Preferences, with zero server required.
  */
 
 import { Story } from '../types.ts';
@@ -19,6 +20,8 @@ import type {
   ProviderDraftInput,
   ProviderRoutingConfig
 } from './providerTypes.ts';
+import { isCapacitorNative, isStandaloneBuildFlag } from './iosNativeBridge.ts';
+import { localIndexedDbVault } from './localIndexedDbVault.ts';
 
 export type ServerJobType =
   | 'generate_continue'
@@ -81,6 +84,7 @@ export interface ServerBootstrapPayload {
   authenticated: boolean;
   passwordEnabled: boolean;
   envForcedPassword: boolean;
+  standaloneMode?: boolean;
   dataDir?: string;
   settings: Record<string, string>;
   geminiApiKeyRaw: string;
@@ -101,12 +105,44 @@ export interface RuntimeKVBackend {
   removeItem(key: string): void;
 }
 
+export interface StandaloneHandlers {
+  bootstrap: () => Promise<ServerBootstrapPayload>;
+  startJob: (type: ServerJobType, payload: any) => Promise<ServerJobState>;
+  cancelJob: (jobId: string) => Promise<void>;
+  cancelAllJobs: () => Promise<void>;
+  cancelDebugLog: (logId: string) => Promise<void>;
+  ackJob: (jobId: string) => Promise<void>;
+  listJobs: () => Promise<ServerJobState[]>;
+  runAiUtility: <T = any>(action: string, payload: any) => Promise<T>;
+  discoverModels: (params: any) => Promise<ModelDiscoveryResult>;
+  testCustomProvider: (profile: ExternalProviderProfile, timeoutMs?: number) => Promise<ConnectionTestResult>;
+  testGeminiKey: (params: any) => Promise<any>;
+  resetAllCooldowns: () => Promise<void>;
+  updateThrottle: (partial: { mode?: QueueMode; interRequestDelayMs?: number }) => Promise<void>;
+  clearDebugLogs: () => Promise<void>;
+  saveGeminiKeys: (keys: string[]) => Promise<void>;
+  listProviders: () => Promise<ExternalProviderProfile[]>;
+  createProvider: (draft: ProviderDraftInput, activateRouting?: boolean) => Promise<ExternalProviderProfile>;
+  updateProvider: (id: string, draft: Partial<ProviderDraftInput>) => Promise<ExternalProviderProfile>;
+  duplicateProvider: (id: string) => Promise<ExternalProviderProfile>;
+  deleteProvider: (id: string) => Promise<void>;
+  setDefaultProvider: (id: string, activateExternalRouting?: boolean) => Promise<ExternalProviderProfile | undefined>;
+  saveProviderRouting: (routing: ProviderRoutingConfig) => Promise<void>;
+  importProviders: (rawJson: any, replaceExisting?: boolean) => Promise<{ importedCount: number; needsApiKeyCount: number }>;
+  restoreProvidersFromDrive: (entries: any[]) => Promise<void>;
+  saveAllProviders: (profiles: ExternalProviderProfile[]) => Promise<void>;
+  recordProviderTestResult: (id: string, result: { success: boolean; message: string }) => Promise<void>;
+}
+
 const isNodeRuntime =
   typeof process !== 'undefined' &&
   Boolean(process.versions?.node) &&
   typeof window === 'undefined';
 
 let customServerKV: RuntimeKVBackend | null = null;
+let standaloneMode = !isNodeRuntime && (isCapacitorNative() || isStandaloneBuildFlag());
+let standaloneHandlers: StandaloneHandlers | null = null;
+
 const clientKVStore = new Map<string, string>();
 let isClientBootstrapped = false;
 
@@ -114,8 +150,24 @@ export function bindServerKV(backend: RuntimeKVBackend): void {
   customServerKV = backend;
 }
 
+export function registerStandaloneHandlers(handlers: StandaloneHandlers): void {
+  standaloneHandlers = handlers;
+}
+
+export function setStandaloneMode(enabled: boolean): void {
+  standaloneMode = !isNodeRuntime && enabled;
+}
+
 export function isServerRuntime(): boolean {
   return isNodeRuntime || customServerKV !== null;
+}
+
+export function isStandaloneMode(): boolean {
+  return !isServerRuntime() && standaloneMode;
+}
+
+export function isRemoteServerClient(): boolean {
+  return typeof window !== 'undefined' && !isServerRuntime() && !standaloneMode;
 }
 
 export function setClientKVSnapshot(settings: Record<string, string>, geminiApiKeyRaw?: string): void {
@@ -139,6 +191,16 @@ export const CREDENTIAL_KV_KEYS = new Set<string>(['aetheria_api_key']);
 
 function pushClientSettingMutation(key: string, value: string | null): void {
   if (typeof window === 'undefined' || isServerRuntime()) return;
+
+  if (standaloneMode) {
+    if (value === null) {
+      localIndexedDbVault.removeKV(key);
+    } else {
+      localIndexedDbVault.setKV(key, value);
+    }
+    return;
+  }
+
   if (CREDENTIAL_KV_KEYS.has(key)) {
     void apiFetch('/api/credentials/gemini', {
       method: 'PUT',
@@ -164,6 +226,13 @@ export const runtimeKV = {
     if (clientKVStore.has(key)) {
       return clientKVStore.get(key) ?? null;
     }
+    if (standaloneMode) {
+      const val = localIndexedDbVault.getKV(key);
+      if (val !== null) {
+        clientKVStore.set(key, val);
+      }
+      return val;
+    }
     return null;
   },
 
@@ -188,8 +257,10 @@ export const runtimeKV = {
   setLocalOnly(key: string, value: string | null): void {
     if (value === null) {
       clientKVStore.delete(key);
+      if (standaloneMode) localIndexedDbVault.removeKV(key);
     } else {
       clientKVStore.set(key, value);
+      if (standaloneMode) localIndexedDbVault.setKV(key, value);
     }
   }
 };
@@ -231,7 +302,7 @@ let wsInstance: WebSocket | null = null;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 
-function emitLocalEvent(event: string, data: any): void {
+export function emitRuntimeEvent(event: string, data: any): void {
   const listeners = wsListeners.get(event);
   if (!listeners) return;
   for (const cb of listeners) {
@@ -261,10 +332,18 @@ export const serverSyncClient = {
     passwordEnabled: boolean;
     envForcedPassword: boolean;
   }> {
+    if (standaloneMode) {
+      return {
+        authenticated: true,
+        passwordEnabled: false,
+        envForcedPassword: false
+      };
+    }
     return apiFetch('/api/auth/status');
   },
 
   async login(password: string): Promise<{ ok: boolean }> {
+    if (standaloneMode) return { ok: true };
     return apiFetch('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ password })
@@ -272,6 +351,7 @@ export const serverSyncClient = {
   },
 
   async logout(): Promise<void> {
+    if (standaloneMode) return;
     await apiFetch('/api/auth/logout', { method: 'POST' });
     this.disconnectWebSocket();
   },
@@ -280,6 +360,9 @@ export const serverSyncClient = {
     passwordEnabled: boolean;
     envForcedPassword: boolean;
   }> {
+    if (standaloneMode) {
+      return { passwordEnabled: false, envForcedPassword: false };
+    }
     return apiFetch('/api/auth/password', {
       method: 'PUT',
       body: JSON.stringify({ password: newPassword })
@@ -287,14 +370,24 @@ export const serverSyncClient = {
   },
 
   async bootstrap(): Promise<ServerBootstrapPayload> {
+    if (standaloneMode && standaloneHandlers) {
+      const data = await standaloneHandlers.bootstrap();
+      setClientKVSnapshot(data.settings, data.geminiApiKeyRaw);
+      emitRuntimeEvent('bootstrap:loaded', data);
+      return data;
+    }
     const data = await apiFetch<ServerBootstrapPayload>('/api/bootstrap');
     setClientKVSnapshot(data.settings, data.geminiApiKeyRaw);
-    emitLocalEvent('bootstrap:loaded', data);
+    emitRuntimeEvent('bootstrap:loaded', data);
     return data;
   },
 
   connectWebSocket(onReconnectSync?: () => void): void {
     if (typeof window === 'undefined') return;
+    if (standaloneMode) {
+      emitRuntimeEvent('ws:status', { connected: true });
+      return;
+    }
     if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -309,7 +402,7 @@ export const serverSyncClient = {
       ws.onopen = () => {
         const wasReconnect = reconnectAttempts > 0;
         reconnectAttempts = 0;
-        emitLocalEvent('ws:status', { connected: true });
+        emitRuntimeEvent('ws:status', { connected: true });
         if (wasReconnect && onReconnectSync) {
           onReconnectSync();
         }
@@ -328,7 +421,7 @@ export const serverSyncClient = {
             runtimeKV.setLocalOnly('aetheria_api_key', msg.data.rawValue || null);
           }
 
-          emitLocalEvent(msg.event, msg.data);
+          emitRuntimeEvent(msg.event, msg.data);
         } catch {
           // ignore malformed WS frames
         }
@@ -336,7 +429,7 @@ export const serverSyncClient = {
 
       ws.onclose = (evt) => {
         wsInstance = null;
-        emitLocalEvent('ws:status', { connected: false });
+        emitRuntimeEvent('ws:status', { connected: false });
         if (evt.code === 4401) {
           window.dispatchEvent(new CustomEvent('aetheria_auth_required'));
           return;
@@ -371,8 +464,11 @@ export const serverSyncClient = {
     }
   },
 
-  // --- Server Background Jobs API ---
+  // --- Background Jobs API ---
   async startJob(type: ServerJobType, payload: any): Promise<ServerJobState> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.startJob(type, payload);
+    }
     const res = await apiFetch<{ job: ServerJobState }>('/api/jobs', {
       method: 'POST',
       body: JSON.stringify({ type, payload })
@@ -381,28 +477,50 @@ export const serverSyncClient = {
   },
 
   async cancelJob(jobId: string): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.cancelJob(jobId);
+      return;
+    }
     await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
   },
 
   async cancelAllJobs(): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.cancelAllJobs();
+      return;
+    }
     await apiFetch('/api/jobs/cancel-all', { method: 'POST' });
   },
 
   async cancelDebugLog(logId: string): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.cancelDebugLog(logId);
+      return;
+    }
     await apiFetch(`/api/debug/logs/${encodeURIComponent(logId)}/cancel`, { method: 'POST' });
   },
 
   async ackJob(jobId: string): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.ackJob(jobId);
+      return;
+    }
     await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/ack`, { method: 'POST' });
   },
 
   async listJobs(): Promise<ServerJobState[]> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.listJobs();
+    }
     const res = await apiFetch<{ jobs: ServerJobState[] }>('/api/jobs');
     return res.jobs || [];
   },
 
   // --- Utility AI Calls ---
   async runAiUtility<T = any>(action: string, payload: any): Promise<T> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.runAiUtility<T>(action, payload);
+    }
     const res = await apiFetch<{ result: T }>('/api/ai/utility', {
       method: 'POST',
       body: JSON.stringify({ action, payload })
@@ -410,7 +528,7 @@ export const serverSyncClient = {
     return res.result;
   },
 
-  // --- Provider / Key Server Operations ---
+  // --- Provider / Key Operations ---
   async discoverModels(params: {
     providerType: AIProviderType;
     baseUrl: string;
@@ -420,6 +538,9 @@ export const serverSyncClient = {
     customHeaders?: Record<string, string>;
     forceRefresh?: boolean;
   }): Promise<ModelDiscoveryResult> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.discoverModels(params);
+    }
     return apiFetch('/api/providers/discover-models', {
       method: 'POST',
       body: JSON.stringify(params)
@@ -427,6 +548,9 @@ export const serverSyncClient = {
   },
 
   async testCustomProvider(profile: ExternalProviderProfile, timeoutMs = 15000): Promise<ConnectionTestResult> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.testCustomProvider(profile, timeoutMs);
+    }
     return apiFetch('/api/providers/test', {
       method: 'POST',
       body: JSON.stringify({ profile, timeoutMs })
@@ -439,6 +563,9 @@ export const serverSyncClient = {
     mode?: 'simple' | 'direct';
     timeoutMs?: number;
   }): Promise<any> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.testGeminiKey(params);
+    }
     return apiFetch('/api/keys/test', {
       method: 'POST',
       body: JSON.stringify(params)
@@ -446,10 +573,18 @@ export const serverSyncClient = {
   },
 
   async resetAllCooldowns(): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.resetAllCooldowns();
+      return;
+    }
     await apiFetch('/api/cooldowns/reset', { method: 'POST' });
   },
 
   async updateThrottle(partial: { mode?: QueueMode; interRequestDelayMs?: number }): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.updateThrottle(partial);
+      return;
+    }
     await apiFetch('/api/throttle', {
       method: 'PUT',
       body: JSON.stringify(partial)
@@ -457,6 +592,10 @@ export const serverSyncClient = {
   },
 
   async clearDebugLogs(): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.clearDebugLogs();
+      return;
+    }
     await apiFetch('/api/debug/clear', { method: 'POST' });
   },
 
@@ -464,19 +603,29 @@ export const serverSyncClient = {
     const cleaned = keys.map(k => k.trim()).filter(Boolean);
     const rawValue = cleaned.length > 0 ? JSON.stringify(cleaned) : '';
     runtimeKV.setLocalOnly('aetheria_api_key', rawValue || null);
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.saveGeminiKeys(cleaned);
+      return;
+    }
     await apiFetch('/api/credentials/gemini', {
       method: 'PUT',
       body: JSON.stringify({ rawValue })
     });
   },
 
-  // --- Provider CRUD on Server ---
+  // --- Provider CRUD ---
   async listProviders(): Promise<ExternalProviderProfile[]> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.listProviders();
+    }
     const res = await apiFetch<{ providers: ExternalProviderProfile[] }>('/api/providers');
     return res.providers || [];
   },
 
   async createProvider(draft: ProviderDraftInput, activateRouting = true): Promise<ExternalProviderProfile> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.createProvider(draft, activateRouting);
+    }
     const res = await apiFetch<{ provider: ExternalProviderProfile }>('/api/providers', {
       method: 'POST',
       body: JSON.stringify({ draft, activateRouting })
@@ -485,6 +634,9 @@ export const serverSyncClient = {
   },
 
   async updateProvider(id: string, draft: Partial<ProviderDraftInput>): Promise<ExternalProviderProfile> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.updateProvider(id, draft);
+    }
     const res = await apiFetch<{ provider: ExternalProviderProfile }>(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify({ draft })
@@ -493,6 +645,9 @@ export const serverSyncClient = {
   },
 
   async duplicateProvider(id: string): Promise<ExternalProviderProfile> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.duplicateProvider(id);
+    }
     const res = await apiFetch<{ provider: ExternalProviderProfile }>(
       `/api/providers/${encodeURIComponent(id)}/duplicate`,
       { method: 'POST' }
@@ -501,10 +656,17 @@ export const serverSyncClient = {
   },
 
   async deleteProvider(id: string): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.deleteProvider(id);
+      return;
+    }
     await apiFetch(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
   async setDefaultProvider(id: string, activateExternalRouting = true): Promise<ExternalProviderProfile | undefined> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.setDefaultProvider(id, activateExternalRouting);
+    }
     const res = await apiFetch<{ provider?: ExternalProviderProfile }>(
       `/api/providers/${encodeURIComponent(id)}/default`,
       {
@@ -516,6 +678,10 @@ export const serverSyncClient = {
   },
 
   async saveProviderRouting(routing: ProviderRoutingConfig): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.saveProviderRouting(routing);
+      return;
+    }
     await apiFetch('/api/providers/routing', {
       method: 'PUT',
       body: JSON.stringify(routing)
@@ -523,6 +689,9 @@ export const serverSyncClient = {
   },
 
   async importProviders(rawJson: any, replaceExisting = false): Promise<{ importedCount: number; needsApiKeyCount: number }> {
+    if (standaloneMode && standaloneHandlers) {
+      return standaloneHandlers.importProviders(rawJson, replaceExisting);
+    }
     return apiFetch('/api/providers/import', {
       method: 'POST',
       body: JSON.stringify({ rawJson, replaceExisting })
@@ -530,6 +699,10 @@ export const serverSyncClient = {
   },
 
   async restoreProvidersFromDrive(entries: any[]): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.restoreProvidersFromDrive(entries);
+      return;
+    }
     await apiFetch('/api/providers/restore-drive', {
       method: 'POST',
       body: JSON.stringify({ entries })
@@ -537,6 +710,10 @@ export const serverSyncClient = {
   },
 
   async saveAllProviders(profiles: ExternalProviderProfile[]): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.saveAllProviders(profiles);
+      return;
+    }
     await apiFetch('/api/providers/bulk', {
       method: 'PUT',
       body: JSON.stringify({ profiles })
@@ -544,6 +721,10 @@ export const serverSyncClient = {
   },
 
   async recordProviderTestResult(id: string, result: { success: boolean; message: string }): Promise<void> {
+    if (standaloneMode && standaloneHandlers) {
+      await standaloneHandlers.recordProviderTestResult(id, result);
+      return;
+    }
     await apiFetch(`/api/providers/${encodeURIComponent(id)}/test-result`, {
       method: 'POST',
       body: JSON.stringify(result)

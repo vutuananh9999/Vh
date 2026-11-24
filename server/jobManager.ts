@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { serverVault } from './serverVault.ts';
+import { pushService } from './pushService.ts';
 import { geminiService } from '../services/geminiService.ts';
 import { ragService } from '../services/ragService.ts';
 import { plotDebugLogger } from '../services/plotDebugLogger.ts';
@@ -165,8 +166,9 @@ class ServerJobManager {
   private updateJob(id: string, patch: Partial<ServerJobState>, immediatePersist = false): void {
     const idx = this.jobs.findIndex(j => j.id === id);
     if (idx === -1) return;
+    const prev = this.jobs[idx];
     const next: ServerJobState = {
-      ...this.jobs[idx],
+      ...prev,
       ...patch,
       updatedAt: Date.now()
     };
@@ -176,6 +178,16 @@ class ServerJobManager {
       this.persistImmediate();
     } else {
       this.schedulePersist();
+    }
+
+    if (
+      prev.status === 'running' &&
+      (next.status === 'completed' || next.status === 'failed')
+    ) {
+      const badgeCount = this.jobs.filter(
+        j => !j.acknowledged && (j.status === 'completed' || j.status === 'failed')
+      ).length;
+      void pushService.sendJobNotification(next, badgeCount).catch(() => {});
     }
   }
 

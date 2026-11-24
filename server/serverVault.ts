@@ -54,6 +54,23 @@ interface EncryptedEnvelope {
   ct: string;
 }
 
+export interface VapidKeysRecord {
+  publicKey: string;
+  privateKey: string;
+}
+
+export interface PushSubscriptionRecord {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  userAgent?: string;
+  deviceLabel?: string;
+  createdAt: number;
+  lastSuccessAt?: number;
+}
+
 function toStorySummary(story: Story): Story {
   return {
     ...story,
@@ -77,6 +94,8 @@ class ServerVault {
   private readonly indexPath: string;
   private readonly authPath: string;
   private readonly jobsPath: string;
+  private readonly vapidPath: string;
+  private readonly pushSubsPath: string;
 
   private settingsCache: Record<string, string> = {};
   private credentialsCache: EncryptedVaultDisk = { geminiApiKeysRaw: '', providerSecrets: {} };
@@ -108,6 +127,8 @@ class ServerVault {
     this.indexPath = path.join(this.dataDir, 'stories-index.json');
     this.authPath = path.join(this.dataDir, 'auth.json');
     this.jobsPath = path.join(this.dataDir, 'jobs.json');
+    this.vapidPath = path.join(this.dataDir, 'vapid.json');
+    this.pushSubsPath = path.join(this.dataDir, 'push-subscriptions.json');
 
     this.ensureDirs();
     this.masterKey = this.loadOrCreateMasterKey();
@@ -636,6 +657,47 @@ class ServerVault {
       }
       this.revokedSessions.add(token);
     }
+  }
+
+  // --- Web Push VAPID Keys & Subscriptions Persistence ---
+  public getVapidKeys(): VapidKeysRecord | null {
+    if (!fs.existsSync(this.vapidPath)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.vapidPath, 'utf8'));
+      if (parsed?.publicKey && parsed?.privateKey) {
+        return { publicKey: String(parsed.publicKey), privateKey: String(parsed.privateKey) };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  public setVapidKeys(keys: VapidKeysRecord): void {
+    writeFileAtomic(this.vapidPath, JSON.stringify(keys, null, 2), 0o600);
+  }
+
+  public getPushSubscriptions(): PushSubscriptionRecord[] {
+    if (!fs.existsSync(this.pushSubsPath)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.pushSubsPath, 'utf8'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public upsertPushSubscription(record: PushSubscriptionRecord): PushSubscriptionRecord[] {
+    const existing = this.getPushSubscriptions().filter(s => s.endpoint !== record.endpoint);
+    const next = [record, ...existing].slice(0, 20);
+    writeFileAtomic(this.pushSubsPath, JSON.stringify(next, null, 2), 0o600);
+    return next;
+  }
+
+  public removePushSubscription(endpoint: string): PushSubscriptionRecord[] {
+    const next = this.getPushSubscriptions().filter(s => s.endpoint !== endpoint);
+    writeFileAtomic(this.pushSubsPath, JSON.stringify(next, null, 2), 0o600);
+    return next;
   }
 }
 

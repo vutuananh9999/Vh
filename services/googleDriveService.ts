@@ -12,6 +12,7 @@ import { Story } from '../types.ts';
 import { storageService } from './storage.ts';
 import { providerManagerService } from './providerManagerService.ts';
 import { runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import { isCapacitorNative } from './iosNativeBridge.ts';
 
 // Minimal Workspace scope for app-managed sync folder & backup files on Google Drive
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
@@ -172,6 +173,11 @@ export const googleDriveService = {
   },
 
   async googleSignIn(): Promise<{ user: DriveUserInfo; accessToken: string }> {
+    if (isCapacitorNative()) {
+      throw new DriveAuthError(
+        'Đăng nhập Google Drive pop-up không khả dụng trực tiếp bên trong ứng dụng iOS độc lập (WKWebView). Bạn có thể dùng nút Xuất JSON / EPUB để lưu hoặc đồng bộ trực tiếp vào Tệp (iCloud Drive) trên iPhone.'
+      );
+    }
     try {
       isSigningIn = true;
       const result = await signInWithPopup(auth, provider);

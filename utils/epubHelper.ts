@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { shareOrDownloadFile } from '../services/iosNativeBridge.ts';
 
 export interface EpubParsedData {
   title: string;
@@ -526,15 +527,9 @@ ${spineItems}
  */
 export async function downloadEpubFile(options: EpubGenerateOptions, filename?: string): Promise<void> {
   const blob = await generateEpub(options);
-  const cleanName = filename || `${options.title.replace(/[^a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF _-]/g, '_').trim()}.epub`;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = cleanName.endsWith('.epub') ? cleanName : `${cleanName}.epub`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const rawName = filename || `${options.title.replace(/[^a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF _-]/g, '_').trim()}.epub`;
+  const finalName = rawName.endsWith('.epub') ? rawName : `${rawName}.epub`;
+  await shareOrDownloadFile(finalName, blob, 'application/epub+zip');
 }
 
 function generateSimpleUuid(): string {

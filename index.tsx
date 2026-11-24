@@ -1,11 +1,20 @@
 
 import React from 'react';
 import * as ReactDOMClient from 'react-dom/client';
+import './index.css';
 import App from './App.tsx';
 import { registerServiceWorker } from './services/serviceWorkerRegistration.ts';
 import { providerManagerService } from './services/providerManagerService.ts';
+import { initCapacitorNativeShell } from './services/iosNativeBridge.ts';
+import { isStandaloneMode } from './services/runtimeAdapter.ts';
+import { registerStandaloneRuntime } from './services/localJobRunner.ts';
 
-// Initialize Service Worker & Secure AI Provider Vault
+if (isStandaloneMode()) {
+  registerStandaloneRuntime();
+}
+
+// Initialize Capacitor Native Shell, Service Worker & Secure AI Provider Vault
+void initCapacitorNativeShell();
 registerServiceWorker();
 void providerManagerService.initialize();
 

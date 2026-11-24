@@ -15,6 +15,7 @@ import { HelpGuideModal } from './HelpGuideModal.tsx';
 import { BilingualReviewModal } from './BilingualReviewModal.tsx';
 import { GoogleDriveSyncModal } from './GoogleDriveSyncModal.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
+import { isStandaloneMode } from '../services/runtimeAdapter.ts';
 
 export const MainWorkspace: React.FC = () => {
     const { story, activeServerJobs, isWsConnected, cancelServerJob } = useStory();
@@ -58,7 +59,7 @@ export const MainWorkspace: React.FC = () => {
 
             {/* Main Content Area */}
             <main className="flex-1 flex flex-col relative z-0 w-full overflow-hidden">
-                {!isWsConnected && (
+                {!isWsConnected && !isStandaloneMode() && (
                     <div className="bg-amber-950/80 border-b border-amber-500/30 px-3 py-1.5 text-[11px] text-amber-200 flex items-center justify-center gap-2 shrink-0">
                         <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
                         <span>Đang kết nối lại máy chủ điều khiển từ xa (Steam Deck vẫn đang giữ tác vụ nền)...</span>

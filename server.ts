@@ -49,6 +49,7 @@ import { requestThrottleService } from './services/requestThrottleService.ts';
 import { tokenTracker } from './services/tokenTracker.ts';
 import { serverVault } from './server/serverVault.ts';
 import { serverJobManager } from './server/jobManager.ts';
+import { pushService } from './server/pushService.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -231,6 +232,16 @@ httpServer.on('upgrade', (req, socket, head) => {
     wsClients.add(ws);
     ws.on('close', () => wsClients.delete(ws));
     ws.on('error', () => wsClients.delete(ws));
+    ws.on('message', raw => {
+      try {
+        const msg = JSON.parse(String(raw || '{}'));
+        if (msg?.event === 'ping' && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ event: 'pong', data: { serverTime: Date.now(), nonce: msg.nonce } }));
+        }
+      } catch {
+        // ignore invalid client frames
+      }
+    });
     ws.send(JSON.stringify({ event: 'ws:connected', data: { serverTime: Date.now() } }));
   });
 });
@@ -724,6 +735,55 @@ app.post('/api/ai/utility', requireAuth, async (req, res) => {
     res.json({ result });
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Lỗi xử lý tiện ích AI.' });
+  }
+});
+
+// Web Push Notification Endpoints (iOS 16.4 - 18.6.2 Home Screen PWA & Desktop)
+app.get('/api/push/config', requireAuth, (_req, res) => {
+  try {
+    res.json({
+      supported: true,
+      publicKey: pushService.getPublicKey(),
+      subscriptionCount: pushService.getSubscriptionCount()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Không thể khởi tạo Web Push.' });
+  }
+});
+
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  try {
+    const sub = req.body?.subscription;
+    const count = pushService.subscribe({
+      endpoint: sub?.endpoint,
+      keys: sub?.keys,
+      userAgent: req.headers['user-agent'],
+      deviceLabel: req.body?.deviceLabel
+    });
+    res.json({ ok: true, subscriptionCount: count });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Không thể đăng ký thông báo đẩy.' });
+  }
+});
+
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  const endpoint = String(req.body?.endpoint || '');
+  const count = pushService.unsubscribe(endpoint);
+  res.json({ ok: true, subscriptionCount: count });
+});
+
+app.post('/api/push/test', requireAuth, async (_req, res) => {
+  try {
+    const result = await pushService.sendToAll({
+      title: 'Aetheria Studio · Thông báo iPhone đã sẵn sàng',
+      body: 'Khi bạn thoát ra màn hình chính, tác vụ AI vẫn chạy trên máy chủ và sẽ báo về tại đây.',
+      tag: 'aetheria-push-test',
+      url: '/',
+      badgeCount: 0
+    });
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Không thể gửi thông báo thử nghiệm.' });
   }
 });
 

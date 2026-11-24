@@ -1,5 +1,5 @@
 import { redactSecrets } from './secureCredentialStorage.ts';
-import { isServerRuntime, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
+import { isRemoteServerClient, isServerRuntime, isStandaloneMode, runtimeKV, serverSyncClient } from './runtimeAdapter.ts';
 import { getActiveJobAbortContext, isAbortError } from './jobAbortContext.ts';
 import { estimateTokens, estimateTokensFromChars } from './tokenEstimator.ts';
 
@@ -183,7 +183,7 @@ class PlotDebugLoggerService {
   public clearLogs() {
     this.logs = [];
     this.saveLogsImmediate();
-    if (typeof window !== 'undefined' && !isServerRuntime()) {
+    if (isRemoteServerClient()) {
       void serverSyncClient.clearDebugLogs().catch(() => {});
     }
   }
@@ -193,6 +193,14 @@ class PlotDebugLoggerService {
       return {
         hostname: 'steamdeck-server',
         origin: process.env.TAILSCALE_HOST || 'http://localhost:3000',
+        isPreview: false,
+        isNetlify: false
+      };
+    }
+    if (isStandaloneMode()) {
+      return {
+        hostname: window.location.hostname || 'ios-standalone',
+        origin: window.location.origin || 'capacitor://localhost',
         isPreview: false,
         isNetlify: false
       };
