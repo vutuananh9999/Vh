@@ -39,7 +39,7 @@ let clientProvidersMirror: ExternalProviderProfile[] = [];
 let clientRoutingMirror: ProviderRoutingConfig = {
   activeProBackend: 'gemini',
   activeFlashBackend: 'gemini',
-  fallbackToGemini: true
+  fallbackToGemini: false
 };
 
 const changeListeners = new Set<() => void>();
@@ -59,7 +59,7 @@ function getDefaultRouting(): ProviderRoutingConfig {
   return {
     activeProBackend: 'gemini',
     activeFlashBackend: 'gemini',
-    fallbackToGemini: true
+    fallbackToGemini: false
   };
 }
 

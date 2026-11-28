@@ -274,22 +274,12 @@ export const ProviderManagementPanel: React.FC<ProviderManagementPanelProps> = (
           </label>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={routingConfig.fallbackToGemini}
-            onChange={e => {
-              const next: ProviderRoutingConfig = {
-                ...routingConfig,
-                fallbackToGemini: e.target.checked
-              };
-              providerManagerService.saveRoutingConfig(next);
-              onRoutingChanged(next);
-            }}
-            className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-sky-500"
-          />
-          <span>Tự động dự phòng sang Gemini Key nếu toàn bộ Custom Provider gặp lỗi</span>
-        </label>
+        <div className="text-[11px] text-gray-400 flex items-center gap-2 rounded-lg bg-gray-900/60 border border-gray-800 px-3 py-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+          <span>
+            Khi Custom Provider gặp lỗi hoặc quá tải, hệ thống chỉ xoay giữa các Custom Provider đang bật (không tự chuyển sang Google API).
+          </span>
+        </div>
 
         <div className="text-[11px] text-gray-400 flex items-center gap-1.5 pt-1">
           <span

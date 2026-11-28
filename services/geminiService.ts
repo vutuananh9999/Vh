@@ -862,14 +862,7 @@ class DynamicAI {
               if (effectiveSignal?.aborted || isAbortError(extErr)) {
                 throw createAbortError();
               }
-              const routing = externalProviderService.getRoutingConfig();
-              if (!routing.fallbackToGemini || keys.length === 0) {
-                throw extErr;
-              }
-              plotDebugLogger.updateAttempt(logId, {
-                model: requestedModel,
-                phase: `Key ngoài gặp lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — tự động dự phòng về Gemini...`
-              });
+              throw extErr;
             }
           }
 
@@ -1162,14 +1155,7 @@ class DynamicAI {
               if (effectiveSignal?.aborted || isAbortError(extErr)) {
                 throw createAbortError();
               }
-              const routing = externalProviderService.getRoutingConfig();
-              if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
-                throw extErr;
-              }
-              plotDebugLogger.updateAttempt(logId, {
-                model: requestedModel,
-                phase: `Stream Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — tự động dự phòng về Gemini...`
-              });
+              throw extErr;
             }
           }
 
@@ -1630,14 +1616,7 @@ class DynamicAI {
                 if (effectiveSignal?.aborted || isAbortError(extErr)) {
                   throw createAbortError();
                 }
-                const routing = externalProviderService.getRoutingConfig();
-                if (!routing.fallbackToGemini || keys.length === 0) {
-                  throw extErr;
-                }
-                plotDebugLogger.updateAttempt(logId, {
-                  model: requestedModel,
-                  phase: `Chat Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — dự phòng về Gemini...`
-                });
+                throw extErr;
               }
             }
 
@@ -1897,14 +1876,7 @@ class DynamicAI {
                   if (effectiveSignal?.aborted || isAbortError(extErr)) {
                     throw createAbortError();
                   }
-                  const routing = externalProviderService.getRoutingConfig();
-                  if (extYielded || !routing.fallbackToGemini || keys.length === 0) {
-                    throw extErr;
-                  }
-                  plotDebugLogger.updateAttempt(logId, {
-                    model: requestedModel,
-                    phase: `Chat Stream Key ngoài lỗi (${redactSecrets(String(extErr?.message || extErr)).slice(0, 60)}) — dự phòng về Gemini...`
-                  });
+                  throw extErr;
                 }
               }
 

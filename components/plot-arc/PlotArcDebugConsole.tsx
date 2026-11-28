@@ -921,7 +921,7 @@ export const PlotArcDebugConsole: React.FC<Props> = ({ onSwitchToChat }) => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <label className="flex flex-col gap-1">
                 <span className="text-[11px] font-medium text-slate-400">
-                  {isUsingCustomApi ? 'Mô hình Gemini (Fallback)' : 'Mô hình Gemini mặc định'}
+                  {isUsingCustomApi ? 'Mô hình Gemini (khi dùng nguồn Google)' : 'Mô hình Gemini mặc định'}
                 </span>
                 <select
                   value={selectedModel}
